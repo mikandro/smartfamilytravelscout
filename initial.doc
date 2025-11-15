@@ -1,0 +1,4822 @@
+N�──────────────────────────────────────┐
+│      Data Enrichment & Cleaning         │
+│  - Deduplication                        │
+│  - Price normalization                  │
+│  - Distance calculations                │
+│  - Event categorization                 │
+└──────────────────┬──────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────────────┐
+│         AI Analysis Engine (Claude)             │
+│  ┌──────────────┐  ┌─────────────────────────┐ │
+│  │ Deal Scorer  │  │ Event Matcher           │ │
+│  └──────────────┘  └─────────────────────────┘ │
+│  ┌──────────────┐  ┌─────────────────────────┐ │
+│  │ Itinerary    │  │ Parent Escape Recomm.   │ │
+│  │ Generator    │  └─────────────────────────┘ │
+│  └──────────────┘                              │
+└──────────────────┬──────────────────────────────┘
+                   │
+         ┌─────────┼─────────┐
+         ▼         ▼         ▼
+┌──────────┐ ┌──────────┐ ┌──────────────┐
+│ Family   │ │ Parent   │ │  Dashboard   │
+│ Trip     │ │ Escape   │ │  & Settings  │
+│ Alerts   │ │ Alerts   │ │              │
+└──────────┘ └──────────┘ └──────────────┘
+Database Schema Design
+sql
+-- Airports table
+CREATE TABLE airports (
+    id SERIAL PRIMARY KEY,
+    iata_code VARCHAR(3) UNIQUE,
+    name VARCHAR(100),
+    city VARCHAR(50),
+    distance_from_home INT, -- km from your home
+    driving_time INT, -- minutes
+    preferred_for VARCHAR[], -- ['budget', 'direct_flights', 'moldova']
+);
+
+-- Flights table
+CREATE TABLE flights (
+    id SERIAL PRIMARY KEY,
+    origin_airport_id INT REFERENCES airports(id),
+    destination_airport_id INT REFERENCES airports(id),
+    airline VARCHAR(50),
+    departure_date DATE,
+    return_date DATE,
+    price_per_person DECIMAL,
+    total_price DECIMAL,
+    booking_class VARCHAR(20),
+    scraped_at TIMESTAMP,
+    direct_flight BOOLEAN,
+    source VARCHAR(50) -- 'skyscanner', 'ryanair_direct', etc.
+);
+
+-- Accommodations table
+CREATE TABLE accommodations (
+    id SERIAL PRIMARY KEY,
+    destination_city VARCHAR(100),
+    name VARCHAR(200),
+    type VARCHAR(50), -- 'hotel', 'airbnb', 'vrbo'
+    bedrooms INT,
+    price_per_night DECIMAL,
+    family_friendly BOOLEAN,
+    has_kitchen BOOLEAN,
+    has_kids_club BOOLEAN,
+    source VARCHAR(50),
+    url TEXT,
+    scraped_at TIMESTAMP
+);
+
+-- Events table
+CREATE TABLE events (
+    id SERIAL PRIMARY KEY,
+    destination_city VARCHAR(100),
+    title VARCHAR(200),
+    event_date DATE,
+    end_date DATE,
+    category VARCHAR(50), -- 'family', 'parent_escape', 'cultural', etc.
+    description TEXT,
+    price_range VARCHAR(50),
+    source VARCHAR(50),
+    url TEXT,
+    ai_relevance_score DECIMAL,
+    scraped_at TIMESTAMP
+);
+
+-- Trip packages (AI-generated combinations)
+CREATE TABLE trip_packages (
+    id SERIAL PRIMARY KEY,
+    package_type VARCHAR(50), -- 'family', 'parent_escape'
+    flights JSON, -- array of flight IDs
+    accommodation_id INT REFERENCES accommodations(id),
+    events JSON, -- array of event IDs
+    total_price DECIMAL,
+    destination_city VARCHAR(100),
+    travel_dates DATERANGE,
+    ai_score DECIMAL,
+    ai_reasoning TEXT,
+    created_at TIMESTAMP,
+    notified BOOLEAN DEFAULT FALSE
+);
+
+-- User preferences
+CREATE TABLE user_preferences (
+    id SERIAL PRIMARY KEY,
+    user_id INT,
+    max_flight_price_family DECIMAL,
+    max_flight_price_parents DECIMAL,
+    preferred_destinations VARCHAR[],
+    avoid_destinations VARCHAR[],
+    interests VARCHAR[], -- 'wine', 'museums', 'beaches', etc.
+    notification_threshold DECIMAL, -- AI score needed to notify
+    parent_escape_frequency VARCHAR -- 'monthly', 'quarterly'
+);
+
+-- School holidays (Bavaria)
+CREATE TABLE school_holidays (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100), -- 'Easter Break', 'Summer Holiday'
+    start_date DATE,
+    end_date DATE,
+    year INT,
+    holiday_type VARCHAR(50) -- 'major', 'long_weekend'
+);
+AI Prompt Templates
+Deal Analysis Prompt
+python
+deal_analysis_prompt = """
+You are an expert travel analyst specializing in family budget travel.
+
+TRIP DATA:
+Flights: {flight_details}
+- Origin airports: {airports_with_distances}
+- Total flight cost: €{total_flight_cost}
+- Travel dates: {dates}
+
+Accommodation: {accommodation_details}
+- Type: {type}
+- Price: €{price_per_night} x {nights} nights
+- Total accommodation: €{total_accommodation}
+
+Events during visit:
+{events_list}
+
+School holiday: {holiday_name}
+
+HISTORICAL CONTEXT:
+- Average price for this route: €{avg_historical_price}
+- Lowest seen: €{lowest_price}
+- Price trend: {trend}
+
+ANALYSIS REQUIRED:
+1. Overall Deal Score (0-100)
+2. Value Assessment:
+   - Is this genuinely cheap?
+   - Hidden costs to consider?
+   - Alternative airports comparison
+3. Timing Quality:
+   - Event alignment
+   - Weather considerations
+   - Peak/off-peak season
+4. Family Suitability (with kids 3 & 6):
+   - Destination appropriateness
+   - Activity options
+   - Logistics difficulty
+5. Recommendation:
+   - Book now / Wait / Skip
+   - Confidence level
+6. 3-day itinerary outline
+
+Output as JSON with these fields.
+"""
+Parent Escape Analysis
+python
+parent_escape_prompt = """
+You are a luxury travel concierge specializing in romantic getaways.
+
+DESTINATION: {city}
+DATES AVAILABLE: {date_range}
+BUDGET: €{max_budget} for 2 people, 2-3 nights
+
+CURRENT OFFERINGS:
+Flights: {flight_options}
+Hotels: {hotel_options_with_spa}
+Events happening:
+{events_list}
+
+REQUIREMENTS:
+- Train-accessible from Munich (max 6 hours)
+- Romantic/recharging atmosphere
+- Exceptional food scene or cultural offerings
+- Walkable city center
+- Special event/reason to visit NOW vs. later
+
+ANALYSIS:
+1. Escape Quality Score (0-100)
+2. Unique Appeal:
+   - What makes this timing special?
+   - Once-in-a-lifetime factor?
+3. Romance/Recharge Factor:
+   - Atmosphere
+   - Dining options
+   - Relaxation opportunities
+4. Logistics:
+   - Travel ease
+   - Time well spent vs. travel time ratio
+5. Recommendation for Parents:
+   - Book now / Consider / Skip
+   - Kid-care solution suggestions
+   - Detailed 2-day itinerary
+
+Output as JSON.
+"""
+Event Relevance Scoring
+python
+event_scorer_prompt = """
+Rate this event for relevance:
+
+EVENT: {event_title}
+DATES: {event_dates}
+LOCATION: {city}
+DESCRIPTION: {description}
+PRICE: {price}
+
+USER CONTEXT:
+- Family with kids 3 & 6
+- Interests: {user_interests}
+- Budget-conscious
+- Travel dates: {possible_travel_dates}
+
+SCORING (0-10):
+1. Timing alignment (event during possible visit)
+2. Age appropriateness (if family event)
+3. Uniqueness (not available at home)
+4. Value for money
+5. Overall relevance to user interests
+
+Also indicate:
+- Category: family_event | parent_escape | skip
+- Brief reasoning (1 sentence)
+
+Output as JSON.
+"""
+Multi-Source Flight Scraping Strategy
+python
+class FlightScraperOrchestrator:
+    def __init__(self):
+        self.airports = ['MUC', 'FMM', 'NUE', 'SZG']
+        self.destinations = self.load_destinations()
+
+    async def scrape_all_sources(self, date_range):
+        """Parallel scraping of all sources"""
+        tasks = [
+            self.scrape_skyscanner(),
+            self.scrape_kiwi(),
+            self.scrape_direct_airlines(),
+            self.scrape_google_flights()
+        ]
+        results = await asyncio.gather(*tasks)
+        return self.deduplicate_and_merge(results)
+
+    async def scrape_direct_airlines(self):
+        """Direct airline APIs/scrapers"""
+        airlines = {
+            'ryanair': RyanairScraper(),
+            'wizz': WizzAirScraper(),
+            'lufthansa': LufthansaAPI(),
+            'eurowings': EurowingsScraper(),
+        }
+        # Each returns standardized flight objects
+
+    def calculate_true_cost(self, flight):
+        """AI-enhanced cost calculation"""
+        base_price = flight.price
+        airport = flight.origin_airport
+
+        # Add hidden costs
+        costs = {
+            'base': base_price,
+            'baggage': self.estimate_baggage(airline),
+            'parking': self.parking_cost(airport),
+            'fuel': self.fuel_cost_to_airport(airport),
+            'time_value': self.time_cost(airport)
+        }
+
+        # Claude analyzes if worth it
+        return self.ai_analyze_true_value(costs)
+```
+
+### **Tech Stack Updates**
+
+**Additional Tools:**
+- **Playwright** (headless browser for scraping)
+- **Apify** (pre-built scrapers for Airbnb, Booking.com)
+- **Redis** (caching API responses)
+- **Pandas** (data analysis)
+- **GeoPy** (distance calculations)
+
+**APIs to Register:**
+```
+Priority 1 (Free tiers):
+✓ Skyscanner API
+✓ Kiwi.com API
+✓ EventBrite API
+✓ Booking.com Affiliate
+✓ Amadeus Self-Service (free tier)
+
+Priority 2 (May need workarounds):
+- Airbnb (via Rapid API or scraping)
+- Google Flights (scraping only)
+- Ryanair (scraping)
+
+Priority 3 (Nice to have):
+- Ticketmaster API
+- Songkick API
+- Meetup API
+Revised Build Timeline
+Weeks 1-2: Foundation
+
+Set up multi-airport database
+Implement Skyscanner + Kiwi APIs
+Build basic flight scraping for 2-3 airlines
+Weeks 3-4: Accommodation Layer
+
+Booking.com API integration
+Airbnb scraping (Apify)
+Family filter logic
+Weeks 5-6: Event System
+
+EventBrite + Ticketmaster APIs
+Web scraping for local tourism boards
+Claude-powered event categorization
+Weeks 7-8: AI Integration
+
+Deal scoring system
+Trip package generation
+Parent escape analyzer
+Weeks 9-10: Notification System
+
+Firebase push notifications
+Email summaries
+Web dashboard
+Weeks 11-12: Polish & Deploy
+
+Testing with real data
+Cost optimization
+Portfolio documentation
+Portfolio Highlights (Enhanced)
+✅ Multi-source data aggregation (10+ APIs + scraping)
+✅ Intelligent deduplication (same flight from multiple sources)
+✅ Complex AI reasoning (deal scoring, event matching, parent escape curation)
+✅ Geospatial analysis (multi-airport optimization)
+✅ Event-driven architecture (real-time deals)
+✅ Production-grade scraping (respectful, cached, monitored)
+✅ Personalized AI agents (family mode vs. parent escape mode)
+
+Cost Estimation
+Development Phase:
+
+Claude API: ~€10-15/month (testing)
+Various API subscriptions: ~€0 (free tiers)
+Hosting: €0 (free tier)
+Production:
+
+Claude API: ~€30-50/month (depends on deal volume)
+Scraping services (Apify): ~€20/month
+Hosting (Railway/Render): ~€10/month
+Total: ~€60-80/month
+But: First successful cheap trip saves €500+ easily!
+
+Want me to help you:
+
+Set up the multi-source flight scraper architecture?
+Design the event discovery and scoring system?
+Create the parent escape mode prompt templates?
+Build the database schema with migrations?
+This is becoming a seriously impressive portfolio piece - the kind of project that gets you hired!
+
+I need to be able to create a definitive spec and split in actionable items that I can delegate to claude code for execution (paralel or not).
+
+Perfect! Let's create a comprehensive spec with actionable, delegable tasks. I'll structure this as a project that Claude Code can execute piece by piece.
+
+PROJECT SPECIFICATION DOCUMENT
+Project Name: SmartFamilyTravelScout
+Version: 1.0
+Overview
+An AI-powered travel deal finder that monitors flights from multiple airports, accommodation options, and local events to alert users of outstanding travel opportunities aligned with school holidays. Includes a specialized "Parent Escape Mode" for romantic getaways.
+
+FUNCTIONAL REQUIREMENTS
+FR1: Multi-Airport Flight Monitoring
+FR1.1: Monitor flights from 4 airports: MUC, FMM, NUE, SZG
+FR1.2: Track 30+ destinations across Western Europe + Moldova
+FR1.3: Support multiple data sources: Skyscanner API, Kiwi.com API, direct airline scrapers
+FR1.4: Calculate true cost including baggage, parking, fuel to airport
+FR1.5: Store historical price data for trend analysis
+FR1.6: Check prices every 6-12 hours
+FR2: Accommodation Discovery
+FR2.1: Search Booking.com for family-friendly options (2+ bedrooms, kitchen)
+FR2.2: Search Airbnb for family apartments
+FR2.3: Filter by family amenities and price range
+FR2.4: Match accommodation dates with flight dates
+FR2.5: Calculate total trip cost (flights + accommodation)
+FR3: Event Discovery & Matching
+FR3.1: Scrape/API EventBrite, Ticketmaster for local events
+FR3.2: Categorize events: family-friendly, parent-escape, cultural, sports
+FR3.3: Match events with potential travel dates
+FR3.4: Score events for relevance using AI
+FR3.5: Identify kid-friendly and adults-only opportunities
+FR4: AI Analysis Engine
+FR4.1: Score deals on 0-100 scale using Claude
+FR4.2: Generate personalized recommendations based on historical data
+FR4.3: Create 3-day itineraries for destinations
+FR4.4: Analyze parent escape opportunities separately
+FR4.5: Provide reasoning for all recommendations
+FR5: School Holiday Integration
+FR5.1: Store Bavaria school holiday calendar
+FR5.2: Only alert for trips during vacation periods
+FR5.3: Suggest long-weekend opportunities (Fri-Sun)
+FR5.4: Highlight major holidays vs. minor breaks
+FR6: Notification System
+FR6.1: Push notifications via Firebase/OneSignal
+FR6.2: Email summaries with booking links
+FR6.3: Daily digest of opportunities
+FR6.4: Separate alerts for family trips vs. parent escapes
+FR7: Parent Escape Mode
+FR7.1: Identify romantic 2-3 night getaway opportunities
+FR7.2: Focus on wine regions, spa hotels, cultural events
+FR7.3: Prefer train-accessible destinations (max 6h from Munich)
+FR7.4: Suggest kid-care solutions (grandparents, babysitter)
+FR7.5: Score based on uniqueness of timing (special events)
+FR8: Web Dashboard
+FR8.1: View current deals and opportunities
+FR8.2: Configure preferences (destinations, budget, interests)
+FR8.3: See historical price trends
+FR8.4: Manage notification settings
+FR8.5: Browse past alerts and itineraries
+TECHNICAL REQUIREMENTS
+TR1: Architecture
+TR1.1: Python 3.11+ backend
+TR1.2: PostgreSQL database
+TR1.3: Redis for caching
+TR1.4: FastAPI for REST API and dashboard
+TR1.5: Celery for scheduled tasks
+TR1.6: Docker containerization
+TR2: Data Collection
+TR2.1: Async scraping with Playwright
+TR2.2: API rate limiting and retry logic
+TR2.3: Data deduplication algorithms
+TR2.4: Error handling and logging
+TR2.5: Respectful scraping (delays, user agents)
+TR3: AI Integration
+TR3.1: Claude API integration via official SDK
+TR3.2: Prompt versioning and management
+TR3.3: Response caching to minimize costs
+TR3.4: Structured output parsing (JSON)
+TR3.5: Cost tracking and budgeting
+TR4: Deployment
+TR4.1: Railway/Render deployment
+TR4.2: GitHub Actions CI/CD
+TR4.3: Environment variable management
+TR4.4: Monitoring and alerting (Sentry)
+TR4.5: Backup and recovery procedures
+DATABASE SCHEMA
+sql
+-- See previous detailed schema
+-- 8 main tables: airports, flights, accommodations, events,
+-- trip_packages, user_preferences, school_holidays, price_history
+```
+
+---
+
+## **ACTIONABLE TASK BREAKDOWN**
+
+I'll organize this into **modules** that can be built independently and integrated later.
+
+---
+
+## **MODULE 1: PROJECT SETUP & INFRASTRUCTURE**
+
+### **Task 1.1: Initialize Project Structure**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Python project with Poetry/pip requirements
+- Docker + Docker Compose setup
+- .env.example file with all needed variables
+- README.md with setup instructions
+- .gitignore configured
+- Pre-commit hooks for code quality
+
+**Claude Code Prompt:**
+```
+Create a production-ready Python project structure for "SmartFamilyTravelScout":
+
+Requirements:
+- Python 3.11+
+- Use Poetry for dependency management
+- Dependencies: FastAPI, SQLAlchemy, Celery, Redis, Playwright, anthropic, pandas, requests
+- Docker Compose with: PostgreSQL 15, Redis, Python app
+- Folder structure:
+  /app
+    /api (FastAPI routes)
+    /scrapers (flight, accommodation, event scrapers)
+    /ai (Claude integration)
+    /models (SQLAlchemy models)
+    /tasks (Celery tasks)
+    /utils (helpers)
+  /tests
+  /docs
+  docker-compose.yml
+  Dockerfile
+  .env.example
+  pyproject.toml
+  README.md
+
+Include:
+- Proper logging setup
+- Environment variable loading
+- Database connection pooling
+- Basic health check endpoint
+```
+
+**Estimated Time**: 1-2 hours
+**Dependencies**: None
+**Verification**: `docker-compose up` runs without errors
+
+---
+
+### **Task 1.2: Database Schema Implementation**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- SQLAlchemy models for all 8+ tables
+- Alembic migrations setup
+- Seed data for airports and school holidays
+- Database initialization script
+- Indexes on frequently queried fields
+
+**Claude Code Prompt:**
+```
+Implement the complete database schema using SQLAlchemy and Alembic:
+
+Tables needed:
+1. airports (id, iata_code, name, city, distance_from_home, driving_time, preferred_for)
+2. flights (id, origin_airport_id, destination_airport_id, airline, departure_date, return_date, price_per_person, total_price, scraped_at, source, direct_flight)
+3. accommodations (id, destination_city, name, type, bedrooms, price_per_night, family_friendly, has_kitchen, has_kids_club, source, url, scraped_at)
+4. events (id, destination_city, title, event_date, end_date, category, description, price_range, source, url, ai_relevance_score, scraped_at)
+5. trip_packages (id, package_type, flights_json, accommodation_id, events_json, total_price, destination_city, travel_dates, ai_score, ai_reasoning, created_at, notified)
+6. user_preferences (id, user_id, max_flight_price_family, max_flight_price_parents, preferred_destinations, avoid_destinations, interests, notification_threshold)
+7. school_holidays (id, name, start_date, end_date, year, holiday_type)
+8. price_history (id, flight_id, price, scraped_at) - for trend analysis
+
+Requirements:
+- Proper foreign keys and indexes
+- JSON fields where appropriate
+- Timestamps on all tables
+- Alembic migration scripts
+- Seed data script for:
+  * 4 airports: MUC, FMM, NUE, SZG with distances
+  * Bavaria school holidays 2025-2026
+  * Default user preferences
+
+Include database initialization script and connection helper.
+```
+
+**Estimated Time**: 2-3 hours
+**Dependencies**: Task 1.1
+**Verification**: Migrations run successfully, seed data loads
+
+---
+
+## **MODULE 2: FLIGHT DATA COLLECTION**
+
+### **Task 2.1: Skyscanner API Integration**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Skyscanner API client class
+- Search flights for all 4 airports
+- Parse and normalize response
+- Store in database
+- Handle rate limiting and errors
+- Unit tests with mock responses
+
+**Claude Code Prompt:**
+```
+Create a Skyscanner API integration for flight searching:
+
+Requirements:
+- Class: SkyscannerClient
+- Methods:
+  * search_flights(origin, destination, departure_date, return_date)
+  * search_multi_origin(origins, destination, date_range) - batch search
+  * parse_response(raw_data) -> List[FlightOffer]
+- Handle Skyscanner API authentication
+- Implement rate limiting (max 100 calls/day on free tier)
+- Retry logic with exponential backoff
+- Normalize data to standard FlightOffer format:
+  {
+    'origin_airport': 'MUC',
+    'destination_airport': 'LIS',
+    'airline': 'Ryanair',
+    'departure_date': '2025-12-20',
+    'return_date': '2025-12-27',
+    'price_per_person': 89.99,
+    'total_price': 359.96,
+    'direct_flight': True,
+    'source': 'skyscanner',
+    'booking_url': '...'
+  }
+- Save to database (flights table)
+- Log all API calls with timestamp and cost
+
+Include:
+- Comprehensive error handling
+- Unit tests with mocked responses
+- Documentation with example usage
+```
+
+**Estimated Time**: 3-4 hours
+**Dependencies**: Task 1.2
+**Verification**: Successfully fetches and stores flights for MUC→LIS
+
+---
+
+### **Task 2.2: Kiwi.com API Integration**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Similar to Task 2.1 but for Kiwi.com
+- Multi-city search support
+- Integration with existing FlightOffer format
+- Deduplication logic (same flight from multiple sources)
+
+**Claude Code Prompt:**
+```
+Create a Kiwi.com API integration (similar structure to Skyscanner):
+
+Class: KiwiClient
+Methods: search_flights, search_multi_origin, parse_response
+Output: Same FlightOffer format as Skyscanner
+
+Additional requirements:
+- Kiwi specializes in budget airlines and multi-stop routes
+- Support for "anywhere" searches (destination=None returns all from origin)
+- Handle Kiwi's unique features: virtual interlining, self-transfer
+- Implement deduplication: check if flight already exists in DB (same airline, route, date, similar price)
+- If duplicate, keep the one with better price or more recent scrape
+- Tag flights with 'source': 'kiwi'
+
+Include same quality standards as Skyscanner integration.
+```
+
+**Estimated Time**: 3-4 hours
+**Dependencies**: Task 2.1
+**Verification**: Fetches flights and properly deduplicates with Skyscanner data
+
+---
+
+### **Task 2.3: Ryanair Direct Scraper**
+**Delegable to Claude Code**: ✅ **MEDIUM PRIORITY**
+
+**Acceptance Criteria:**
+- Playwright-based scraper for Ryanair.com
+- Focus on flights from MUC and FMM
+- Respectful scraping (delays, user agents)
+- Handles dynamic JavaScript content
+- Robust error handling
+
+**Claude Code Prompt:**
+```
+Build a Ryanair web scraper using Playwright:
+
+Class: RyanairScraper
+Methods:
+- scrape_route(origin, destination, date_range)
+- parse_flight_cards(page_content) -> List[FlightOffer]
+
+Requirements:
+- Use Playwright headless browser
+- Navigate to Ryanair flight search
+- Handle cookie consent popups
+- Wait for dynamic content to load
+- Extract: price, departure time, flight number, stops
+- Implement random delays (2-5 seconds) between requests
+- Rotate user agents
+- Handle "no flights found" gracefully
+- Screenshot on errors for debugging
+- Respect robots.txt
+- Add X-Forwarded-For headers to appear as residential IP
+
+Output same FlightOffer format.
+
+Include:
+- Playwright browser context management
+- CSS selectors with fallbacks
+- Comprehensive logging
+- Retry logic (max 3 attempts)
+```
+
+**Estimated Time**: 4-6 hours
+**Dependencies**: Task 1.2
+**Verification**: Successfully scrapes MUC→LIS and FMM→BCN flights
+
+---
+
+### **Task 2.4: Flight Orchestrator**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Coordinates all flight data sources
+- Parallel execution with asyncio
+- Deduplication across sources
+- True cost calculation (baggage, parking, fuel)
+- Database persistence
+
+**Claude Code Prompt:**
+```
+Create a FlightOrchestrator that manages all flight data sources:
+
+Class: FlightOrchestrator
+Methods:
+- async scrape_all(origins, destinations, date_range) -> List[FlightOffer]
+- deduplicate(flights) -> List[FlightOffer]
+- calculate_true_cost(flight) -> EnhancedFlightOffer
+- save_to_database(flights)
+
+Requirements:
+1. Parallel execution:
+   - Run Skyscanner, Kiwi, Ryanair scrapers concurrently
+   - Use asyncio.gather()
+   - Handle individual source failures gracefully
+
+2. Deduplication logic:
+   - Flights are "same" if: same route, same date (±1 hour), same airline
+   - Keep flight with lowest price
+   - Merge booking_urls from all sources
+
+3. True cost calculation:
+   - Base price + baggage (€30/bag estimate for budget airlines, €0 for legacy)
+   - Parking cost based on airport: MUC=€15/day, FMM=€5/day, etc.
+   - Fuel cost: €0.08/km * distance_from_home * 2 (round trip)
+   - Time value: €20/hour * (driving_time / 60) * 2
+   - Output: {base_price, hidden_costs_breakdown, total_true_cost}
+
+4. Database persistence:
+   - Insert new flights
+   - Update existing if price changed
+   - Store in price_history table for trends
+
+Include progress logging and performance metrics.
+```
+
+**Estimated Time**: 4-5 hours
+**Dependencies**: Tasks 2.1, 2.2, 2.3
+**Verification**: Scrapes 100+ flights, deduplicates correctly, calculates true costs
+
+---
+
+## **MODULE 3: ACCOMMODATION DATA COLLECTION**
+
+### **Task 3.1: Booking.com API Integration**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Booking.com Affiliate API client
+- Search with family filters
+- Parse and store results
+- Handle pagination
+
+**Claude Code Prompt:**
+```
+Create Booking.com integration using their Affiliate Partner API:
+
+Class: BookingClient
+Methods:
+- search(city, check_in, check_out, guests=4, children_ages=[3,6])
+- apply_family_filters(results) -> List[Accommodation]
+- parse_response(raw) -> List[Accommodation]
+
+Requirements:
+- Register for Booking.com Affiliate Partner Program first (provide instructions in README)
+- Search parameters:
+  * Adults: 2
+  * Children: 2 (ages 3, 6)
+  * Rooms: minimum 2 bedrooms OR family room
+  * Amenities: kitchen preferred
+- Filter results:
+  * family_friendly = True if has "family" facilities or kids policy
+  * has_kitchen = check amenities list
+  * has_kids_club = check facilities
+- Sort by: price (low to high)
+- Get top 10 options per destination
+
+Output format (Accommodation):
+{
+  'destination_city': 'Lisbon',
+  'name': 'Family Apartment Central',
+  'type': 'apartment',
+  'bedrooms': 2,
+  'price_per_night': 80.00,
+  'family_friendly': True,
+  'has_kitchen': True,
+  'has_kids_club': False,
+  'rating': 8.5,
+  'review_count': 234,
+  'source': 'booking',
+  'url': '...',
+  'image_url': '...'
+}
+
+Save to accommodations table.
+```
+
+**Estimated Time**: 3-4 hours
+**Dependencies**: Task 1.2
+**Verification**: Retrieves 10 family accommodations for LIS with correct filters
+
+---
+
+### **Task 3.2: Airbnb Data Collection**
+**Delegable to Claude Code**: ✅ **MEDIUM PRIORITY**
+
+**Acceptance Criteria:**
+- Use Rapid API Airbnb endpoint OR Apify scraper
+- Family-friendly filters
+- Price range filtering
+- Image and amenity extraction
+
+**Claude Code Prompt:**
+```
+Implement Airbnb data collection (choose best approach):
+
+Option A: Rapid API Airbnb endpoint
+Option B: Apify Airbnb scraper
+Option C: Direct scraping with Playwright (most complex)
+
+Recommended: Try Option A first, fallback to B
+
+Class: AirbnbClient
+Methods:
+- search(city, check_in, check_out, guests=4)
+- filter_family_suitable(results) -> List[Accommodation]
+
+Requirements:
+- Search for "Entire place" only (not shared/private room)
+- Minimum 2 bedrooms
+- Filters: "Suitable for children", "Kitchen", "Family/kid friendly"
+- Price range: €40-150/night
+- Get top 10 options
+- Extract: title, price, bedrooms, amenities, url, images
+
+Output to same Accommodation format (type='airbnb')
+
+Handle:
+- API rate limits (Rapid API free tier: ~100 calls/month)
+- Invalid results (no price, etc.)
+- Coordinate parsing (latitude/longitude)
+
+Include cost estimate: Rapid API is ~$0.01/request, so 1000 searches = ~$10/month
+```
+
+**Estimated Time**: 4-5 hours
+**Dependencies**: Task 1.2
+**Verification**: Returns 10 Airbnb options for LIS matching criteria
+
+---
+
+### **Task 3.3: Accommodation Matcher**
+**Delegable to Claude Code**: ✅ **MEDIUM PRIORITY**
+
+**Acceptance Criteria:**
+- Match accommodations with flight dates
+- Calculate total trip cost
+- Rank by value (AI integration later)
+- Generate trip package combinations
+
+**Claude Code Prompt:**
+```
+Create an AccommodationMatcher that pairs accommodations with flights:
+
+Class: AccommodationMatcher
+Methods:
+- match_flights_to_accommodations(flights, date_range)
+- calculate_trip_costs(flight, accommodation, num_nights)
+- generate_trip_packages() -> List[TripPackage]
+
+Logic:
+1. For each destination with flights:
+   - Find all accommodations in that city
+   - Calculate number of nights (from flight dates)
+   - Calculate total cost:
+     * Flight total_true_cost * 4 people
+     * Accommodation price_per_night * num_nights
+     * Estimated food: €100/day * num_nights (adjustable)
+     * Total = flights + accommodation + food
+
+2. Create TripPackage objects:
+   {
+     'package_type': 'family',
+     'flights': [flight_id1, flight_id2, ...],
+     'accommodation_id': acc_id,
+     'destination_city': 'Lisbon',
+     'travel_dates': {start, end},
+     'total_price': 1250.00,
+     'price_breakdown': {...},
+     'created_at': now
+   }
+
+3. Filter packages:
+   - Total price < user's max_budget (from preferences)
+   - Dates align with school holidays
+   - Minimum 3 nights, maximum 10 nights
+
+4. Save top packages (by price) to trip_packages table
+
+Include logging of all combinations considered.
+```
+
+**Estimated Time**: 3-4 hours
+**Dependencies**: Tasks 2.4, 3.1, 3.2
+**Verification**: Generates 20+ trip packages for various destinations
+
+---
+
+## **MODULE 4: EVENT DISCOVERY**
+
+### **Task 4.1: EventBrite API Integration**
+**Delegable to Claude Code**: ✅ **MEDIUM PRIORITY**
+
+**Acceptance Criteria:**
+- Search events by location and date range
+- Categorize events (family, cultural, parent-escape)
+- Store with relevance placeholder (AI scores later)
+
+**Claude Code Prompt:**
+```
+Build EventBrite event discovery:
+
+Class: EventBriteClient
+Methods:
+- search_events(city, date_range, categories)
+- parse_event(event_data) -> Event
+- categorize_event(event) -> str (family|parent_escape|cultural|sports)
+
+Requirements:
+- EventBrite API authentication (free tier)
+- Search categories:
+  * Family: "Family & Education", "Kids & Family"
+  * Parent escape: "Food & Drink", "Music", "Nightlife"
+  * Cultural: "Arts", "Museums", "Theatre"
+- Date range: ±7 days around potential trip dates
+- Extract:
+  * Title, description, date, venue
+  * Price (free, <€20, €20-50, €50+)
+  * Age restrictions
+  * URL, image
+
+Basic categorization logic (AI will refine later):
+- "family" if: has "kids", "children", "family" in title/description
+- "parent_escape" if: evening events (after 8pm), has alcohol, "adults only"
+- Otherwise: "cultural"
+
+Store in events table with ai_relevance_score = NULL (to be filled by AI later)
+```
+
+**Estimated Time**: 3-4 hours
+**Dependencies**: Task 1.2
+**Verification**: Retrieves 50+ events for LIS in December 2025
+
+---
+
+### **Task 4.2: Local Tourism Board Scraper**
+**Delegable to Claude Code**: ✅ **LOW PRIORITY** (Can be done later)
+
+**Acceptance Criteria:**
+- Scrapes official tourism sites for special events
+- Focuses on family-friendly activities
+- Handles multiple languages (EN, DE)
+
+**Claude Code Prompt:**
+```
+Create tourism board event scraper for major destinations:
+
+Target sites:
+- Lisbon: visitlisboa.com
+- Barcelona: barcelonaturisme.com
+- Prague: prague.eu
+- Porto: visitporto.travel
+(Add more as needed)
+
+Class: TourismBoardScraper
+Methods:
+- scrape_destination(city) -> List[Event]
+- parse_event_page(url) -> Event
+
+Requirements:
+- Use Playwright for JavaScript-heavy sites
+- Look for: festivals, special exhibitions, seasonal events
+- Extract same Event format as EventBrite
+- Handle pagination
+- Cache results (events don't change hourly)
+- Source: 'tourism_board_{city}'
+
+Lower priority - can start with just EventBrite initially.
+```
+
+**Estimated Time**: 6-8 hours
+**Dependencies**: Task 1.2
+**Verification**: Scrapes events from 3 cities successfully
+
+---
+
+## **MODULE 5: AI ANALYSIS ENGINE**
+
+### **Task 5.1: Claude API Integration Foundation**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Claude API client wrapper
+- Prompt template management
+- Response parsing and validation
+- Cost tracking
+- Caching for duplicate requests
+
+**Claude Code Prompt:**
+```
+Create a robust Claude API integration layer:
+
+Class: ClaudeClient
+Methods:
+- analyze_deal(trip_package, historical_data) -> DealAnalysis
+- score_event(event, user_context) -> EventScore
+- generate_itinerary(destination, days, family_context) -> Itinerary
+- analyze_parent_escape(destination, events, budget) -> EscapeAnalysis
+
+Core features:
+1. API Management:
+   - Use anthropic SDK
+   - Model: claude-sonnet-4-20250514
+   - Timeout: 30 seconds
+   - Retry logic: 3 attempts with exponential backoff
+
+2. Prompt Templates:
+   - Store prompts in /app/ai/prompts/ as .txt files
+   - Use Jinja2 for variable substitution
+   - Version prompts (v1, v2, etc.)
+   - Log which prompt version was used
+
+3. Response Parsing:
+   - Request JSON responses from Claude
+   - Validate JSON structure with Pydantic models
+   - Handle cases where Claude doesn't return valid JSON
+   - Extract and clean responses
+
+4. Cost Tracking:
+   - Log every API call: timestamp, prompt tokens, completion tokens, cost
+   - Store in `api_usage` table: (id, timestamp, operation, input_tokens, output_tokens, cost_usd)
+   - Method: get_monthly_cost() -> float
+   - Alert if cost exceeds budget
+
+5. Caching:
+   - Use Redis for caching responses
+   - Cache key: hash(prompt_template + data)
+   - TTL: 24 hours for deal analysis, 7 days for static content
+   - Reduces costs by ~60-70%
+
+6. Error Handling:
+   - API errors: retry with backoff
+   - Invalid JSON: attempt to fix or extract partial data
+   - Rate limits: queue requests
+   - Fallback: return None with error logged
+
+Include comprehensive logging and example usage for each method.
+```
+
+**Estimated Time**: 4-5 hours
+**Dependencies**: Task 1.1
+**Verification**: Successfully makes API calls, parses responses, tracks costs
+
+---
+
+### **Task 5.2: Deal Scoring System**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Analyzes trip packages with Claude
+- Scores 0-100 based on multiple factors
+- Provides reasoning
+- Stores results in database
+
+**Claude Code Prompt:**
+```
+Implement the deal scoring system using Claude:
+
+Class: DealScorer
+Methods:
+- score_package(trip_package) -> ScoredPackage
+- get_historical_context(route, dates) -> HistoricalData
+- should_notify(scored_package, user_prefs) -> bool
+
+Flow:
+1. Get historical context:
+   - Query price_history for this route
+   - Calculate: avg_price, min_price, max_price, price_trend
+   - Get school holiday info for dates
+   - Find any special events in destination
+
+2. Build prompt for Claude:
+   Template: /app/ai/prompts/deal_scorer_v1.txt
+   Variables:
+   - trip_package details (destination, dates, prices)
+   - historical_context
+   - user preferences (interests, budget sensitivity)
+   - events happening during trip
+
+3. Claude analyzes and returns JSON:
+   {
+     "overall_score": 85,
+     "value_score": 90,  // Price vs historical
+     "timing_score": 80,  // School holiday alignment, events
+     "family_score": 85,  // Kid-friendliness
+     "recommendation": "book_now|consider|wait|skip",
+     "confidence": 0.85,
+     "reasoning": "...",
+     "price_analysis": "...",
+     "hidden_costs_warning": "...",
+     "alternative_suggestions": [...]
+   }
+
+4. Store analysis:
+   - Update trip_packages.ai_score = overall_score
+   - Update trip_packages.ai_reasoning = reasoning
+   - Update trip_packages.notified = False (ready for notification)
+
+5. Notification decision:
+   - Notify if: overall_score >= user.notification_threshold (default 75)
+   - AND: recommendation in ['book_now', 'consider']
+   - AND: not already notified
+
+Prompt engineering tips:
+- Give Claude historical price data for context
+- Ask for structured JSON output
+- Request confidence scores
+- Prompt for potential issues/warnings
+
+Include unit tests with mocked Claude responses.
+```
+
+**Estimated Time**: 4-5 hours
+**Dependencies**: Tasks 3.3, 5.1
+**Verification**: Scores 10 packages, identifies 2-3 as "outstanding deals"
+
+---
+
+### **Task 5.3: Event Relevance Scorer**
+**Delegable to Claude Code**: ✅ **MEDIUM PRIORITY**
+
+**Acceptance Criteria:**
+- Scores events 0-10 for user relevance
+- Categorizes: family, parent_escape, or skip
+- Updates events table with scores
+
+**Claude Code Prompt:**
+```
+Create event relevance scoring:
+
+Class: EventScorer
+Method: score_events(destination, date_range) -> None
+
+Process:
+1. Get all events for destination in date_range with ai_relevance_score IS NULL
+
+2. Batch events (10 at a time) and send to Claude:
+   Prompt: /app/ai/prompts/event_scorer_v1.txt
+
+   Claude receives:
+   - Event details (title, description, date, price)
+   - User context (family with kids 3&6, interests: culture, nature, food)
+   - Trip dates
+
+   Claude returns for each event:
+   {
+     "event_id": "...",
+     "relevance_score": 7,
+     "category": "family_event",  // or parent_escape, skip
+     "age_appropriate": true,
+     "timing_fit": "perfect",  // perfect, good, poor
+     "reasoning": "...",
+     "suggested_for": "whole_family"  // or parents_only, skip
+   }
+
+3. Update events table:
+   - ai_relevance_score = relevance_score
+   - category = category (update from basic categorization)
+
+4. Filtering logic:
+   - Include in trip package if relevance_score >= 6
+   - Prioritize score 9-10 events in notifications
+
+Optimization:
+- Process events in batches to reduce API calls
+- Cache scores (events rarely change attributes)
+- Update scores monthly or when event details change
+Estimated Time: 3-4 hours
+Dependencies: Tasks 4.1, 5.1
+Verification: Scores 100 events, correctly categorizes family vs. adult events
+
+Task 5.4: Itinerary Generator
+Delegable to Claude Code: ✅ MEDIUM PRIORITY
+
+Acceptance Criteria:
+
+Generates 3-day itineraries for destinations
+Includes events, restaurants, kid-friendly activities
+Considers nap times and pacing
+Stores as JSON in trip_packages
+Claude Code Prompt:
+
+Build itinerary generation system:
+
+Class: ItineraryGenerator
+Method: generate(destination, dates, events, accommodation) -> Itinerary
+
+Process:
+1. Gather context:
+   - Destination info (from web search or database)
+   - Relevant events (from events table, score >= 6)
+   - Accommodation location
+   - Weather forecast (optional, nice to have)
+   - Kid-friendly attractions (playgrounds, museums)
+
+2. Prompt Claude:
+   Template: /app/ai/prompts/itinerary_generator_v1.txt
+
+   Context:
+   - Family: 2 adults, kids ages 3 & 6
+   - Travel dates: {dates}
+   - Accommodation: {accommodation.name} in {neighborhood}
+   - Budget: €100-150/day for activities + food
+   - Interests: culture, nature, local food
+   - Constraints:
+     * Nap time needed 2-4pm for younger child
+     * Max walking: 30 minutes between activities
+     * Need kid-friendly restaurants
+   - Events available: {events_list}
+
+   Claude generates day-by-day plan:
+   {
+     "day_1": {
+       "morning": {
+         "time": "9:00-12:00",
+Continue
+
+json
+         "activity": "Visit Oceanário de Lisboa",
+         "description": "...",
+         "kid_friendly": true,
+         "cost": 25,
+         "booking_needed": false,
+         "tips": "Arrive at opening to avoid crowds"
+       },
+       "lunch": {
+         "time": "12:30",
+         "restaurant": "Time Out Market",
+         "why": "Indoor food court, many options, high chairs available",
+         "cost": 40
+       },
+       "afternoon": {
+         "time": "14:00-16:00",
+         "activity": "Nap/rest at accommodation or stroller nap in Parque das Nações",
+         "description": "..."
+       },
+       "evening": {
+         "time": "17:00-19:00",
+         "activity": "Explore Alfama neighborhood",
+         "kid_friendly": true,
+         "cost": 0
+       },
+       "dinner": {
+         "time": "19:30",
+         "restaurant": "...",
+         "cost": 50
+       }
+     },
+     "day_2": {...},
+     "day_3": {...},
+     "total_estimated_cost": 450,
+     "packing_tips": ["Stroller for younger child", "..."],
+     "local_tips": ["..."]
+   }
+
+3. Store itinerary:
+   - Save as JSON in trip_packages.itinerary_json
+   - Include in notification emails
+
+4. Quality checks:
+   - Each day has 3-4 activities max (avoid over-scheduling)
+   - Lunch/dinner every day
+   - Nap time protected
+   - Activities are nearby (use geolocation)
+   - Mix of free and paid activities
+   - Weather backup suggestions
+
+Include formatting for beautiful email/notification display.
+```
+
+**Estimated Time**: 4-5 hours
+**Dependencies**: Tasks 5.1, 5.2
+**Verification**: Generates realistic 3-day itinerary for Lisbon family trip
+
+---
+
+### **Task 5.5: Parent Escape Analyzer**
+**Delegable to Claude Code**: ✅ **MEDIUM PRIORITY**
+
+**Acceptance Criteria:**
+- Identifies romantic getaway opportunities
+- Focuses on unique timing (special events, seasons)
+- Analyzes train accessibility
+- Suggests kid-care solutions
+- Separate scoring from family trips
+
+**Claude Code Prompt:**
+```
+Create Parent Escape analysis system:
+
+Class: ParentEscapeAnalyzer
+Methods:
+- find_opportunities(date_range) -> List[EscapeOpportunity]
+- analyze_destination(city, dates, events) -> EscapeScore
+
+Criteria for parent escapes:
+1. Destinations:
+   - Train-accessible from Munich (max 6 hours)
+   - Romantic cities: Vienna, Venice, Paris, Prague, Budapest
+   - Wine regions: Bordeaux, Tuscany, Rhine Valley, Porto
+   - Spa destinations: Baden-Baden, Lake Como, Budapest
+   - Cultural hubs: Salzburg (festival season), Edinburgh (Fringe)
+
+2. Duration: 2-3 nights maximum
+
+3. Special timing factors (why go NOW vs. later):
+   - Wine harvest season
+   - Special exhibitions (limited run)
+   - Concerts/festivals (one-time events)
+   - Restaurant reservations (Michelin, hard to get)
+   - Seasonal beauty (tulips, autumn colors)
+   - Hotel deals (off-season luxury)
+
+Process:
+1. Query flights for "adult-friendly" destinations
+   - Filter: short trips (2-3 nights)
+   - Dates: Friday-Sunday or any 3-day window
+   - Price: <€200/person (adults willing to pay more for quality)
+
+2. Find special events:
+   - Query events table: category='parent_escape'
+   - Look for: wine tastings, concerts, spa packages
+   - Check restaurant reservation availability (OpenTable API?)
+
+3. Prompt Claude:
+   Template: /app/ai/prompts/parent_escape_v1.txt
+
+   Context:
+   - Destination: {city}
+   - Dates: {dates}
+   - Flight cost: {price}
+   - Train option: {train_details} (if available)
+   - Hotels: {luxury_hotel_options}
+   - Special events: {events}
+   - Season/weather: {season}
+
+   Claude analyzes:
+   {
+     "escape_score": 92,
+     "romantic_factor": 95,
+     "uniqueness_score": 90,  // Why NOW vs. later?
+     "relaxation_score": 85,
+     "value_score": 80,
+     "recommendation": "book_immediately|consider|wait",
+     "confidence": 0.9,
+     "headline": "Truffle Season in Tuscany + Brunello Wine Tasting",
+     "why_now": "October truffle season, exclusive wine harvest tour",
+     "itinerary_highlights": {
+       "day_1": "Arrive in Siena, wine estate dinner",
+       "day_2": "Truffle hunting morning, spa afternoon, Michelin dinner",
+       "day_3": "Medieval town exploration, return"
+     },
+     "kid_care_solution": "Grandparents visit for weekend, kids love spending time with Oma and Opa",
+     "total_cost": 650,  // Including flights, hotel, experiences
+     "why_worth_it": "Once-a-year experience, truffle season only October-November",
+     "booking_urgency": "high"  // Truffle tours book out fast
+   }
+
+4. Create separate trip_packages:
+   - package_type = 'parent_escape'
+   - Store in same table but flag differently
+   - Separate notification channel
+
+5. Notification triggers:
+   - escape_score >= 85
+   - High uniqueness_score (event/season specific)
+   - booking_urgency = 'high'
+
+Focus on QUALITY over quantity - better to alert for 1 amazing opportunity per month than 10 mediocre ones.
+```
+
+**Estimated Time**: 4-5 hours
+**Dependencies**: Task 5.1
+**Verification**: Identifies 3 high-quality parent escape opportunities, explains uniqueness
+
+---
+
+## **MODULE 6: NOTIFICATION SYSTEM**
+
+### **Task 6.1: Firebase Push Notification Setup**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Firebase Cloud Messaging integration
+- Device token registration
+- Rich notifications with images and actions
+- Notification history tracking
+
+**Claude Code Prompt:**
+```
+Set up Firebase Cloud Messaging for push notifications:
+
+Requirements:
+1. Firebase Setup:
+   - Create Firebase project (provide instructions in README)
+   - Generate service account key
+   - Add FCM configuration to .env
+
+2. Class: NotificationService
+   Methods:
+   - register_device(user_id, device_token, platform) -> None
+   - send_deal_alert(trip_package, device_tokens) -> bool
+   - send_parent_escape_alert(escape_package, device_tokens) -> bool
+   - send_daily_digest(user_id) -> bool
+
+3. Notification Formats:
+
+   Family Trip Alert:
+   {
+     "title": "🎉 Amazing Deal: Lisbon €890 (Dec 20-27)",
+     "body": "7 nights, beachfront apartment, Christmas markets. Score: 87/100",
+     "image": accommodation_image_url,
+     "data": {
+       "type": "family_deal",
+       "package_id": 123,
+       "score": 87,
+       "destination": "Lisbon",
+       "total_cost": 890,
+       "dates": "Dec 20-27"
+     },
+     "actions": [
+       {"label": "View Details", "action": "open_package"},
+       {"label": "Book Now", "action": "open_booking"}
+     ]
+   }
+
+   Parent Escape Alert:
+   {
+     "title": "💕 Parent Escape: Vienna Opera Weekend",
+     "body": "Romantic weekend, Vienna Philharmonic + spa hotel. €520 for 2.",
+     "image": hotel_image_url,
+     "data": {
+       "type": "parent_escape",
+       "package_id": 456,
+       "score": 92,
+       "destination": "Vienna",
+       "why_special": "One-night-only opera performance"
+     },
+     "actions": [...]
+   }
+
+4. Database table: notifications
+   - id, user_id, package_id, package_type, sent_at, read_at, clicked
+
+5. Delivery logic:
+   - Send immediately when high-score deal found
+   - Batch lower scores for daily digest
+   - Respect quiet hours (no notifications 10pm-8am)
+   - Max 3 notifications per day per user
+
+6. Error handling:
+   - Invalid device tokens (remove from DB)
+   - FCM quota limits (queue and retry)
+   - Failed deliveries (log for debugging)
+
+Include:
+- Device token management (register/unregister)
+- Notification scheduling
+- Testing utilities (send test notification)
+```
+
+**Estimated Time**: 4-5 hours
+**Dependencies**: Task 1.2
+**Verification**: Sends test notification to registered device, includes image and actions
+
+---
+
+### **Task 6.2: Email Notification System**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Beautiful HTML email templates
+- Daily digest functionality
+- Immediate alerts for outstanding deals
+- Booking links and itinerary included
+
+**Claude Code Prompt:**
+```
+Build email notification system:
+
+Class: EmailService
+Methods:
+- send_deal_alert(user, trip_package) -> bool
+- send_parent_escape_alert(user, escape_package) -> bool
+- send_daily_digest(user, deals_today) -> bool
+- send_weekly_summary(user, week_data) -> bool
+
+Requirements:
+1. Email provider:
+   - Use SendGrid (free tier: 100 emails/day) or
+   - Amazon SES (very cheap, ~$0.10/1000 emails) or
+   - Gmail SMTP (simplest for development)
+   - Configurable via .env
+
+2. HTML Email Templates:
+   - Use Jinja2 templating
+   - Responsive design (mobile-friendly)
+   - Beautiful layout with images
+   - Clear CTAs (View Details, Book Now)
+
+   Templates to create:
+   a) Deal Alert Email:
+      - Hero image of destination
+      - Price breakdown table
+      - AI reasoning summary
+      - 3-day itinerary preview
+      - Booking links for flights and accommodation
+      - "Why this is a great deal" section
+
+   b) Parent Escape Email:
+      - Romantic header design
+      - "Why Now" section prominent
+      - Hotel/restaurant highlights
+      - Kid-care suggestions
+      - Urgent booking reminder if needed
+
+   c) Daily Digest:
+      - Summary of 3-5 deals found today
+      - Ranked by AI score
+      - Quick view cards for each
+      - "View All Deals" link to dashboard
+
+   d) Weekly Summary:
+      - Destinations monitored
+      - Best deal of the week
+      - Price trend graphs (optional)
+      - Upcoming school holidays reminder
+
+3. Email content generation:
+   - Use Claude to generate engaging subject lines
+   - Personalize based on user preferences
+   - A/B test subject lines for open rates
+
+4. Tracking:
+   - Log all emails sent (email_log table)
+   - Track opens (tracking pixel)
+   - Track clicks (UTM parameters)
+   - Unsubscribe handling
+
+5. Delivery rules:
+   - Deal alerts: Immediate (within 5 min of scoring)
+   - Daily digest: 7am user local time
+   - Weekly summary: Sunday 10am
+   - Respect user notification preferences
+
+6. Anti-spam:
+   - Unsubscribe link in footer (legal requirement)
+   - Preference center link
+   - Clear sender info
+   - Avoid spam trigger words
+
+Include:
+- Plain text fallback for each HTML template
+- CSS inlined for email clients
+- Test email utility
+- Template preview in browser
+```
+
+**Estimated Time**: 5-6 hours
+**Dependencies**: Task 1.1
+**Verification**: Sends beautiful email with deal, includes itinerary and booking links
+
+---
+
+### **Task 6.3: Notification Orchestrator**
+**Delegable to Claude Code**: ✅ **MEDIUM PRIORITY**
+
+**Acceptance Criteria:**
+- Decides when to notify users
+- Manages notification frequency
+- Prevents notification fatigue
+- Logs all notification decisions
+
+**Claude Code Prompt:**
+```
+Create intelligent notification orchestrator:
+
+Class: NotificationOrchestrator
+Methods:
+- process_new_package(trip_package) -> NotificationDecision
+- check_should_notify(package, user) -> bool
+- send_notifications(package, channels) -> NotificationResult
+
+Logic:
+1. When new scored package created:
+   - Get user preferences
+   - Apply notification rules
+   - Decide: immediate_alert | daily_digest | skip
+
+2. Notification Rules:
+
+   Immediate Alert if ALL true:
+   - ai_score >= user.notification_threshold (default 75)
+   - recommendation in ['book_now', 'consider']
+   - uniqueness_factor > 0.7 (limited availability, special event)
+   - time_sensitivity: booking_urgency = 'high'
+   - not notified_recently (no alert in last 6 hours for same destination)
+
+   Daily Digest if:
+   - ai_score >= 70 but doesn't meet immediate criteria
+   - OR: accumulate 3+ decent deals (score 65-74)
+
+   Skip if:
+   - ai_score < 65
+   - destination in user.avoid_destinations
+   - dates outside school holidays (for family trips)
+   - price > user max budget
+   - already notified for very similar trip
+
+3. Channel Selection:
+   channels = []
+   if immediate_alert:
+       channels = ['push', 'email']
+   if daily_digest:
+       channels = ['email']  # Only email for digests
+
+   For parent_escape:
+       channels = ['email', 'push'] if score >= 85 else ['email']
+
+4. Frequency Control:
+   - Max 3 immediate alerts per day
+   - Max 1 daily digest per day (duh)
+   - If over limit, queue for next digest
+   - Track in notification_frequency table:
+     (user_id, date, immediate_count, digest_sent)
+
+5. Notification Content Customization:
+   - Use Claude to generate personalized message
+   - Reference user's interests in copy
+   - Adjust tone based on package type (exciting vs. romantic)
+
+6. Logging:
+   - Log every decision: (package_id, decision, reasoning, timestamp)
+   - Track: sent, opened, clicked, converted (booked)
+   - Feedback loop: adjust thresholds if low engagement
+
+7. User Feedback Integration:
+   - "Was this helpful?" in each notification
+   - Thumbs up/down
+   - "Don't show me X again"
+   - Use feedback to refine future notifications
+
+Example decision log:
+{
+  "package_id": 123,
+  "decision": "immediate_alert",
+  "reasoning": "Score 87, Christmas markets (limited time), price 30% below average",
+  "channels": ["push", "email"],
+  "sent_at": "2025-11-15T14:23:00Z",
+  "opened_at": "2025-11-15T15:10:00Z",
+  "clicked": true,
+  "converted": false
+}
+```
+
+**Estimated Time**: 4-5 hours
+**Dependencies**: Tasks 6.1, 6.2
+**Verification**: Correctly decides immediate vs. digest, respects frequency limits
+
+---
+
+## **MODULE 7: SCHEDULING & ORCHESTRATION**
+
+### **Task 7.1: Celery Task Setup**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Celery worker configuration
+- Redis as message broker
+- Scheduled tasks for scraping
+- Task monitoring and retries
+
+**Claude Code Prompt:**
+```
+Set up Celery for scheduled task execution:
+
+Requirements:
+1. Celery Configuration:
+   - Redis as broker and result backend
+   - Multiple queues: scraping, analysis, notifications
+   - Concurrency: 4 workers
+   - Task routing by priority
+
+2. Task Definitions:
+
+   File: /app/tasks/data_collection.py
+
+   @celery.task(name='scrape_flights')
+   def scrape_flights_task():
+       """Run every 6 hours"""
+       orchestrator = FlightOrchestrator()
+       destinations = get_active_destinations()
+       date_ranges = get_upcoming_holidays()
+       results = orchestrator.scrape_all(AIRPORTS, destinations, date_ranges)
+       return {"flights_found": len(results), "timestamp": now()}
+
+   @celery.task(name='scrape_accommodations')
+   def scrape_accommodations_task():
+       """Run every 12 hours"""
+       # For each destination with upcoming flights
+       # Scrape Booking.com and Airbnb
+
+   @celery.task(name='scrape_events')
+   def scrape_events_task():
+       """Run daily"""
+       # EventBrite + tourism boards
+
+   @celery.task(name='analyze_deals')
+   def analyze_deals_task():
+       """Run every hour"""
+       # Find unscored trip_packages
+       # Score with AI
+       # Generate itineraries for high-scoring ones
+
+   @celery.task(name='send_notifications')
+   def send_notifications_task():
+       """Run every 15 minutes"""
+       # Find packages ready for notification
+       # Send via NotificationOrchestrator
+
+   @celery.task(name='daily_digest')
+   def daily_digest_task():
+       """Run daily at 7am"""
+       # Compile daily digest
+       # Send to all active users
+
+   @celery.task(name='cleanup_old_data')
+   def cleanup_old_data_task():
+       """Run weekly"""
+       # Delete flights older than 30 days
+       # Archive old notifications
+
+3. Celery Beat Schedule:
+
+   from celery.schedules import crontab
+
+   beat_schedule = {
+       'scrape-flights': {
+           'task': 'scrape_flights',
+           'schedule': crontab(hour='*/6'),  # Every 6 hours
+           'options': {'queue': 'scraping'}
+       },
+       'scrape-accommodations': {
+           'task': 'scrape_accommodations',
+           'schedule': crontab(hour='*/12'),
+           'options': {'queue': 'scraping'}
+       },
+       'scrape-events': {
+           'task': 'scrape_events',
+           'schedule': crontab(hour=3, minute=0),  # 3am daily
+           'options': {'queue': 'scraping'}
+       },
+       'analyze-deals': {
+           'task': 'analyze_deals',
+           'schedule': crontab(minute='*/60'),  # Every hour
+           'options': {'queue': 'analysis'}
+       },
+       'send-notifications': {
+           'task': 'send_notifications',
+           'schedule': crontab(minute='*/15'),  # Every 15 min
+           'options': {'queue': 'notifications'}
+       },
+       'daily-digest': {
+           'task': 'daily_digest',
+           'schedule': crontab(hour=7, minute=0),  # 7am
+           'options': {'queue': 'notifications'}
+       },
+       'cleanup': {
+           'task': 'cleanup_old_data',
+           'schedule': crontab(day_of_week=0, hour=2),  # Sunday 2am
+           'options': {'queue': 'maintenance'}
+       }
+   }
+
+4. Task Monitoring:
+   - Use Flower for web-based monitoring
+   - Log task start/complete/failure
+   - Alert on consecutive failures
+   - Track task duration
+
+5. Error Handling:
+   - Retry failed tasks: max_retries=3, exponential backoff
+   - Dead letter queue for permanent failures
+   - Admin notifications on critical failures
+
+6. Rate Limiting:
+   - Limit API-heavy tasks: @task(rate_limit='10/m')
+   - Prevent API quota exhaustion
+
+Docker Compose addition:
+```yaml
+services:
+  redis:
+    image: redis:7-alpine
+
+  celery_worker:
+    build: .
+    command: celery -A app.celery worker --loglevel=info
+    depends_on:
+      - redis
+      - postgres
+
+  celery_beat:
+    build: .
+    command: celery -A app.celery beat --loglevel=info
+    depends_on:
+      - redis
+
+  flower:
+    build: .
+    command: celery -A app.celery flower
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+```
+
+Include:
+- Celery configuration file
+- Task testing utilities
+- Monitoring setup instructions
+```
+
+**Estimated Time**: 4-5 hours
+**Dependencies**: Tasks 2.4, 3.3, 5.2, 6.3
+**Verification**: Tasks run on schedule, visible in Flower dashboard
+
+---
+
+### **Task 7.2: Smart Scheduling Logic**
+**Delegable to Claude Code**: ✅ **MEDIUM PRIORITY**
+
+**Acceptance Criteria:**
+- Dynamic scheduling based on demand
+- Prioritize routes with better deals
+- Reduce unnecessary scraping
+- Cost optimization
+
+**Claude Code Prompt:**
+```
+Create intelligent scheduling system:
+
+Class: SmartScheduler
+Methods:
+- prioritize_routes() -> List[Route]
+- adjust_scraping_frequency(route) -> int  # hours between scrapes
+- should_scrape_now(route) -> bool
+
+Logic:
+1. Route Prioritization:
+   - Track success rate per route (deals found / scrapes)
+   - High success routes (>20%): scrape every 4 hours
+   - Medium success (5-20%): scrape every 8 hours
+   - Low success (<5%): scrape every 24 hours
+   - No deals in 7 days: scrape every 48 hours
+
+2. Seasonal Adjustments:
+   - 2 months before major holiday: increase frequency
+   - Off-season: decrease frequency
+   - School holiday periods: maximum frequency
+
+3. Price Volatility Detection:
+   - If prices dropping: scrape more often
+   - If prices stable: scrape less often
+   - Track: price_volatility = std_dev(last_7_days_prices)
+   - High volatility: scrape every 4 hours
+
+4. Budget-Based Optimization:
+   - Track API costs per route
+   - If over monthly budget: reduce frequency across all routes
+   - Priority routes: never reduce below 12 hours
+
+5. Event-Driven Scraping:
+   - When special event added: immediate scrape for that destination
+   - When user adds new destination preference: immediate scrape
+   - After successful booking: reduce that route temporarily
+
+6. Database: route_metrics table
+   (route_id, last_scraped, deals_found_30d, total_scrapes_30d,
+    success_rate, price_volatility, scrape_frequency_hours, priority)
+
+7. Dynamic Schedule Updates:
+   - Celery beat schedules can't be changed dynamically easily
+   - Instead: scrape_flights_task checks SmartScheduler.should_scrape_now()
+   - Skip routes that shouldn't be scraped yet
+   - Log: "Skipped MUC→LIS, last scraped 2 hours ago, next scrape in 2 hours"
+
+Example logic:
+```python
+def should_scrape_now(route):
+    metrics = get_route_metrics(route)
+    hours_since_last = (now() - metrics.last_scraped).hours
+
+    # Dynamic frequency based on success
+    required_frequency = calculate_required_frequency(metrics)
+
+    # Special cases
+    if is_near_holiday(route.destination):
+        required_frequency = max(required_frequency, 4)
+
+    if metrics.price_volatility > 0.3:
+        required_frequency = max(required_frequency, 6)
+
+    return hours_since_last >= required_frequency
+
+def calculate_required_frequency(metrics):
+    success_rate = metrics.deals_found_30d / metrics.total_scrapes_30d
+
+    if success_rate > 0.20:
+        return 4  # Every 4 hours
+    elif success_rate > 0.10:
+        return 8
+    elif success_rate > 0.05:
+        return 12
+    else:
+        return 24
+```
+
+This reduces API costs by ~40-60% while maintaining high deal discovery rate.
+```
+
+**Estimated Time**: 3-4 hours
+**Dependencies**: Task 7.1
+**Verification**: Routes scraped at different frequencies based on performance
+
+---
+
+## **MODULE 8: WEB DASHBOARD**
+
+### **Task 8.1: FastAPI Backend API**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- RESTful API for dashboard
+- User preferences management
+- Deal browsing and filtering
+- Authentication (simple, for MVP)
+
+**Claude Code Prompt:**
+```
+Create FastAPI backend for web dashboard:
+
+File: /app/api/main.py
+
+Endpoints needed:
+
+1. Deals & Packages:
+   GET /api/deals/family
+   - Query params: min_score, destination, date_range, max_price
+   - Returns: List[TripPackage] with flights, accommodation, events, AI analysis
+
+   GET /api/deals/parent-escape
+   - Returns parent escape opportunities
+
+   GET /api/deals/{package_id}
+   - Returns full package details including itinerary
+
+   GET /api/deals/history
+   - Returns past notifications and deals
+
+2. Preferences:
+   GET /api/preferences
+   - Returns current user preferences
+
+   PUT /api/preferences
+   - Update preferences: destinations, budget, interests, notification_threshold
+
+   POST /api/preferences/destinations/add
+   - Add destination to watchlist
+
+   DELETE /api/preferences/destinations/{city}
+   - Remove destination
+
+3. Analytics:
+   GET /api/analytics/price-trends
+   - Route: MUC→LIS, date_range
+   - Returns historical price data for charting
+
+   GET /api/analytics/destinations
+   - Returns stats per destination: avg_price, deal_count, last_deal
+
+   GET /api/analytics/savings
+   - Calculate total saved vs. average prices
+
+4. Notifications:
+   GET /api/notifications
+   - Returns notification history
+
+   POST /api/notifications/register-device
+   - Register FCM device token
+
+   PUT /api/notifications/preferences
+   - Update notification settings
+
+5. School Holidays:
+   GET /api/holidays
+   - Returns Bavaria school holidays for next 12 months
+
+6. System:
+   GET /api/health
+   - Health check: DB, Redis, Celery workers
+
+   GET /api/stats
+   - System stats: deals_today, scrapes_today, api_cost_today
+
+Authentication (Simple for MVP):
+- API key in header: X-API-Key
+- Store keys in database: api_keys table
+- For MVP: single user, hardcoded key
+- Later: proper OAuth/JWT
+
+Middleware:
+- CORS for frontend
+- Request logging
+- Rate limiting (per IP)
+- Error handling (return consistent JSON errors)
+
+Response format:
+{
+  "success": true,
+  "data": {...},
+  "error": null,
+  "timestamp": "2025-11-15T14:30:00Z"
+}
+
+Error format:
+{
+  "success": false,
+  "data": null,
+  "error": {
+    "code": "INVALID_DESTINATION",
+    "message": "Destination 'XYZ' not found"
+  },
+  "timestamp": "..."
+}
+
+Include:
+- Pydantic models for request/response validation
+- OpenAPI documentation (auto-generated by FastAPI)
+- Example requests in README
+```
+
+**Estimated Time**: 5-6 hours
+**Dependencies**: Task 1.2
+**Verification**: All endpoints return valid data, OpenAPI docs accessible at /docs
+
+---
+
+### **Task 8.2: React Dashboard Frontend**
+**Delegable to Claude Code**: ✅ **MEDIUM PRIORITY**
+
+**Acceptance Criteria:**
+- Beautiful, responsive UI
+- Deal browsing and filtering
+- Price trend visualizations
+- Preferences management
+- Mobile-friendly
+
+**Claude Code Prompt:**
+```
+Create React dashboard for SmartFamilyTravelScout:
+
+Tech Stack:
+- React 18 with TypeScript
+- Vite for build tool
+- Tailwind CSS for styling
+- Recharts for price visualizations
+- React Router for navigation
+- React Query for API calls
+- Zustand for state management
+
+Pages needed:
+
+1. Dashboard Home (/):
+   - Hero: "Outstanding Deals Right Now" (top 3 scored packages)
+   - Grid: All current family deals
+   - Sidebar: Upcoming school holidays
+   - Filters: destination, date range, max price, min score
+   - Sort: by score, by price, by date
+
+2. Deal Details (/ deals/:id):
+   - Full package details
+   - Price breakdown (table format)
+   - AI reasoning (prominent display)
+   - 3-day itinerary (beautiful timeline view)
+   - Events happening (cards)
+   - Booking buttons (flights, accommodation)
+   - "Share this deal" functionality
+
+3. Parent Escapes (/parent-escapes):
+   - Romantic theme/colors
+   - Grid of escape opportunities
+   - "Why Now" prominently displayed
+   - Filter by: destination, date, max budget
+
+4. Destinations (/destinations):
+   - Map view of monitored destinations
+   - Click destination → see all deals + price trends
+   - Add/remove destinations from watchlist
+
+5. Price Trends (/trends):
+   - Select route (origin + destination)
+   - Line chart: price over last 90 days
+   - Highlight: current price vs. average
+   - Show: best time to book historically
+
+6. Preferences (/settings):
+   - Max budget sliders (family, parent escape)
+   - Destination preferences (checkboxes)
+   - Interests (tags: culture, nature, food, etc.)
+   - Notification threshold slider (65-100)
+   - Notification channels (push, email, both)
+   - Quiet hours
+
+7. Notification History (/notifications):
+   - List of all past notifications
+   - Mark as read/unread
+   - Click → go to deal details
+   - Stats: open rate, click rate
+
+Design Requirements:
+- Modern, clean aesthetic
+- Color scheme: Blue (trust) + Green (deals/savings)
+- Mobile-responsive (most users will check on phone)
+- Loading states for all async operations
+- Empty states with helpful messages
+- Error boundaries
+- Toast notifications for actions
+
+Key Components:
+```tsx
+<DealCard
+  package={tripPackage}
+  onBookmark={handleBookmark}
+  onShare={handleShare}
+/>
+
+<PriceTrendChart
+  route="MUC-LIS"
+  data={priceHistory}
+  currentPrice={120}
+  averagePrice={180}
+/>
+
+<ItineraryTimeline
+  days={itinerary}
+  interactive={true}
+/>
+
+<FilterPanel
+  onFilterChange={handleFilters}
+  destinations={destinations}
+  dateRange={dateRange}
+/>
+```
+
+API Integration:
+- Use React Query for caching
+- Auto-refresh deals every 5 minutes
+- Optimistic updates for preferences
+- Show loading skeletons (not spinners)
+
+Deployment:
+- Build static site
+- Deploy to Vercel/Netlify (free tier)
+- Or serve from FastAPI (/static)
+
+Include:
+- Comprehensive README with setup instructions
+- Component storybook (optional, nice to have)
+- E2E tests with Playwright (key user flows)
+Estimated Time: 12-16 hours
+Dependencies: Task 8.1
+Verification: Dashboard displays deals, filters work, responsive on mobile
+
+MODULE 9: DEPLOYMENT & MONITORING
+Task 9.1: Production Deployment
+Delegable to Claude Code: ✅ HIGH PRIORITY
+
+Acceptance Criteria:
+
+Railway/Render deployment configuration
+Environment variables management
+Database migrations in production
+SSL/HTTPS setup
+CI/CD pipeline
+Claude Code Prompt:
+
+Set up production deployment on Railway (or Render):
+
+1. Railway Configuration:
+   File: railway.json or railway.toml
+
+   Services to deploy:
+   - Web (FastAPI + frontend)
+   - Worker (Celery worker)
+   - Beat (Celery beat)
+   - Database (PostgreSQL)
+   - Redis
+
+   Each service gets:
+   - Resource limits (512MB RAM for workers)
+   - Environment variables from Railway's secret management
+   - Health checks
+   - Auto-restart on failure
+
+2. Dockerfile optimization:
+   - Multi-stage build (reduce image size)
+   - Install only production dependencies
+   - Use .dockerignore
+   - Cache
+Continue
+
+dockerfile
+   # Example optimized Dockerfile
+   FROM python:3.11-slim as builder
+   WORKDIR /app
+   COPY pyproject.toml poetry.lock ./
+   RUN pip install poetry && poetry export -f requirements.txt --output requirements.txt --without-hashes
+
+   FROM python:3.11-slim
+   WORKDIR /app
+   COPY --from=builder /app/requirements.txt .
+   RUN pip install --no-cache-dir -r requirements.txt
+   COPY . .
+
+   # Playwright browsers (only if needed)
+   RUN playwright install chromium --with-deps
+
+   CMD ["gunicorn", "app.api.main:app", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "-b", "0.0.0.0:8000"]
+```
+
+3. Environment Variables:
+   Create comprehensive .env.production template:
+```
+   # Database
+   DATABASE_URL=postgresql://user:pass@host:5432/dbname
+
+   # Redis
+   REDIS_URL=redis://host:6379/0
+
+   # APIs
+   ANTHROPIC_API_KEY=sk-...
+   SKYSCANNER_API_KEY=...
+   KIWI_API_KEY=...
+   EVENTBRITE_API_KEY=...
+   BOOKING_AFFILIATE_ID=...
+
+   # Email
+   SENDGRID_API_KEY=...
+   SENDER_EMAIL=alerts@smartfamilytravel.com
+
+   # Firebase
+   FIREBASE_SERVICE_ACCOUNT_KEY=...
+
+   # Security
+   API_SECRET_KEY=...
+   ALLOWED_ORIGINS=https://yourdomain.com
+
+   # Feature Flags
+   ENABLE_SCRAPING=true
+   ENABLE_AI_ANALYSIS=true
+   MAX_API_COST_PER_DAY=5.00  # USD
+
+   # Monitoring
+   SENTRY_DSN=...
+Database Migration Strategy:
+Run migrations automatically on deploy (risky) OR
+Manual migration step before deploy (safer)
+Script: /scripts/migrate.sh
+bash
+   #!/bin/bash
+   set -e
+   echo "Running database migrations..."
+   alembic upgrade head
+   echo "Migrations complete"
+Add to Railway: Build Command ./scripts/migrate.sh && gunicorn ...
+
+GitHub Actions CI/CD: File: .github/workflows/deploy.yml
+yaml
+   name: Deploy to Production
+
+   on:
+     push:
+       branches: [main]
+
+   jobs:
+     test:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v3
+         - name: Set up Python
+           uses: actions/setup-python@v4
+           with:
+             python-version: '3.11'
+         - name: Install dependencies
+           run: |
+             pip install poetry
+             poetry install
+         - name: Run tests
+           run: poetry run pytest
+         - name: Run linting
+           run: |
+             poetry run black --check .
+             poetry run isort --check .
+             poetry run mypy .
+
+     deploy:
+       needs: test
+       runs-on: ubuntu-latest
+       if: github.ref == 'refs/heads/main'
+       steps:
+         - uses: actions/checkout@v3
+         - name: Deploy to Railway
+           run: |
+             npm i -g @railway/cli
+             railway up --service web
+           env:
+             RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+Health Checks: Endpoint: /api/health Returns:
+json
+   {
+     "status": "healthy",
+     "timestamp": "2025-11-15T14:30:00Z",
+     "services": {
+       "database": "up",
+       "redis": "up",
+       "celery_worker": "up",
+       "celery_beat": "up"
+     },
+     "metrics": {
+       "deals_today": 23,
+       "scrapes_today": 156,
+       "notifications_sent_today": 8,
+       "api_cost_today": 2.34
+     }
+   }
+```
+
+   Railway monitors this endpoint and restarts if unhealthy
+
+7. SSL/HTTPS:
+   - Railway provides automatic SSL
+   - Configure custom domain in Railway dashboard
+   - Update ALLOWED_ORIGINS in env vars
+
+8. Deployment Checklist:
+   - [ ] All env vars set in Railway
+   - [ ] Database created and accessible
+   - [ ] Redis created
+   - [ ] Run initial migration
+   - [ ] Load seed data (airports, holidays)
+   - [ ] Test health endpoint
+   - [ ] Deploy web service
+   - [ ] Deploy worker service
+   - [ ] Deploy beat service
+   - [ ] Verify Celery tasks running (check Flower)
+   - [ ] Send test notification
+   - [ ] Monitor logs for errors
+   - [ ] Set up custom domain
+   - [ ] Configure DNS
+
+9. Rollback Strategy:
+   - Railway keeps previous deployments
+   - One-click rollback in dashboard
+   - Database rollback: manual (keep backups!)
+
+10. Cost Estimation (Railway):
+    - Database (PostgreSQL 1GB): $5/month
+    - Redis (256MB): $5/month
+    - Web service: $5/month
+    - Worker service: $5/month
+    - Beat service: $5/month
+    - Total: ~$25/month + API costs (~$30-50)
+    - Grand total: ~$55-75/month
+
+Include:
+- Deployment runbook (step-by-step guide)
+- Troubleshooting guide
+- Rollback procedures
+```
+
+**Estimated Time**: 4-6 hours
+**Dependencies**: All previous tasks
+**Verification**: Application accessible at production URL, all services healthy
+
+---
+
+### **Task 9.2: Monitoring & Alerting**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Sentry error tracking
+- Application logs aggregation
+- Performance monitoring
+- Cost tracking dashboard
+- Admin alerts for critical issues
+
+**Claude Code Prompt:**
+Set up comprehensive monitoring:
+
+Sentry Integration:
+Sign up for Sentry (free tier: 5k events/month)
+Install: sentry-sdk
+File: /app/monitoring/sentry.py
+python
+   import sentry_sdk
+   from sentry_sdk.integrations.celery import CeleryIntegration
+   from sentry_sdk.integrations.fastapi import FastApiIntegration
+
+   def init_sentry():
+       sentry_sdk.init(
+           dsn=os.getenv("SENTRY_DSN"),
+           environment=os.getenv("ENVIRONMENT", "production"),
+           traces_sample_rate=0.1,  # 10% of transactions for performance monitoring
+           profiles_sample_rate=0.1,
+           integrations=[
+               FastApiIntegration(),
+               CeleryIntegration()
+           ],
+           before_send=filter_sensitive_data  # Remove API keys from errors
+       )
+Capture key events:
+
+All exceptions
+API failures (Skyscanner, Claude, etc.)
+Scraping failures
+Notification send failures
+Database connection errors
+Structured Logging: File: /app/monitoring/logging_config.py
+python
+   import logging
+   import json
+   from datetime import datetime
+
+   class JSONFormatter(logging.Formatter):
+       def format(self, record):
+           log_data = {
+               "timestamp": datetime.utcnow().isoformat(),
+               "level": record.levelname,
+               "logger": record.name,
+               "message": record.getMessage(),
+               "module": record.module,
+               "function": record.funcName
+           }
+
+           # Add extra fields
+           if hasattr(record, 'user_id'):
+               log_data['user_id'] = record.user_id
+           if hasattr(record, 'package_id'):
+               log_data['package_id'] = record.package_id
+
+           # Add exception info
+           if record.exc_info:
+               log_data['exception'] = self.formatException(record.exc_info)
+
+           return json.dumps(log_data)
+
+   # Configure root logger
+   logger = logging.getLogger()
+   logger.setLevel(logging.INFO)
+
+   handler = logging.StreamHandler()
+   handler.setFormatter(JSONFormatter())
+   logger.addHandler(handler)
+Log important events:
+
+python
+   logger.info("Flight scraping started", extra={
+       "origin": "MUC",
+       "destination": "LIS",
+       "scraper": "skyscanner"
+   })
+
+   logger.info("Deal scored", extra={
+       "package_id": 123,
+       "score": 87,
+       "destination": "Lisbon",
+       "decision": "immediate_alert"
+   })
+
+   logger.error("API call failed", extra={
+       "api": "skyscanner",
+       "error": str(e),
+       "retry_attempt": 2
+   })
+Cost Tracking Dashboard: Table: api_cost_tracking (id, timestamp, service, operation, cost_usd, tokens_used) Track:
+Claude API calls (most expensive)
+Skyscanner API calls
+Kiwi API calls
+Email sends (SendGrid)
+Firebase notifications
+Endpoint: /api/admin/costs Returns:
+json
+   {
+     "today": {
+       "total": 3.45,
+       "by_service": {
+         "claude": 2.10,
+         "skyscanner": 0.50,
+         "kiwi": 0.35,
+         "emails": 0.30,
+         "firebase": 0.20
+       }
+     },
+     "this_month": {
+       "total": 67.80,
+       "projected_total": 102.50,  // Based on daily average
+       "budget": 100.00,
+       "budget_remaining": 32.20
+     },
+     "alerts": [
+       {
+         "type": "warning",
+         "message": "Projected monthly cost ($102.50) exceeds budget ($100)"
+       }
+     ]
+   }
+Cost Alert System:
+
+If daily cost > $5: warning email
+If monthly projected > budget: reduce scraping frequency
+If critical threshold: pause non-essential tasks
+Performance Metrics: Track and expose metrics: Endpoint: /api/admin/metrics
+json
+   {
+     "scraping": {
+       "flights_scraped_today": 1247,
+       "accommodations_scraped_today": 342,
+       "events_scraped_today": 89,
+       "scraping_success_rate": 0.94,
+       "average_scrape_time_seconds": 12.3
+     },
+     "ai_analysis": {
+       "packages_scored_today": 45,
+       "average_score": 68.2,
+       "high_score_count": 12,  // Score >= 80
+       "average_analysis_time_seconds": 4.7
+     },
+     "notifications": {
+       "sent_today": 23,
+       "opened_today": 18,
+       "clicked_today": 8,
+       "open_rate": 0.78,
+       "click_rate": 0.35
+     },
+     "deals": {
+       "active_packages": 87,
+       "average_price": 945.00,
+       "cheapest_deal": {
+         "destination": "Porto",
+         "price": 520.00,
+         "score": 91
+       }
+     },
+     "system": {
+       "celery_queue_length": 5,
+       "database_connections": 8,
+       "redis_memory_mb": 45.2,
+       "uptime_hours": 168.5
+     }
+   }
+```
+
+5. Admin Alerts:
+   Send email/SMS to admin when:
+   - Service down (health check fails 3x)
+   - Daily cost exceeds $10
+   - Scraping success rate < 80%
+   - Claude API error rate > 10%
+   - Database connection errors
+   - Celery worker died
+   - No deals found in 48 hours (something's wrong)
+
+   Use: Twilio for SMS alerts (critical only)
+
+6. Grafana Dashboard (Optional, Nice to Have):
+   - If using Railway: built-in metrics
+   - If self-hosting: set up Prometheus + Grafana
+   - Visualize:
+     * API costs over time
+     * Deal scores distribution
+     * Scraping success rates
+     * Notification open/click rates
+     * System resource usage
+
+7. Database Query Performance:
+   - Log slow queries (>500ms)
+   - Add indexes based on slow query log
+   - Monitor table sizes
+   - Set up automated vacuuming
+
+8. Weekly Health Report:
+   Automated email every Monday with:
+   - Deals found last week
+   - Top destinations
+   - Cost summary
+   - System performance
+   - Action items (if any)
+
+Include:
+- Monitoring setup guide
+- Alert configuration
+- Dashboard screenshots
+- Troubleshooting runbook
+```
+
+**Estimated Time**: 5-6 hours
+**Dependencies**: Task 9.1
+**Verification**: Errors appear in Sentry, metrics visible in dashboard, test alert received
+
+---
+
+## **MODULE 10: TESTING & DOCUMENTATION**
+
+### **Task 10.1: Comprehensive Testing Suite**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Unit tests for all core logic
+- Integration tests for API endpoints
+- Mock external services
+- Test coverage > 80%
+- CI runs tests automatically
+
+**Claude Code Prompt:**
+Create comprehensive test suite:
+
+Test Structure: /tests /unit test_flight_orchestrator.py test_deal_scorer.py test_accommodation_matcher.py test_notification_orchestrator.py test_claude_client.py /integration test_api_endpoints.py test_celery_tasks.py test_database_operations.py /e2e test_user_flows.py conftest.py # Shared fixtures
+Key Test Files: File: tests/unit/test_flight_orchestrator.py
+python
+   import pytest
+   from unittest.mock import Mock, patch
+   from app.scrapers.flight_orchestrator import FlightOrchestrator
+
+   @pytest.fixture
+   def mock_skyscanner_response():
+       return {
+           "flights": [{
+               "origin": "MUC",
+               "destination": "LIS",
+               "price": 89.99,
+               # ... full mock response
+           }]
+       }
+
+   @pytest.mark.asyncio
+   async def test_scrape_all_sources(mock_skyscanner_response):
+       """Test parallel scraping from all sources"""
+       orchestrator = FlightOrchestrator()
+
+       with patch('app.scrapers.skyscanner.SkyscannerClient.search_flights') as mock_sky:
+           mock_sky.return_value = mock_skyscanner_response
+
+           results = await orchestrator.scrape_all(
+               origins=['MUC'],
+               destinations=['LIS'],
+               date_range=('2025-12-20', '2025-12-27')
+           )
+
+           assert len(results) > 0
+           assert results[0].origin_airport == 'MUC'
+
+   def test_deduplication():
+       """Test duplicate flight removal"""
+       flights = [
+           # Two identical flights from different sources
+           Flight(origin='MUC', destination='LIS', price=89.99, source='skyscanner'),
+           Flight(origin='MUC', destination='LIS', price=89.99, source='kiwi'),
+       ]
+
+       orchestrator = FlightOrchestrator()
+       deduplicated = orchestrator.deduplicate(flights)
+
+       assert len(deduplicated) == 1
+
+   def test_true_cost_calculation():
+       """Test hidden cost calculation"""
+       flight = Flight(
+           origin='FMM',  # Memmingen, far from home
+           price=50.00,
+           airline='Ryanair'
+       )
+
+       orchestrator = FlightOrchestrator()
+       enhanced = orchestrator.calculate_true_cost(flight)
+
+       assert enhanced.total_true_cost > flight.price  # Should include parking, fuel, etc.
+       assert 'baggage' in enhanced.hidden_costs_breakdown
+File: tests/unit/test_deal_scorer.py
+
+python
+   @pytest.fixture
+   def mock_claude_response():
+       return {
+           "overall_score": 85,
+           "value_score": 90,
+           "recommendation": "book_now",
+           "reasoning": "Excellent price, Christmas markets"
+       }
+
+   @patch('app.ai.claude_client.ClaudeClient.analyze_deal')
+   def test_score_package(mock_claude, mock_claude_response):
+       """Test package scoring"""
+       mock_claude.return_value = mock_claude_response
+
+       scorer = DealScorer()
+       package = create_test_package()  # Test fixture
+
+       scored = scorer.score_package(package)
+
+       assert scored.ai_score == 85
+       assert scored.recommendation == 'book_now'
+       mock_claude.assert_called_once()
+
+   def test_notification_threshold():
+       """Test notification decision logic"""
+       scorer = DealScorer()
+
+       high_score_package = Mock(ai_score=87, recommendation='book_now')
+       assert scorer.should_notify(high_score_package, threshold=75) == True
+
+       low_score_package = Mock(ai_score=68, recommendation='consider')
+       assert scorer.should_notify(low_score_package, threshold=75) == False
+File: tests/integration/test_api_endpoints.py
+
+python
+   from fastapi.testclient import TestClient
+   from app.api.main import app
+
+   client = TestClient(app)
+
+   def test_get_family_deals():
+       """Test family deals endpoint"""
+       response = client.get("/api/deals/family?min_score=75")
+
+       assert response.status_code == 200
+       data = response.json()
+       assert data['success'] == True
+       assert 'data' in data
+       assert isinstance(data['data'], list)
+
+   def test_get_deal_by_id():
+       """Test single deal retrieval"""
+       # Assuming package ID 1 exists in test DB
+       response = client.get("/api/deals/1")
+
+       assert response.status_code == 200
+       data = response.json()
+       assert data['data']['id'] == 1
+       assert 'itinerary_json' in data['data']
+
+   def test_update_preferences():
+       """Test preference updates"""
+       new_prefs = {
+           "max_flight_price_family": 1000,
+           "preferred_destinations": ["Lisbon", "Porto", "Barcelona"],
+           "interests": ["culture", "food", "beaches"]
+       }
+
+       response = client.put("/api/preferences", json=new_prefs)
+
+       assert response.status_code == 200
+       assert response.json()['success'] == True
+
+   def test_price_trends():
+       """Test price trend data"""
+       response = client.get("/api/analytics/price-trends?route=MUC-LIS")
+
+       assert response.status_code == 200
+       data = response.json()['data']
+       assert 'prices' in data
+       assert len(data['prices']) > 0
+Mocking External Services: File: tests/conftest.py
+python
+   import pytest
+   from unittest.mock import Mock
+
+   @pytest.fixture
+   def mock_claude_client():
+       """Mock Claude API to avoid real API calls in tests"""
+       mock = Mock()
+       mock.analyze_deal.return_value = {
+           "overall_score": 80,
+           "recommendation": "consider"
+       }
+       return mock
+
+   @pytest.fixture
+   def mock_email_service():
+       """Mock email service"""
+       mock = Mock()
+       mock.send_deal_alert.return_value = True
+       return mock
+
+   @pytest.fixture
+   def test_db():
+       """Create test database"""
+       # Use SQLite in-memory for tests
+       engine = create_engine("sqlite:///:memory:")
+       TestSessionLocal = sessionmaker(bind=engine)
+       Base.metadata.create_all(bind=engine)
+
+       yield TestSessionLocal()
+
+       Base.metadata.drop_all(bind=engine)
+Test Data Factories: File: tests/factories.py
+python
+   from datetime import datetime, timedelta
+
+   def create_test_flight(**kwargs):
+       defaults = {
+           "origin_airport": "MUC",
+           "destination_airport": "LIS",
+           "airline": "TAP",
+           "departure_date": datetime.now() + timedelta(days=30),
+           "return_date": datetime.now() + timedelta(days=37),
+           "price_per_person": 120.00,
+           "total_price": 480.00,
+           "direct_flight": True,
+           "source": "skyscanner"
+       }
+       defaults.update(kwargs)
+       return Flight(**defaults)
+
+   def create_test_package(**kwargs):
+       defaults = {
+           "package_type": "family",
+           "destination_city": "Lisbon",
+           "total_price": 890.00,
+           "ai_score": 75
+       }
+       defaults.update(kwargs)
+       return TripPackage(**defaults)
+Coverage Requirements:
+Overall: >80%
+Core business logic: >90%
+API endpoints: >85%
+Scrapers: >70% (harder to test, external dependencies)
+pyproject.toml:
+toml
+   [tool.pytest.ini_options]
+   testpaths = ["tests"]
+   python_files = ["test_*.py"]
+   python_classes = ["Test*"]
+   python_functions = ["test_*"]
+   addopts = [
+       "--cov=app",
+       "--cov-report=html",
+       "--cov-report=term-missing",
+       "--cov-fail-under=80"
+   ]
+Run Tests:
+bash
+   # All tests
+   pytest
+
+   # With coverage
+   pytest --cov=app --cov-report=html
+
+   # Specific test file
+   pytest tests/unit/test_deal_scorer.py
+
+   # Specific test
+   pytest tests/unit/test_deal_scorer.py::test_score_package
+
+   # Mark slow tests and skip
+   pytest -m "not slow"
+```
+
+7. GitHub Actions Integration:
+   Already included in Task 9.1, but ensure:
+   - Tests run on every PR
+   - Tests must pass before merge
+   - Coverage report posted as comment on PR
+
+Include:
+- Testing best practices guide
+- How to write new tests
+- Mock data examples
+- Coverage reports
+```
+
+**Estimated Time**: 8-10 hours
+**Dependencies**: All development tasks
+**Verification**: All tests pass, coverage > 80%
+
+---
+
+### **Task 10.2: Documentation**
+**Delegable to Claude Code**: ✅ **HIGH PRIORITY**
+
+**Acceptance Criteria:**
+- Comprehensive README
+- API documentation
+- Architecture diagram
+- Deployment guide
+- User guide
+
+**Claude Code Prompt:**
+Create complete project documentation:
+
+Main README.md: Should include:
+Project overview and motivation
+Key features list
+Architecture overview (high-level)
+Tech stack
+Prerequisites
+Quick start guide
+Development setup
+Running tests
+Deployment instructions (link to detailed guide)
+Contributing guidelines
+License
+Screenshots/demo video link
+Template:
+markdown
+   # SmartFamilyTravelScout 🌍✈️
+
+   > AI-powered travel deal finder for families, featuring multi-airport monitoring, event discovery, and intelligent deal scoring.
+
+   ## 🎯 Problem Statement
+   As a software engineer with a young family and tight budget, I wanted to travel more but finding genuinely good deals across multiple airports, accommodations, and events was time-consuming. This project automates that entire process.
+
+   ## ✨ Features
+   - **Multi-Airport Monitoring**: MUC, FMM, NUE, SZG
+   - **AI Deal Scoring**: Claude analyzes if deals are genuinely good
+   - **Event Discovery**: Find family events & parent escapes
+   - **School Holiday Alignment**: Only alerts for vacation periods
+   - **Smart Notifications**: Push + email for outstanding deals
+   - **Parent Escape Mode**: Romantic getaway recommendations
+   - **Price Trend Analysis**: Historical data visualization
+   - **3-Day Itineraries**: AI-generated family-friendly plans
+
+   ## 🏗️ Architecture
+   [Insert architecture diagram]
+
+   ## 🛠️ Tech Stack
+   **Backend**: Python 3.11, FastAPI, SQLAlchemy, Celery, Redis
+   **AI**: Claude Sonnet 4 via Anthropic API
+   **Data**: PostgreSQL, Redis caching
+   **Frontend**: React 18, TypeScript, Tailwind CSS, Recharts
+   **Deployment**: Railway, GitHub Actions CI/CD
+   **Monitoring**: Sentry, custom metrics dashboard
+
+   ## 🚀 Quick Start
+   [Installation steps]
+
+   ## 📸 Screenshots
+   [Add dashboar
+No need for generating code. Task list and full documentation spec is enough.
+
+Perfect! Let me provide you with a clean, actionable task list and documentation specifications without code examples.
+
+COMPLETE TASK LIST - SMARTFAMILYTRAVELSCOUT
+PRIORITY LEGEND
+🔴 CRITICAL - Must have for MVP
+🟡 HIGH - Important for full functionality
+🟢 MEDIUM - Enhances experience
+🔵 LOW - Nice to have, can be added later
+PHASE 1: FOUNDATION (Week 1-2)
+Module 1: Project Setup
+Task 1.1: Project Infrastructure 🔴
+
+Owner: Claude Code
+Time: 2 hours
+Deliverables:
+Python project with Poetry dependency management
+Docker Compose setup (PostgreSQL, Redis, Python app)
+Folder structure: /app (api, scrapers, ai, models, tasks, utils), /tests, /docs
+Environment variable management (.env.example)
+Basic logging configuration
+Health check endpoint
+Verification: docker-compose up runs without errors
+Dependencies: None
+Blockers: None
+Task 1.2: Database Schema 🔴
+
+Owner: Claude Code
+Time: 3 hours
+Deliverables:
+SQLAlchemy models for 8 tables (airports, flights, accommodations, events, trip_packages, user_preferences, school_holidays, price_history)
+Alembic migration setup
+Seed data script (4 airports with distances, Bavaria holidays 2025-2026)
+Database connection pooling
+Proper indexes on foreign keys and query fields
+Verification: Migrations run successfully, seed data loads
+Dependencies: Task 1.1
+Blockers: None
+PHASE 2: DATA COLLECTION (Week 2-4)
+Module 2: Flight Data
+Task 2.1: Skyscanner API Integration 🔴
+
+Owner: Claude Code
+Time: 4 hours
+Deliverables:
+Skyscanner API client class
+Search flights from all 4 airports
+Response normalization to standard FlightOffer format
+Rate limiting (100 calls/day free tier)
+Error handling with exponential backoff
+Database persistence
+Unit tests with mocked responses
+Verification: Successfully fetches and stores 20+ flights for MUC→LIS
+Dependencies: Task 1.2
+Blockers: Need Skyscanner API key (free registration)
+Task 2.2: Kiwi.com API Integration 🔴
+
+Owner: Claude Code
+Time: 4 hours
+Deliverables:
+Kiwi API client (similar structure to Skyscanner)
+Multi-city search support
+Deduplication logic (same flight from multiple sources)
+Budget airline specialization handling
+Database persistence with source tagging
+Verification: Fetches flights and properly deduplicates with Skyscanner
+Dependencies: Task 2.1
+Blockers: Need Kiwi API key
+Task 2.3: Ryanair Direct Scraper 🟡
+
+Owner: Claude Code
+Time: 6 hours
+Deliverables:
+Playwright-based web scraper for Ryanair.com
+Focus on MUC and FMM flights
+Respectful scraping (delays, user agents, robots.txt compliance)
+Dynamic JavaScript content handling
+Cookie consent management
+Screenshot on errors for debugging
+Error handling and retries
+Verification: Successfully scrapes MUC→LIS and FMM→BCN
+Dependencies: Task 1.2
+Blockers: None (no API needed)
+Task 2.4: Flight Orchestrator 🔴
+
+Owner: Claude Code
+Time: 5 hours
+Deliverables:
+Coordinates all flight data sources
+Parallel execution with asyncio
+Deduplication across all sources
+True cost calculation (base price + baggage + parking + fuel + time)
+Price history tracking
+Performance metrics logging
+Verification: Scrapes 100+ flights, deduplicates correctly, calculates true costs
+Dependencies: Tasks 2.1, 2.2, 2.3
+Blockers: None
+Module 3: Accommodation Data
+Task 3.1: Booking.com API Integration 🔴
+
+Owner: Claude Code
+Time: 4 hours
+Deliverables:
+Booking.com Affiliate API client
+Family filter implementation (2+ bedrooms, kitchen, kids amenities)
+Pagination handling
+Top 10 options per destination
+Standard Accommodation format
+Database persistence
+Verification: Retrieves 10 family accommodations for Lisbon with correct filters
+Dependencies: Task 1.2
+Blockers: Need Booking.com Affiliate Partner registration
+Task 3.2: Airbnb Data Collection 🟡
+
+Owner: Claude Code
+Time: 5 hours
+Deliverables:
+Airbnb API integration (Rapid API or Apify scraper)
+"Entire place" filter only
+Family-suitable filters (2+ bedrooms, kid-friendly)
+Price range filtering (€40-150/night)
+Image and amenity extraction
+Database persistence
+Verification: Returns 10 Airbnb options for Lisbon matching criteria
+Dependencies: Task 1.2
+Blockers: Need Rapid API subscription OR Apify credits
+Task 3.3: Accommodation Matcher 🔴
+
+Owner: Claude Code
+Time: 4 hours
+Deliverables:
+Match accommodations with flight dates
+Calculate total trip cost (flights + accommodation + estimated food)
+Generate TripPackage combinations
+Filter by budget and school holiday alignment
+Save top packages to database
+Verification: Generates 20+ trip packages for various destinations
+Dependencies: Tasks 2.4, 3.1, 3.2
+Blockers: None
+Module 4: Event Discovery
+Task 4.1: EventBrite API Integration 🟡
+
+Owner: Claude Code
+Time: 4 hours
+Deliverables:
+EventBrite API client
+Category-based searching (Family, Cultural, Food & Drink, Music)
+Date range matching with trips
+Basic event categorization (family, parent_escape, cultural)
+Price extraction and formatting
+Database persistence
+Verification: Retrieves 50+ events for Lisbon in December 2025
+Dependencies: Task 1.2
+Blockers: Need EventBrite API key (free)
+Task 4.2: Tourism Board Scraper 🔵
+
+Owner: Claude Code
+Time: 8 hours
+Deliverables:
+Playwright scrapers for major destination tourism sites
+Multi-language handling (EN, DE)
+Festival and special event extraction
+Pagination handling
+Result caching (events don't change frequently)
+Verification: Scrapes events from 3 cities successfully
+Dependencies: Task 1.2
+Blockers: None
+Note: Lower priority, can start with EventBrite only
+PHASE 3: AI ANALYSIS (Week 4-6)
+Module 5: AI Intelligence Layer
+Task 5.1: Claude API Integration Foundation 🔴
+
+Owner: Claude Code
+Time: 5 hours
+Deliverables:
+Claude API client wrapper with anthropic SDK
+Prompt template management system (Jinja2, versioned)
+Response parsing and validation (Pydantic models)
+Cost tracking (log every API call with tokens and cost)
+Redis caching (24h for deals, 7d for static content)
+Retry logic and error handling
+Monthly cost monitoring and alerts
+Verification: Successfully makes API calls, parses responses, tracks costs under budget
+Dependencies: Task 1.1
+Blockers: Need Anthropic API key
+Task 5.2: Deal Scoring System 🔴
+
+Owner: Claude Code
+Time: 5 hours
+Deliverables:
+DealScorer class that analyzes trip packages
+Historical price context retrieval
+Claude prompt for deal analysis (score 0-100, reasoning, recommendation)
+Structured JSON output parsing
+Database updates (ai_score, ai_reasoning fields)
+Notification decision logic (score threshold, recommendation filter)
+Verification: Scores 10 packages, identifies 2-3 as "outstanding deals"
+Dependencies: Tasks 3.3, 5.1
+Blockers: None
+Task 5.3: Event Relevance Scorer 🟡
+
+Owner: Claude Code
+Time: 4 hours
+Deliverables:
+EventScorer class for relevance scoring (0-10)
+Batch processing (10 events at a time)
+Category refinement (family_event, parent_escape, skip)
+Age-appropriateness assessment
+Database updates (ai_relevance_score field)
+Filtering logic for trip packages
+Verification: Scores 100 events, correctly categorizes family vs. adult events
+Dependencies: Tasks 4.1, 5.1
+Blockers: None
+Task 5.4: Itinerary Generator 🟡
+
+Owner: Claude Code
+Time: 5 hours
+Deliverables:
+ItineraryGenerator class
+3-day family-friendly itineraries
+Nap time consideration (2-4pm for young kids)
+Kid-friendly restaurant suggestions
+Activity spacing (max 30 min walking between)
+Budget tracking (€100-150/day)
+Event integration from scored events
+JSON storage in trip_packages table
+Verification: Generates realistic 3-day itinerary for Lisbon family trip
+Dependencies: Tasks 5.1, 5.2
+Blockers: None
+Task 5.5: Parent Escape Analyzer 🟡
+
+Owner: Claude Code
+Time: 5 hours
+Deliverables:
+ParentEscapeAnalyzer class
+Identify romantic 2-3 night getaways
+Focus on unique timing (special events, seasons, limited availability)
+Train accessibility analysis (max 6h from Munich)
+Spa, wine, cultural event matching
+Kid-care solution suggestions
+Separate scoring system (escape_score, uniqueness_score, romantic_factor)
+Create separate trip_packages with type='parent_escape'
+Verification: Identifies 3 high-quality opportunities, explains uniqueness
+Dependencies: Task 5.1
+Blockers: None
+PHASE 4: NOTIFICATION SYSTEM (Week 6-7)
+Module 6: User Notifications
+Task 6.1: Firebase Push Notifications 🔴
+
+Owner: Claude Code
+Time: 5 hours
+Deliverables:
+Firebase Cloud Messaging integration
+Device token registration endpoint
+Rich notification format (title, body, image, actions)
+Notification types: family_deal, parent_escape
+Database tracking (notifications table: sent_at, read_at, clicked)
+Delivery logic (immediate for high scores, batch for lower)
+Quiet hours respect (no notifications 10pm-8am)
+Frequency limits (max 3/day per user)
+Verification: Sends test notification to registered device with image
+Dependencies: Task 1.2
+Blockers: Need Firebase project setup
+Task 6.2: Email Notification System 🔴
+
+Owner: Claude Code
+Time: 6 hours
+Deliverables:
+Email service (SendGrid, Amazon SES, or Gmail SMTP)
+Beautiful HTML email templates (Jinja2, responsive)
+Templates: deal_alert, parent_escape, daily_digest, weekly_summary
+Personalized subject lines (Claude-generated)
+Booking links included
+Itinerary preview in email
+Tracking (opens, clicks with UTM parameters)
+Unsubscribe handling (legal requirement)
+Plain text fallbacks
+Verification: Sends beautiful email with deal, itinerary, booking links
+Dependencies: Task 1.1
+Blockers: Need email service API key
+Task 6.3: Notification Orchestrator 🔴
+
+Owner: Claude Code
+Time: 5 hours
+Deliverables:
+NotificationOrchestrator class
+Decision engine (immediate_alert vs daily_digest vs skip)
+Rules: score threshold, time sensitivity, uniqueness factor
+Frequency control (prevent notification fatigue)
+Channel selection (push + email for critical, email only for digest)
+Personalized message generation
+Logging all decisions with reasoning
+User feedback integration ("Was this helpful?")
+Verification: Correctly decides immediate vs. digest, respects frequency limits
+Dependencies: Tasks 6.1, 6.2
+Blockers: None
+PHASE 5: SCHEDULING & AUTOMATION (Week 7-8)
+Module 7: Task Orchestration
+Task 7.1: Celery Setup 🔴
+
+Owner: Claude Code
+Time: 5 hours
+Deliverables:
+Celery configuration with Redis broker
+Task definitions: scrape_flights, scrape_accommodations, scrape_events, analyze_deals, send_notifications, daily_digest, cleanup
+Celery Beat schedule configuration
+Multiple queues: scraping, analysis, notifications, maintenance
+Task monitoring with Flower
+Retry logic (max 3 attempts, exponential backoff)
+Rate limiting for API-heavy tasks
+Docker Compose services for worker, beat, flower
+Verification: Tasks run on schedule, visible in Flower dashboard
+Dependencies: Tasks 2.4, 3.3, 5.2, 6.3
+Blockers: None
+Task 7.2: Smart Scheduling Logic 🟡
+
+Owner: Claude Code
+Time: 4 hours
+Deliverables:
+SmartScheduler class
+Route prioritization based on success rate
+Dynamic scraping frequency (4h to 48h based on deal discovery)
+Seasonal adjustments (increase before holidays)
+Price volatility detection (scrape more when prices fluctuating)
+Budget-based optimization (reduce if over monthly budget)
+Database: route_metrics table
+Skip logic to avoid unnecessary scraping
+Verification: Routes scraped at different frequencies based on performance
+Dependencies: Task 7.1
+Blockers: None
+PHASE 6: USER INTERFACE (Week 8-10)
+Module 8: Web Dashboard
+Task 8.1: FastAPI Backend 🔴
+
+Owner: Claude Code
+Time: 6 hours
+Deliverables:
+RESTful API endpoints:
+Deals: GET /api/deals/family, /api/deals/parent-escape, /api/deals/{id}
+Preferences: GET/PUT /api/preferences, POST /api/preferences/destinations/add
+Analytics: GET /api/analytics/price-trends, /api/analytics/destinations
+Notifications: GET /api/notifications, POST /api/notifications/register-device
+System: GET /api/health, /api/stats
+Authentication (API key for MVP)
+CORS configuration
+Request logging middleware
+Rate limiting
+Consistent error response format
+Pydantic models for request/response validation
+OpenAPI documentation
+Verification: All endpoints return valid data, /docs accessible
+Dependencies: Task 1.2
+Blockers: None
+Task 8.2: React Dashboard 🟡
+
+Owner: Claude Code
+Time: 16 hours
+Deliverables:
+React 18 + TypeScript + Vite setup
+Pages: Dashboard Home, Deal Details, Parent Escapes, Destinations, Price Trends, Preferences, Notification History
+Components: DealCard, PriceTrendChart, ItineraryTimeline, FilterPanel
+Tailwind CSS styling (modern, clean, mobile-responsive)
+React Query for API calls and caching
+Recharts for visualizations
+Loading states and error boundaries
+Toast notifications for actions
+Auto-refresh deals every 5 minutes
+Verification: Dashboard displays deals, filters work, responsive on mobile
+Dependencies: Task 8.1
+Blockers: None
+PHASE 7: DEPLOYMENT & MONITORING (Week 10-11)
+Module 9: Production Operations
+Task 9.1: Production Deployment 🔴
+
+Owner: Claude Code
+Time: 6 hours
+Deliverables:
+Railway/Render deployment configuration
+Optimized Dockerfile (multi-stage build)
+Environment variable management via Railway secrets
+Database migration strategy
+GitHub Actions CI/CD pipeline (test → deploy on main branch)
+Health check endpoint monitoring
+SSL/HTTPS setup (automatic with Railway)
+Custom domain configuration
+Deployment runbook (step-by-step guide)
+Rollback procedures
+Verification: Application accessible at production URL, all services healthy
+Dependencies: All previous tasks
+Blockers: Need Railway account
+Task 9.2: Monitoring & Alerting 🔴
+
+Owner: Claude Code
+Time: 6 hours
+Deliverables:
+Sentry integration for error tracking
+Structured JSON logging
+Cost tracking dashboard (Claude API, other APIs, email, notifications)
+Performance metrics endpoint (/api/admin/metrics)
+Admin alerts (email/SMS for critical issues)
+Budget alerts (warning if projected monthly cost exceeds budget)
+Slow query logging
+Weekly health report email
+Monitoring setup guide
+Verification: Errors appear in Sentry, metrics visible in dashboard, test alert received
+Dependencies: Task 9.1
+Blockers: Need Sentry account (free tier)
+PHASE 8: TESTING & POLISH (Week 11-12)
+Module 10: Quality Assurance
+Task 10.1: Testing Suite 🔴
+
+Owner: Claude Code
+Time: 10 hours
+Deliverables:
+Unit tests for: FlightOrchestrator, DealScorer, AccommodationMatcher, NotificationOrchestrator, ClaudeClient
+Integration tests for: API endpoints, Celery tasks, database operations
+E2E tests for key user flows
+Test fixtures and factories
+Mock external services (Claude API, Skyscanner, email)
+Test coverage >80% overall, >90% for core business logic
+pytest configuration
+GitHub Actions integration
+Verification: All tests pass, coverage report shows >80%
+Dependencies: All development tasks
+Blockers: None
+Task 10.2: Documentation 🔴
+
+Owner: Claude Code
+Time: 6 hours
+Deliverables:
+Main README.md (see spec below)
+API documentation (OpenAPI auto-generated + examples)
+Architecture diagram (mermaid or draw.io)
+Deployment guide
+User guide with screenshots
+Developer setup guide
+Contributing guidelines
+Cost breakdown documentation
+Portfolio presentation guide
+Verification: Documentation is complete, clear, and accurate
+Dependencies: All tasks
+Blockers: None
+DOCUMENTATION SPECIFICATION
+1. Main README.md Structure
+Sections Required:
+Project Title & Tagline
+Project name: SmartFamilyTravelScout
+Tagline: AI-powered travel deal finder for budget-conscious families
+Badges: build status, test coverage, license
+Problem Statement (2-3 paragraphs)
+Personal motivation: software engineer with young family, tight budget, want to travel
+Pain points: monitoring multiple airports, accommodations, events is time-consuming
+Solution: automate the entire discovery and analysis process with AI
+Key Features (bulleted list)
+Multi-airport monitoring (MUC, FMM, NUE, SZG)
+AI-powered deal scoring with Claude
+Event discovery (family-friendly + parent escapes)
+School holiday alignment
+Smart notifications (push + email)
+Parent escape mode for romantic getaways
+Price trend analysis and visualization
+AI-generated 3-day itineraries
+Demo (if available)
+Link to live demo
+Screenshots of dashboard
+Demo video (optional but highly recommended for portfolio)
+Architecture Overview
+High-level system diagram
+Key components explanation
+Data flow description
+Tech Stack
+Backend technologies
+AI/ML technologies
+Frontend technologies
+Infrastructure & deployment
+Monitoring & observability
+Getting Started
+Prerequisites (Python 3.11+, Docker, Node.js)
+Installation steps
+Environment variables setup
+Running locally
+Running tests
+Project Structure
+Directory tree with explanations
+Usage Examples
+How to add a destination
+How to adjust notification preferences
+How to view price trends
+Deployment
+Link to detailed deployment guide
+Quick deployment commands
+Cost Breakdown
+Development costs
+Production monthly costs
+Cost optimization strategies
+Roadmap (future enhancements)
+More airlines
+More event sources
+Mobile app
+Collaborative trip planning
+Price prediction with ML
+Contributing
+How to contribute
+Code style guide
+Pull request process
+License
+Acknowledgments
+Technologies used
+Inspirations
+2. API Documentation (docs/API.md)
+Sections Required:
+Authentication
+How to obtain API key
+Header format: X-API-Key: your_key_here
+Base URL
+Production: https://your-domain.com/api
+Local: http://localhost:8000/api
+Endpoints For each endpoint:
+HTTP method
+Path
+Description
+Query parameters
+Request body (if applicable)
+Response format
+Example request (curl)
+Example response (JSON)
+Possible errors
+Rate Limiting
+Limits per endpoint
+How to handle rate limit errors
+Pagination
+How pagination works
+Parameters: page, limit
+Filtering & Sorting
+Available filter parameters
+Sort options
+3. Architecture Documentation (docs/ARCHITECTURE.md)
+Sections Required:
+System Overview
+What the system does
+Key objectives
+Design principles
+Architecture Diagram
+Component diagram showing:
+Data collection layer (scrapers)
+AI analysis layer (Claude integration)
+Notification layer
+User interface layer
+Data storage layer
+Data flow arrows
+Component Details For each major component:
+Purpose
+Responsibilities
+Key classes/modules
+External dependencies
+Scalability considerations
+Data Models
+Database schema explanation
+Relationships between entities
+Key indexes
+Scheduled Tasks
+What runs when
+Task dependencies
+Celery queues explanation
+AI Integration Strategy
+How Claude is used
+Prompt engineering approach
+Cost optimization techniques
+Caching strategy
+Security Considerations
+API key management
+Data privacy
+Rate limiting
+Input validation
+Scalability
+Current limitations
+How to scale horizontally
+Database scaling strategy
+Caching strategy
+4. Deployment Guide (docs/DEPLOYMENT.md)
+Sections Required:
+Prerequisites
+Railway account
+Domain name (optional)
+API keys for all services
+GitHub repository
+Initial Setup
+Step-by-step Railway project creation
+Environment variable configuration
+Database provisioning
+Redis provisioning
+Database Setup
+Running migrations
+Loading seed data
+Backup configuration
+Service Deployment
+Web service configuration
+Worker service configuration
+Beat service configuration
+Flower service configuration
+Domain & SSL
+Custom domain setup
+DNS configuration
+SSL certificate (automatic with Railway)
+CI/CD Setup
+GitHub Actions configuration
+Deployment workflow
+Secrets management
+Post-Deployment Verification
+Health check verification
+Test notification
+Log monitoring
+Performance check
+Monitoring Setup
+Sentry configuration
+Alert setup
+Dashboard access
+Backup & Recovery
+Database backup strategy
+Disaster recovery procedures
+Troubleshooting
+Common issues and solutions
+Where to find logs
+How to rollback
+5. User Guide (docs/USER_GUIDE.md)
+Sections Required:
+Getting Started
+Create account
+Set up preferences
+Register device for notifications
+Dashboard Tour
+Homepage overview
+Deal cards explanation
+Filters and sorting
+Understanding Deals
+What the AI score means
+How to read the reasoning
+Price breakdown explanation
+What's included in total cost
+Managing Preferences
+Adding/removing destinations
+Setting budget limits
+Choosing notification threshold
+Interest tags
+Notifications
+Types of notifications
+How to enable/disable
+Quiet hours configuration
+Notification frequency
+Price Trends
+How to view historical prices
+Understanding the charts
+When is the best time to book
+Parent Escape Mode
+What it is
+How to enable
+How scoring works differently
+Kid-care suggestions
+Booking a Trip
+Steps to book flights
+Booking accommodation
+Adding events to calendar
+Using the itinerary
+FAQs
+Why am I not getting notifications?
+How often are prices checked?
+Can I customize the itinerary?
+What if I don't like a recommendation?
+6. Developer Guide (docs/DEVELOPER.md)
+Sections Required:
+Development Setup
+Cloning the repository
+Installing dependencies
+Setting up environment variables
+Running database migrations
+Starting services
+Project Structure
+Detailed folder/file explanations
+Naming conventions
+Where to add new features
+Adding New Features
+Example: Adding a new airport
+Example: Adding a new airline scraper
+Example: Adding a new event source
+Example: Adding a new notification channel
+Testing
+Running tests
+Writing new tests
+Test coverage requirements
+Mocking external services
+Debugging
+Logging strategy
+Using debugger with Docker
+Common debugging scenarios
+Code Style
+Python style guide (Black, isort)
+TypeScript style guide
+Commit message format
+Branch naming conventions
+Database Changes
+Creating migrations
+Testing migrations
+Rolling back migrations
+Adding New AI Capabilities
+Prompt engineering best practices
+Testing Claude prompts
+Cost tracking for new features
+7. Portfolio Presentation Guide (docs/PORTFOLIO.md)
+Sections Required:
+Project Summary (elevator pitch)
+2-3 sentences describing the project
+Problem solved
+Technologies showcased
+Technical Highlights
+Multi-source data aggregation
+AI-powered analysis
+Real-time notifications
+Production-grade deployment
+Cost optimization strategies
+AI Engineering Skills Demonstrated
+Prompt engineering
+Structured output parsing
+Cost tracking and optimization
+Context management
+Error handling with LLMs
+Full-Stack Skills Demonstrated
+Backend API development
+Frontend React development
+Database design
+Async task processing
+Web scraping
+Third-party API integration
+Software Engineering Practices
+Testing (unit, integration, e2e)
+CI/CD pipelines
+Monitoring and alerting
+Documentation
+Code organization
+Talking Points for Interviews
+Architecture decisions and why
+Challenges faced and solutions
+Trade-offs made
+What you would do differently
+How it scales
+Demo Script
+What to show first
+Key features to highlight
+User flow demonstration
+Technical deep-dive talking points
+Metrics to Share
+Lines of code
+Test coverage percentage
+Number of API integrations
+Response time benchmarks
+Cost per notification
+Deal discovery rate
+Live Demo Preparation
+Ensure demo data is loaded
+Have example deals ready
+Show notification flow
+Display price trends
+Walk through itinerary generation
+Questions You Might Be Asked
+How do you handle API rate limits?
+How do you optimize Claude API costs?
+How would you scale this to 10,000 users?
+What security measures are in place?
+How do you ensure data freshness?
+How do you handle scraper breakage?
+TASK DEPENDENCIES VISUALIZATION
+PHASE 1: Foundation
+├── 1.1 Project Setup (no deps)
+└── 1.2 Database Schema (depends on 1.1)
+
+PHASE 2: Data Collection
+├── 2.1 Skyscanner API (depends on 1.2)
+├── 2.2 Kiwi API (depends on 2.1)
+├── 2.3 Ryanair Scraper (depends on 1.2)
+├── 2.4 Flight Orchestrator (depends on 2.1, 2.2, 2.3)
+├── 3.1 Booking.com API (depends on 1.2)
+├── 3.2 Airbnb Collection (depends on 1.2)
+├── 3.3 Accommodation Matcher (depends on 2.4, 3.1, 3.2)
+├── 4.1 EventBrite API (depends on 1.2)
+└── 4.2 Tourism Scraper (depends on 1.2) [LOW PRIORITY]
+
+PHASE 3: AI Analysis
+├── 5.1 Claude Foundation (depends on 1.1)
+├── 5.2 Deal Scorer (depends on 3.3, 5.1)
+├── 5.3 Event Scorer (depends on 4.1, 5.1)
+├── 5.4 Itinerary Generator (depends on 5.1, 5.2)
+└── 5.5 Parent Escape Analyzer (depends on 5.1)
+
+PHASE 4: Notifications
+├── 6.1 Firebase Push (depends on 1.2)
+├── 6.2 Email System (depends on 1.1)
+└── 6.3 Notification Orchestrator (depends on 6.1, 6.2)
+
+PHASE 5: Scheduling
+├── 7.1 Celery Setup (depends on 2.4, 3.3, 5.2, 6.3)
+└── 7.2 Smart Scheduling (depends on 7.1)
+
+PHASE 6: UI
+├── 8.1 FastAPI Backend (depends on 1.2)
+Continue
+
+└── 8.2 React Dashboard (depends on 8.1)
+
+PHASE 7: Deployment
+├── 9.1 Production Deployment (depends on ALL previous)
+└── 9.2 Monitoring & Alerting (depends on 9.1)
+
+PHASE 8: Quality
+├── 10.1 Testing Suite (depends on ALL development tasks)
+└── 10.2 Documentation (depends on ALL tasks)
+
+
+---
+
+## **PARALLEL EXECUTION STRATEGY**
+
+### **Can Be Done In Parallel:**
+
+**Week 1:**
+- Task 1.1 (Project Setup) → **START FIRST**
+- Once 1.1 done: Task 1.2 (Database Schema)
+
+**Week 2-3 (Parallel tracks):**
+- **Track A**: Tasks 2.1, 2.2, 2.3 (Flight sources) - can be done independently
+- **Track B**: Tasks 3.1, 3.2 (Accommodation sources) - can be done independently
+- **Track C**: Task 4.1 (EventBrite) - can be done independently
+
+**Week 3-4 (After data sources ready):**
+- Task 2.4 (Flight Orchestrator) - needs 2.1, 2.2, 2.3
+- Task 3.3 (Accommodation Matcher) - needs 2.4, 3.1, 3.2
+- Task 5.1 (Claude Foundation) - can start anytime after 1.1
+
+**Week 4-5 (AI Layer - Parallel):**
+- Task 5.2 (Deal Scorer) - needs 3.3, 5.1
+- Task 5.3 (Event Scorer) - needs 4.1, 5.1 (can run parallel with 5.2)
+- Task 5.5 (Parent Escape) - needs only 5.1 (can run parallel with 5.2)
+
+**Week 5-6 (After AI ready):**
+- Task 5.4 (Itinerary Generator) - needs 5.2
+- **Parallel Track**: Tasks 6.1, 6.2 (Notifications) - independent of each other
+
+**Week 6-7:**
+- Task 6.3 (Notification Orchestrator) - needs 6.1, 6.2
+- Task 7.1 (Celery Setup) - needs 2.4, 3.3, 5.2, 6.3
+
+**Week 7-8:**
+- Task 7.2 (Smart Scheduling) - needs 7.1
+- **Parallel**: Task 8.1 (FastAPI Backend) - only needs 1.2
+
+**Week 8-10:**
+- Task 8.2 (React Dashboard) - needs 8.1
+
+**Week 10-11:**
+- Task 9.1 (Deployment) - needs everything
+- Task 10.1 (Testing) - can start earlier, incrementally
+
+**Week 11-12:**
+- Task 9.2 (Monitoring) - needs 9.1
+- Task 10.2 (Documentation) - can be done throughout, finalize at end
+
+---
+
+## **CRITICAL PATH ANALYSIS**
+
+### **The Longest Dependency Chain (Critical Path):**
+1.1 → 1.2 → 2.1 → 2.4 → 3.3 → 5.2 → 6.3 → 7.1 → 9.1 → 10.2
+(2h + 3h + 4h + 5h + 4h + 5h + 5h + 5h + 6h + 6h = 45 hours minimum)
+
+
+This is your **minimum project timeline** if working sequentially. With parallelization, you can reduce to ~12 weeks of actual work.
+
+---
+
+## **COST BREAKDOWN & API REQUIREMENTS**
+
+### **API Keys Needed (Priority Order):**
+
+**🔴 CRITICAL (Can't work without):**
+1. **Anthropic Claude API** - AI analysis
+   - Free tier: No
+   - Cost: ~$3-5/month development, ~$30-50/month production
+   - Register: https://console.anthropic.com
+
+2. **Skyscanner API** - Flight data
+   - Free tier: Yes (100 calls/day)
+   - Cost: Free for development
+   - Register: RapidAPI Skyscanner endpoint
+
+3. **SendGrid / Amazon SES** - Email notifications
+   - Free tier: SendGrid (100/day), SES ($0.10/1000)
+   - Cost: ~$0-5/month
+   - Register: sendgrid.com or aws.amazon.com/ses
+
+4. **Firebase Cloud Messaging** - Push notifications
+   - Free tier: Yes (unlimited)
+   - Cost: Free
+   - Register: firebase.google.com
+
+**🟡 HIGH PRIORITY (Important for full functionality):**
+5. **Kiwi.com API** - Flight data
+   - Free tier: Limited
+   - Cost: ~$0-10/month
+   - Register: tequila.kiwi.com
+
+6. **Booking.com Affiliate Partner** - Accommodation
+   - Free tier: Yes (commission-based)
+   - Cost: Free
+   - Register: booking.com/affiliate
+
+7. **EventBrite API** - Event discovery
+   - Free tier: Yes
+   - Cost: Free
+   - Register: eventbrite.com/platform
+
+**🟢 MEDIUM PRIORITY (Enhances experience):**
+8. **Rapid API Airbnb** or **Apify Airbnb Scraper**
+   - Free tier: Rapid API (limited), Apify ($49/month with credits)
+   - Cost: ~$0-20/month
+   - Register: rapidapi.com or apify.com
+
+**🔵 LOW PRIORITY (Nice to have):**
+9. **Ticketmaster API** - Additional events
+   - Free tier: Yes (rate limited)
+   - Cost: Free
+   - Register: developer.ticketmaster.com
+
+10. **Sentry** - Error monitoring
+    - Free tier: Yes (5k events/month)
+    - Cost: Free for MVP
+    - Register: sentry.io
+
+### **Monthly Cost Estimates:**
+
+**Development Phase:**
+- Claude API: €10-15
+- Other APIs: €0 (free tiers)
+- Hosting: €0 (local)
+- **Total: €10-15/month**
+
+**Production (Light usage - 1 user):**
+- Claude API: €30-50 (depends on deal volume)
+- Apify (Airbnb scraping): €20 (optional)
+- Hosting (Railway): €25
+- Email: €5
+- Other APIs: €0-10
+- **Total: €60-80/month** (€40-60 without Airbnb scraping)
+
+**Production (Scaled - 10 users):**
+- Claude API: €100-150
+- Apify: €50
+- Hosting: €75
+- Email: €15
+- Other APIs: €20
+- **Total: €260-310/month**
+
+**ROI Calculation:**
+- First successful cheap trip typically saves: €300-500
+- Payback period: ~1-2 months
+- Annual savings potential: €2000-3000
+
+---
+
+## **TESTING STRATEGY**
+
+### **Test Coverage Requirements:**
+
+**Unit Tests (80%+ coverage):**
+- FlightOrchestrator: deduplication, true cost calculation
+- DealScorer: scoring logic, threshold decisions
+- AccommodationMatcher: trip package generation
+- NotificationOrchestrator: notification decisions, frequency control
+- ClaudeClient: prompt management, response parsing, caching
+- EventScorer: relevance scoring, categorization
+- SmartScheduler: route prioritization, frequency adjustment
+
+**Integration Tests (70%+ coverage):**
+- API endpoints: all REST endpoints
+- Database operations: CRUD operations, migrations
+- Celery tasks: task execution, scheduling
+- Email sending: template rendering, delivery
+- Push notifications: FCM integration
+
+**End-to-End Tests (Key flows only):**
+1. **New deal discovery flow**:
+   - Scrape flights → Find accommodation → Match events → Score with AI → Send notification
+
+2. **User preference update flow**:
+   - User updates preferences → Next scrape respects new preferences → Correct deals shown
+
+3. **Parent escape flow**:
+   - Discover escape opportunity → Score uniqueness → Send romantic notification
+
+**Mocking Strategy:**
+- Mock all external APIs (Skyscanner, Claude, Firebase, etc.)
+- Mock Celery tasks in unit tests
+- Use in-memory SQLite for database tests
+- Provide realistic mock data that matches actual API responses
+
+---
+
+## **DELEGATION TO CLAUDE CODE - BEST PRACTICES**
+
+### **How to Structure Prompts:**
+
+**Good Prompt Template:**
+Task: [Task Number and Name]
+Context: [What this component does in the larger system]
+Requirements:
+
+[Specific requirement 1]
+[Specific requirement 2]
+[etc.]
+Input/Output:
+
+Input: [What data/parameters this receives]
+Output: [What it returns]
+Technical Specifications:
+
+Language/Framework: [e.g., Python 3.11, FastAPI]
+External Dependencies: [libraries needed]
+Database Interactions: [which tables]
+Error Handling: [what to handle]
+Acceptance Criteria:
+
+[How to verify it works]
+[Expected behavior]
+Testing:
+
+Include unit tests for [specific scenarios]
+Mock [specific external services]
+Example Usage:
+[Provide a concrete example of how it should be used]
+
+
+**Example - Task 2.1 Prompt:**
+Task: 2.1 Skyscanner API Integration
+
+Context: This component fetches flight data from Skyscanner API as part of the multi-source flight aggregation system. It's one of three primary flight data sources.
+
+Requirements:
+
+Create a SkyscannerClient class in /app/scrapers/skyscanner.py
+Implement search_flights() method that takes origin, destination, dates
+Implement search_multi_origin() for batch searching from 4 airports
+Parse Skyscanner API responses into standardized FlightOffer format
+Handle rate limiting (100 API calls per day on free tier)
+Implement retry logic with exponential backoff (max 3 retries)
+Store results in the flights table via SQLAlchemy
+Log all API calls with timestamp and success/failure
+Input/Output:
+
+Input: origin (IATA code), destination (IATA code), departure_date, return_date
+Output: List[FlightOffer] with fields: origin_airport, destination_airport, airline, price_per_person, total_price, direct_flight, booking_url, source='skyscanner'
+Technical Specifications:
+
+Python 3.11
+Use requests library for API calls
+Use tenacity library for retry logic
+Database: SQLAlchemy models from app.models.flights
+Configuration: API key from environment variable SKYSCANNER_API_KEY
+Logging: Use structured logging (app.monitoring.logging_config)
+Error Handling:
+
+API authentication failures → log error, raise custom APIAuthenticationError
+Rate limit exceeded → wait and retry with exponential backoff
+Timeout (>30s) → retry up to 3 times
+Invalid IATA code → raise ValueError with clear message
+Network errors → retry with backoff
+Acceptance Criteria:
+
+Successfully fetches at least 20 flights for MUC→LIS route
+Correctly normalizes all response fields to FlightOffer format
+Handles rate limiting gracefully (doesn't crash)
+All flights saved to database with correct source='skyscanner'
+Unit tests pass with 90%+ coverage
+Testing:
+
+Include unit tests with mocked Skyscanner API responses
+Test successful response parsing
+Test rate limit handling
+Test retry logic on failures
+Test database persistence
+Example Usage:
+
+python
+client = SkyscannerClient()
+flights = client.search_flights(
+    origin='MUC',
+    destination='LIS',
+    departure_date='2025-12-20',
+    return_date='2025-12-27'
+)
+# Returns: [FlightOffer(...), FlightOffer(...), ...]
+
+---
+
+## **PROGRESS TRACKING TEMPLATE**
+
+### **Task Status Tracking Sheet:**
+
+| Task | Owner | Status | Started | Completed | Blockers | Notes |
+|------|-------|--------|---------|-----------|----------|-------|
+| 1.1 Project Setup | Claude | ⬜ Not Started | - | - | - | - |
+| 1.2 Database Schema | Claude | ⬜ Not Started | - | - | Needs 1.1 | - |
+| 2.1 Skyscanner API | Claude | ⬜ Not Started | - | - | Needs API key | - |
+| ... | ... | ... | ... | ... | ... | ... |
+
+**Status Indicators:**
+- ⬜ Not Started
+- 🟡 In Progress
+- 🟢 Completed
+- 🔴 Blocked
+- ⚠️ Needs Review
+
+---
+
+## **RISK MITIGATION**
+
+### **Potential Risks & Mitigation:**
+
+**Risk 1: API Rate Limits Exceeded**
+- **Impact**: Can't collect data, system stops working
+- **Probability**: Medium
+- **Mitigation**:
+  - Implement aggressive caching (Redis)
+  - Smart scheduling (don't scrape unnecessary routes)
+  - Monitor daily API usage
+  - Have backup data sources
+
+**Risk 2: Claude API Costs Spiral**
+- **Impact**: Monthly bill becomes unsustainable
+- **Probability**: Medium
+- **Mitigation**:
+  - Set hard daily/monthly cost limits
+  - Cache all analysis results
+  - Use Claude only for high-value decisions
+  - Implement cost tracking dashboard
+  - Alert when approaching budget
+
+**Risk 3: Scraper Breakage (Website Changes)**
+- **Impact**: Data source stops working
+- **Probability**: High (for web scrapers)
+- **Mitigation**:
+  - Prefer official APIs over scraping
+  - Have multiple sources for same data (redundancy)
+  - Implement health checks for each scraper
+  - Alert on consecutive failures
+  - Store historical data as backup
+
+**Risk 4: No Deals Found**
+- **Impact**: System running but not delivering value
+- **Probability**: Low-Medium
+- **Mitigation**:
+  - Start with popular routes known for deals
+  - Adjust scoring threshold (don't be too strict)
+  - Monitor deal discovery rate
+  - Add more destinations if needed
+  - Validate scoring algorithm with manual checks
+
+**Risk 5: Notification Fatigue**
+- **Impact**: User ignores notifications, system becomes noise
+- **Probability**: Medium
+- **Mitigation**:
+  - Strict quality threshold (only best deals)
+  - Frequency limits (max 3/day)
+  - User can adjust preferences
+  - Learn from user feedback (thumbs up/down)
+
+**Risk 6: Deployment Issues**
+- **Impact**: Can't get to production
+- **Probability**: Low (with proper testing)
+- **Mitigation**:
+  - Test deployment on staging first
+  - Use Railway for simplified deployment
+  - Have rollback plan ready
+  - Document all steps in runbook
+
+**Risk 7: Database Performance**
+- **Impact**: Slow queries, poor user experience
+- **Probability**: Low initially, higher with scale
+- **Mitigation**:
+  - Proper indexing from start
+  - Monitor slow queries
+  - Regular VACUUM/ANALYZE
+  - Archive old data (>30 days)
+
+**Risk 8: Time Overrun**
+- **Impact**: Project takes longer than 12 weeks
+- **Probability**: High (most projects do)
+- **Mitigation**:
+  - MVP mindset: cut non-essential features
+  - Prioritize ruthlessly (critical path first)
+  - Time-box tasks (don't over-engineer)
+  - Track actual vs estimated time
+  - Adjust plan weekly
+
+---
+
+## **MVP vs FULL FEATURE SET**
+
+### **Absolute MVP (6-8 weeks):**
+
+**Must Have:**
+- ✅ Task 1.1, 1.2 (Foundation)
+- ✅ Task 2.1, 2.2, 2.4 (Flight data from 2 sources)
+- ✅ Task 3.1, 3.3 (Booking.com only for accommodation)
+- ✅ Task 5.1, 5.2 (AI deal scoring)
+- ✅ Task 6.2 (Email notifications only)
+- ✅ Task 7.1 (Basic Celery scheduling)
+- ✅ Task 8.1 (Simple API)
+- ✅ Task 9.1 (Basic deployment)
+
+**Cut from MVP:**
+- ❌ Ryanair scraper (Task 2.3)
+- ❌ Airbnb (Task 3.2)
+- ❌ EventBrite (Task 4.1)
+- ❌ All event-related features
+- ❌ Parent escape mode (Task 5.5)
+- ❌ Itinerary generator (Task 5.4)
+- ❌ Push notifications (Task 6.1)
+- ❌ Smart scheduling (Task 7.2)
+- ❌ React dashboard (Task 8.2)
+- ❌ Full monitoring (Task 9.2)
+
+**MVP Result:**
+- Monitors flights from 2 sources (Skyscanner + Kiwi)
+- Finds Booking.com accommodations
+- AI scores deals
+- Sends email when great deal found
+- Aligns with school holidays
+- Basic web API
+- Deployed and running
+
+**Time to MVP: 6-8 weeks**
+
+### **Full Feature Set (12 weeks):**
+- Everything in the task list above
+
+### **Post-Launch Features (Future):**
+- Train ticket integration (DB, SNCF, Trenitalia)
+- Mobile app (React Native)
+- Collaborative trip planning (share deals with friends)
+- Trip booking integration (book directly from app)
+- Price prediction ML model
+- More event sources (Meetup, local calendars)
+- Group trip planning
+- Budget tracking (actual spend vs planned)
+- Travel journal integration
+- Photo sharing
+- More destinations (Asia, Americas)
+
+---
+
+## **PORTFOLIO PRESENTATION CHECKLIST**
+
+### **Before Job Applications:**
+
+**Technical Preparation:**
+- [ ] Project deployed and accessible online
+- [ ] Demo account created with sample data loaded
+- [ ] All features working (test thoroughly)
+- [ ] README is comprehensive and well-formatted
+- [ ] Architecture diagram is clear and professional
+- [ ] Code is clean, commented, follows style guide
+- [ ] Tests are passing, coverage report available
+- [ ] No secrets committed to git (check carefully)
+
+**Demo Preparation:**
+- [ ] Record 3-minute demo video showing key features
+- [ ] Prepare 10-minute live demo script
+- [ ] Have example deals ready to show
+- [ ] Know your talking points for each technical decision
+- [ ] Practice explaining AI integration
+- [ ] Prepare cost breakdown explanation
+- [ ] Know your scalability answers
+
+**Documentation Preparation:**
+- [ ] Portfolio blog post written (your personal site/Medium)
+- [ ] LinkedIn post announcing project
+- [ ] GitHub repository description optimized for search
+- [ ] Screenshots for portfolio added
+- [ ] Metrics collected (LOC, test coverage, API integrations, etc.)
+
+**Interview Preparation:**
+- [ ] Can explain architecture in 2 minutes
+- [ ] Can explain any part in detail on request
+- [ ] Know trade-offs made and alternatives considered
+- [ ] Prepared for "what would you do differently" question
+- [ ] Have cost optimization story ready
+- [ ] Can explain prompt engineering approach
+- [ ] Ready to discuss testing strategy
+- [ ] Prepared to live-code a small feature addition
+
+**GitHub Polish:**
+- [ ] Pin repository to profile
+- [ ] Add topics/tags: ai, machine-learning, travel, fastapi, react, etc.
+- [ ] Add license (MIT recommended)
+- [ ] Add contributing guidelines
+- [ ] Add issue templates
+- [ ] Star related projects (show engagement)
+- [ ] Clean commit history (good commit messages)
+
+---
+
+## **SUCCESS METRICS**
+
+### **Technical Metrics:**
+- ✅ Test coverage >80%
+- ✅ API response time <500ms (p95)
+- ✅ Uptime >99% (after initial launch period)
+- ✅ Zero security vulnerabilities (run security scan)
+- ✅ Claude API cost <€50/month for single user
+- ✅ Deal discovery rate >5 deals/week
+
+### **Portfolio Metrics:**
+- ✅ GitHub stars (aim for 10+ from sharing in communities)
+- ✅ Demo video views
+- ✅ LinkedIn post engagement
+- ✅ Interview requests mentioning the project
+
+### **Functional Metrics:**
+- ✅ First deal notification received within 48h of deployment
+- ✅ At least one "outstanding deal" (score >85) found in first week
+- ✅ Actual trip booked using the system within 3 months
+- ✅ Total savings vs. manual searching >€500 in first year
+
+---
+
+## **FINAL RECOMMENDATIONS**
+
+### **Getting Started (This Week):**
+
+1. **Day 1**: Set up project structure (Task 1.1)
+2. **Day 2**: Create database schema (Task 1.2)
+3. **Day 3**: Register for all API keys (see list above)
+4. **Day 4-5**: Start first data source (Task 2.1 - Skyscanner)
+
+### **Working with Claude Code:**
+
+**Best Practices:**
+- Give one task at a time, fully specified
+- Provide context about how it fits in the system
+- Include concrete examples in your prompts
+- Specify acceptance criteria clearly
+- Request tests to be included
+- Review code thoroughly before moving to next task
+- Test each component before integration
+
+**When to Break Down Further:**
+- If a task takes >8 hours, break it into subtasks
+- Example: Task 8.2 (React Dashboard) could be broken into:
+  - 8.2a: Project setup + routing
+  - 8.2b: Dashboard home page
+  - 8.2c: Deal details page
+  - 8.2d: Preferences page
+  - 8.2e: Price trends visualization
+
+### **Staying Motivated:**
+
+- **Week 1-2**: Foundation feels slow but necessary
+- **Week 3-4**: First data flowing, exciting to see flights appear!
+- **Week 5-6**: AI integration, watch Claude analyze deals (very cool)
+- **Week 7-8**: First notifications sent (major milestone)
+- **Week 9-10**: Dashboard comes to life visually
+- **Week 11**: Deployment, goes live!
+- **Week 12**: Polish, share with the world
+
+**Celebrate milestones:**
+- First flight scraped ✅
+- First deal scored by AI ✅
+- First notification received ✅
+- First trip booked using the system ✅
+- First interview mentioning the project ✅
+
+---
+
+This specification should give you everything you need to delegate to Claude Code and build this project systematically. The key is to work through tasks in order, test thoroughly, and maintain momentum. Good luck with your build! 🚀
+
+
+
+
+
+
+
+
+ew chat
+What are the  best way to  learn ho to become an AI inginer using claude code through projects ?
+
+Great question! Learning AI engineering through hands-on projects with Claude Code is an excellent approach. Here's how to structure your learning journey:
+
+Start with Foundational Projects
+Build a Custom Chatbot
+Create a chatbot with specific personality/knowledge domain
+Learn prompt engineering, context management, API integration
+Add features like conversation history, RAG (retrieval-augmented generation)
+Data Analysis Tool
+Build a tool that processes CSV/JSON data and generates insights
+Learn to structure prompts for data interpretation
+Add visualization with libraries like matplotlib or plotly
+Code Review Assistant
+Create a tool that analyzes code for bugs, improvements, security issues
+Learn to work with different programming languages through Claude
+Understand how to structure technical prompts
+Progressive Learning Path
+Phase 1: API Basics (Week 1-2)
+
+Set up Claude Code CLI
+Learn API fundamentals: messages, system prompts, temperature settings
+Build simple scripts that call Claude for different tasks
+Phase 2: Prompt Engineering (Week 3-4)
+
+Experiment with different prompting techniques
+Build a "prompt testing framework" to compare outputs
+Learn few-shot learning, chain-of-thought reasoning
+Phase 3: Complex Workflows (Week 5-8)
+
+Multi-step agents that break down complex tasks
+Tool use and function calling
+Build a coding assistant that can write, test, and debug code
+Phase 4: Production Applications (Week 9-12)
+
+Error handling, rate limiting, cost optimization
+Streaming responses for better UX
+Build a full application (web app with AI backend)
+Specific Project Ideas
+Beginner:
+
+Personal knowledge base with semantic search
+Automated email/report generator
+Study buddy that creates quizzes from documents
+Intermediate:
+
+Code documentation generator
+SQL query builder from natural language
+API endpoint tester with intelligent suggestions
+Advanced:
+
+Multi-agent system (researcher + writer + critic)
+AI-powered development environment plugin
+Custom RAG system with vector databases
+Best Practices
+Version control everything - Track your prompts and code
+Measure and iterate - Log outputs, test systematically
+Start simple, add complexity - Get something working first
+Study real codebases - Look at open-source AI projects
+Join communities - Share your projects, get feedback
+Resources to Complement
+Read Anthropic's prompt engineering docs at docs.claude.com
+Study the API reference thoroughly
+Follow AI engineering blogs and newsletters
+Contribute to open-source AI tools
+Pro tip: The best way to learn is to build something you'll actually use. What problem do you want to solve? Starting with a personal need will keep you motivated through the learning curve.
+
+What kind of project interests you most? I can help you plan the first steps!
+
+my personal need is to improve as a software engineer and add ai engineering to my belt in order to be more competitive on the job market. Also I would like to be able to have this one as a portfolio project. I also have a tight budget for my family but at the same time we really want to travel. I'm looking to build something that would allow me to get notified when there are cheap flight or train tickets + hotel or airbnb suitable for a family with 2 small kids. The area I'm interested is western europe + Moldova as my home country. I'm also interested in finding best promotions which ally with german school holidays. Ideally I should have a push notification to my phone when there is an outstanding travel oportunity.
+
+This is a perfect project - it solves a real problem, demonstrates multiple AI engineering skills, and will be highly impressive in a portfolio. Let me break down a comprehensive plan:
+
+Project: Smart Family Travel Scout
+Core Features (MVP)
+Flight/Train Monitoring
+Track routes from your city (Munich?) to destinations in Western Europe + Moldova
+Monitor Ryanair, Lufthansa, FlixTrain, DB (Deutsche Bahn)
+Set price thresholds (e.g., flights under €50/person)
+Accommodation Matching
+Automatically search Airbnb/Booking.com for family-friendly places
+Filter: 2+ bedrooms, kitchen, kid-friendly amenities
+Calculate total trip cost (flights + accommodation)
+School Holiday Alignment
+Bavaria school holiday calendar integration
+Only alert for trips during vacation periods
+Weekend trip suggestions (Fri-Sun)
+AI-Powered Analysis (this is where you shine!)
+Claude analyzes if deal is genuinely good vs. historical prices
+Generates personalized recommendations based on your preferences
+Creates kid-friendly itinerary suggestions for each destination
+Summarizes why this trip is a good deal
+Push Notifications
+Mobile push via Firebase/OneSignal
+Include: price, dates, destination, AI summary, booking links
+Technical Architecture
+┌─────────────────┐
+│  Scheduled Jobs │ (every 4-12 hours)
+│   (Cloud/Cron)  │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│  Data Collection Layer          │
+│  - Skyscanner API / Web scraping│
+│  - Booking.com API              │
+│  - School holiday calendar      │
+└────────┬────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│  AI Analysis Layer (Claude)     │
+│  - Price analysis               │
+│  - Deal evaluation              │
+│  - Itinerary generation         │
+└────────┬────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│  Notification Service           │
+│  - Firebase/OneSignal           │
+│  - SMS backup (Twilio)          │
+└─────────────────────────────────┘
+Tech Stack Recommendation
+Backend:
+
+Python (easiest for data scraping + Claude integration)
+FastAPI (for web dashboard + API)
+PostgreSQL (store historical prices, user preferences)
+Celery (scheduled tasks)
+AI Layer:
+
+Claude API (via Claude Code for development)
+LangChain (optional, for complex workflows)
+Deployment:
+
+Railway/Render (free tier) or AWS Lambda (pay per use)
+GitHub Actions (free CI/CD)
+Mobile Notifications:
+
+Firebase Cloud Messaging (free)
+Expo (if you want a simple mobile companion app)
+Phase-by-Phase Build Plan
+Phase 1: Data Collection (Week 1-2)
+
+python
+# Core scraping/API logic
+- Set up Skyscanner API or Amadeus API (both have free tiers)
+- Build scraper for Booking.com (family filters)
+- Create Bavaria school holiday calendar
+- Store data in PostgreSQL
+Phase 2: AI Integration (Week 3-4)
+
+python
+# Claude integration for intelligence
+- Price trend analysis: "Is €120 for Munich→Lisbon good?"
+- Deal scoring: Consider season, destination popularity
+- Family-friendly assessment: Beach vs. museum cities
+- Generate 3-day itinerary with kid activities
+Phase 3: Notification System (Week 5)
+
+python
+# Alert logic
+- Define "outstanding deal" criteria with Claude's help
+- Implement Firebase push notifications
+- Create notification templates
+- Add email backup
+Phase 4: Web Dashboard (Week 6-7)
+
+python
+# Simple UI to manage preferences
+- Set destinations, price thresholds
+- View historical deals
+- Adjust AI preferences (adventure vs. relaxation)
+- See upcoming school holidays
+Phase 5: Polish & Portfolio (Week 8)
+
+Add monitoring/logging
+Write comprehensive README
+Create demo video
+Deploy to production
+AI Engineering Skills You'll Demonstrate
+Prompt Engineering
+Multi-step reasoning for deal analysis
+Context management with historical data
+Structured output parsing
+RAG (Retrieval-Augmented Generation)
+Feed Claude historical price data
+Include destination reviews/info
+Reference school holiday constraints
+AI Agents
+Autonomous decision-making (alert or not?)
+Tool use (calling price APIs, generating itineraries)
+Multi-step workflows
+Cost Optimization
+Cache frequently asked questions
+Use Claude strategically (not for every price check)
+Batch API calls
+Claude Code Usage Examples
+Analyzing a Deal:
+
+python
+prompt = f"""
+You're a family travel expert. Analyze this deal:
+
+Flight: Munich → Porto
+Price: €89/person (€356 total for 4)
+Dates: {dates} (Easter break)
+Historical prices: Usually €150-200/person
+
+Accommodation found:
+- 2BR apartment, €80/night
+- Kid-friendly: playground, kitchen
+
+Total 4-day trip cost: €596
+
+Is this an outstanding deal worth alerting the family?
+Provide: 1) Yes/No, 2) Confidence score, 3) Brief reasoning, 4) Kid activity suggestions
+"""
+Generating Itinerary:
+
+python
+prompt = f"""
+Create a 3-day Porto itinerary for:
+- Family with kids aged 3 and 6
+- Staying in Ribeira district
+- Mix of educational + fun activities
+- Budget-friendly (€100/day max)
+- Include nap-time considerations
+
+Format as JSON with day-by-day schedule.
+"""
+Portfolio Presentation Points
+✅ Real-world problem solving (saving money + family time)
+✅ Full-stack AI application (data pipeline → AI → notifications)
+✅ Cost-conscious AI engineering (efficient Claude API usage)
+✅ Production deployment (scheduled jobs, monitoring)
+✅ Domain expertise (travel industry, price optimization)
+
+Budget-Friendly Development
+Skyscanner API: Free tier (100 calls/day)
+Claude API: ~$3-5/month for development (batch calls)
+Hosting: Railway/Render free tier
+Firebase: Free for basic push notifications
+Total: Under €10/month in production
+Next Steps
+This weekend: Set up project repo, explore Skyscanner/Amadeus API
+Week 1: Get first flight price data flowing
+Week 2: Integrate Claude for basic price analysis
+Week 3: Build notification system
+Want me to help you:
+
+Create the initial project structure with Claude Code?
+Design the database schema?
+Write the first Claude prompt for deal analysis?
+Set up the API integration code?
+This project will genuinely make you stand out - it combines practical value, technical depth, and AI engineering skills in a way that tells a compelling story in interviews!
+
+Let's plan a bit more. I would like to extend the flight checks not only to skyscanner but to all flight companies that fly out of munich + airports in the area (memmingen, Salzburg, Nuremberg). The accomodation should be searched not only on booking but also in airbnb. The agent should also check destinations for specific events around the destination area. Think of an option that will check for appropriate events and escapes for the parents without kids, normaly for 2-3 nights at most.
+
+Excellent additions! This makes the project even more robust and marketable. Let's expand the architecture:
+
+Enhanced Project: Intelligent Family Travel Scout + Parent Escape Planner
+Extended Data Sources
+Flight Coverage
+Direct Airline APIs/Scrapers:
+
+Lufthansa Group (Lufthansa, Eurowings, Austrian, Swiss)
+Ryanair (has API for partners)
+Wizz Air (major from Memmingen)
+EasyJet
+Eurowings Discover
+Turkish Airlines (good Moldova connections)
+Air Moldova (direct to Chișinău)
+Meta-Search Engines:
+
+Skyscanner API (aggregator)
+Kiwi.com API (great for budget airlines)
+Amadeus API (professional grade)
+Google Flights scraping (via Playwright/Selenium)
+Multi-Airport Strategy:
+
+Munich (MUC) - primary hub
+├─ Memmingen (FMM) - 110km - Ryanair/Wizz hub
+├─ Nuremberg (NUE) - 170km - secondary hub
+├─ Salzburg (SZG) - 145km - Austrian/Lufthansa
+└─ Innsbruck (INN) - 160km (bonus for ski trips)
+Accommodation Coverage
+Booking.com:
+
+Official API (Booking.com Affiliate Partner Program)
+Family filters: 2+ bedrooms, kitchen, family rooms
+Price per night tracking
+Airbnb:
+
+Unofficial API (Rapid API has Airbnb endpoints)
+Or scraping via Playwright/Apify
+Filters: "Suitable for children", full apartment, kitchen
+Vrbo/HomeAway:
+
+Another vacation rental option
+Often better for longer stays
+Hotel Aggregators:
+
+Trivago API (meta-search)
+HotelsCombined
+Event Discovery System
+This is where AI really shines! Here's a multi-layered approach:
+
+Data Sources for Events
+Festivals & Cultural Events:
+
+python
+sources = {
+    'EventBrite API': 'concerts, festivals, workshops',
+    'Meetup API': 'local community events',
+    'Ticketmaster API': 'concerts, sports, shows',
+    'Local tourism boards': 'web scraping',
+    'Facebook Events API': 'local happenings',
+    'Songkick API': 'music concerts',
+    'Bandsintown API': 'live music'
+}
+Kid-Specific Events:
+
+Children's museums special exhibitions
+Theme park events (Legoland, Europa Park)
+School holiday programs
+Family festivals
+Parent Escape Events:
+
+Wine tastings / vineyard tours
+Michelin restaurant reservations
+Spa weekend deals
+Concert series (classical, jazz, rock)
+Sports events (football, Formula 1)
+Art exhibitions
+Food festivals
+Wellness retreats
+AI-Powered Event Matching
+Claude's Role in Event Analysis:
+
+python
+event_analysis_prompt = """
+Analyze these upcoming events in {destination}:
+
+{events_json}
+
+Context:
+- Family with kids aged 3 & 6
+- Travel dates: {date_range}
+- Interests: culture, nature, food
+- Budget-conscious
+
+Tasks:
+1. Categorize events:
+   - Family-friendly (all 4 people)
+   - Parent escape (adults only, kids with babysitter/hotel kids club)
+   - Skip (not relevant)
+
+2. For parent escapes, identify:
+   - Nearby hotels with kids club
+   - Local babysitting services
+   - Event timing (evening/day)
+
+3. Score each event (0-10) based on:
+   - Uniqueness (not available elsewhere)
+   - Timing alignment with trip
+   - Value for money
+   - Experience quality
+
+Output as structured JSON.
+"""
+Parent Escape Mode Features
+Specialized Search Parameters
+2-3 Night Getaways:
+
+python
+parent_escape_criteria = {
+    'duration': '2-3 nights',
+    'accommodation_type': [
+        'boutique_hotel_with_spa',
+        'wine_resort',
+        'adults_only_hotel',
+        'city_center_luxury'
+    ],
+    'must_have': [
+        'easy_train_access',  # No driving after wine tasting!
+        'walkable_city_center',
+        'michelin_restaurants_nearby'
+    ],
+    'events': [
+        'wine_tasting',
+        'concerts',
+        'spa_treatments',
+        'fine_dining_experiences',
+        'cultural_exhibitions',
+        'sports_events'
+    ],
+    'kid_solution': [
+        'grandparents_visit',
+        'trusted_babysitter',
+        'weekend_with_friends'
+    ]
+}
+Smart Destination Suggestions for Parents
+AI-Curated "Escape-Worthy" Destinations:
+
+python
+escape_destinations = {
+    'Romantic & Wine': ['Bordeaux', 'Tuscany', 'Porto', 'Rhine Valley'],
+    'Cultural & Arts': ['Vienna', 'Prague', 'Barcelona', 'Copenhagen'],
+    'Wellness & Spa': ['Baden-Baden', 'Lake Como', 'Budapest thermal baths'],
+    'Foodie Paradise': ['San Sebastian', 'Lyon', 'Bologna', 'Copenhagen'],
+    'Concert/Festival': ['Salzburg Festival', 'Montreux Jazz', 'Edinburgh Fringe']
+}
+```
+
+**Claude analyzes:**
+- Current events calendar
+- Hotel deals with spa packages
+- Restaurant reservation availability
+- Train connections from Munich
+- Overall "romance/recharge" score
+
+### **Enhanced Architecture**
+```
+┌─────────────────────────────────────────────────┐
+│           Scheduled Data Collection             │
+│              (Every 6-12 hours)                 │
+└───────────────────┬─────────────────────────────┘
+                    │
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+┌──────────┐ ┌──────────┐ ┌──────────────┐
+│ Flights  │ │ Accomm.  │ │   Events     │
+│ Layer    │ │ Layer    │ │   Layer      │
+└────┬─────┘ └────┬─────┘ └──────┬───────┘
+     │            │               │
+     │  ┌─────────┴───────────────┘
+     │  │
+     ▼  ▼
+┌──�
