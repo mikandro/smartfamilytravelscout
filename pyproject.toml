@@ -90,8 +90,13 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-addopts = "-v --cov=app --cov-report=term-missing --cov-report=html"
+addopts = "-v"
 asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (integration tests with real browser)",
+    "unit: marks tests as unit tests (fast, mocked)",
+    "integration: marks tests as integration tests",
+]
 
 [tool.coverage.run]
 source = ["app"]
