@@ -158,6 +158,7 @@ data/
 tmp/
 temp/
 cache/
+email_previews/
 
 # Playwright browsers
 .playwright/
