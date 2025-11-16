@@ -1,11 +1,16 @@
 """
-Flight scrapers for various airlines and booking platforms.
+Scrapers package for SmartFamilyTravelScout.
 
-This package contains scrapers that fetch flight data from different sources:
+Provides web scrapers for flight, accommodation, and event data from various sources:
+- Skyscanner: Flight search aggregator
 - WizzAir: Budget airline with routes to Eastern Europe
-- (More scrapers to be added)
 """
 
+from app.scrapers.skyscanner_scraper import (
+    CaptchaDetectedError,
+    RateLimitExceededError,
+    SkyscannerScraper,
+)
 from app.scrapers.wizzair_scraper import (
     WizzAirAPIError,
     WizzAirRateLimitError,
@@ -14,6 +19,11 @@ from app.scrapers.wizzair_scraper import (
 )
 
 __all__ = [
+    # Skyscanner
+    "SkyscannerScraper",
+    "RateLimitExceededError",
+    "CaptchaDetectedError",
+    # WizzAir
     "WizzAirScraper",
     "WizzAirAPIError",
     "WizzAirRateLimitError",
