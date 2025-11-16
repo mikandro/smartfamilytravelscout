@@ -178,11 +178,6 @@ class Settings(BaseSettings):
         """Get synchronous database URL (for Alembic)."""
         return str(self.database_url).replace("+asyncpg", "")
 
-    class Config:
-        """Pydantic configuration."""
-
-        case_sensitive = False
-
 
 @lru_cache()
 def get_settings() -> Settings:
