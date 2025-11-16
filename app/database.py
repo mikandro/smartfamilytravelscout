@@ -9,15 +9,14 @@ from typing import AsyncGenerator
 
 from sqlalchemy import create_engine, event, pool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 
-logger = logging.getLogger(__name__)
+# Import Base from models to ensure all models are registered
+from app.models.base import Base  # noqa: F401
 
-# Base class for SQLAlchemy models
-Base = declarative_base()
+logger = logging.getLogger(__name__)
 
 # Async Engine Configuration
 async_engine = create_async_engine(
@@ -132,25 +131,74 @@ async def get_async_session_context() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db() -> None:
     """
-    Initialize database tables.
+    Initialize database tables (async).
 
     WARNING: This should only be used in development.
     In production, use Alembic migrations instead.
     """
+    # Import all models to ensure they're registered
+    from app import models  # noqa: F401
+
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created successfully")
 
 
+def init_db_sync() -> None:
+    """
+    Initialize database tables (synchronous).
+
+    WARNING: This should only be used in development.
+    In production, use Alembic migrations instead.
+    """
+    # Import all models to ensure they're registered
+    from app import models  # noqa: F401
+
+    Base.metadata.create_all(bind=sync_engine)
+    logger.info("Database tables created successfully (sync)")
+
+
 async def drop_db() -> None:
     """
-    Drop all database tables.
+    Drop all database tables (async).
 
     WARNING: This will delete all data! Only use in development/testing.
     """
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     logger.warning("All database tables dropped")
+
+
+def drop_db_sync() -> None:
+    """
+    Drop all database tables (synchronous).
+
+    WARNING: This will delete all data! Only use in development/testing.
+    """
+    Base.metadata.drop_all(bind=sync_engine)
+    logger.warning("All database tables dropped (sync)")
+
+
+async def reset_db() -> None:
+    """
+    Reset database by dropping and recreating all tables (async).
+
+    WARNING: This will delete all data! Only use in development/testing.
+    """
+    await drop_db()
+    await init_db()
+    logger.info("Database reset complete")
+
+
+def reset_db_sync() -> None:
+    """
+    Reset database by dropping and recreating all tables (synchronous).
+
+    WARNING: This will delete all data! Only use in development/testing.
+    """
+    drop_db_sync()
+    init_db_sync()
+    logger.info("Database reset complete (sync)")
 
 
 async def check_db_connection() -> bool:
