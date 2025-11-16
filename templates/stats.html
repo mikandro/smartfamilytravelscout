@@ -1,0 +1,305 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <!-- Page Header -->
+    <div class="row mb-4">
+        <div class="col">
+            <h1 class="display-4">
+                <i class="bi bi-graph-up text-primary"></i>
+                Statistics
+            </h1>
+            <p class="lead text-muted">Analysis and insights from your travel deals</p>
+        </div>
+    </div>
+
+    <!-- Summary Statistics Cards -->
+    <div class="row mb-4">
+        <div class="col-md-3 mb-3">
+            <div class="card bg-primary text-white h-100">
+                <div class="card-body text-center">
+                    <i class="bi bi-bag-fill display-4 mb-2"></i>
+                    <h2 class="card-title">{{ stats.total_packages }}</h2>
+                    <p class="card-text">Total Packages</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-3 mb-3">
+            <div class="card bg-success text-white h-100">
+                <div class="card-body text-center">
+                    <i class="bi bi-star-fill display-4 mb-2"></i>
+                    <h2 class="card-title">{{ stats.high_score_packages }}</h2>
+                    <p class="card-text">High Score (70+)</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-3 mb-3">
+            <div class="card bg-info text-white h-100">
+                <div class="card-body text-center">
+                    <i class="bi bi-graph-up display-4 mb-2"></i>
+                    <h2 class="card-title">{{ stats.avg_score }}</h2>
+                    <p class="card-text">Average Score</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-3 mb-3">
+            <div class="card bg-warning text-dark h-100">
+                <div class="card-body text-center">
+                    <i class="bi bi-currency-euro display-4 mb-2"></i>
+                    <h2 class="card-title">€{{ stats.avg_price | int }}</h2>
+                    <p class="card-text">Average Price</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Charts Row -->
+    <div class="row mb-4">
+        <!-- Price Distribution Chart -->
+        <div class="col-lg-6 mb-4">
+            <div class="card">
+                <div class="card-header bg-light">
+                    <h5 class="mb-0">
+                        <i class="bi bi-bar-chart-fill"></i>
+                        Price Distribution
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="priceChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI Score Distribution Chart -->
+        <div class="col-lg-6 mb-4">
+            <div class="card">
+                <div class="card-header bg-light">
+                    <h5 class="mb-0">
+                        <i class="bi bi-pie-chart-fill"></i>
+                        AI Score Distribution
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="scoreChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Top Destinations Table -->
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">
+                        <i class="bi bi-trophy-fill"></i>
+                        Top Destinations
+                    </h5>
+                </div>
+                <div class="card-body">
+                    {% if top_destinations %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Destination</th>
+                                    <th>Packages</th>
+                                    <th>Avg Score</th>
+                                    <th>Rating</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for dest in top_destinations %}
+                                <tr>
+                                    <td>{{ loop.index }}</td>
+                                    <td>
+                                        <i class="bi bi-geo-alt-fill text-danger"></i>
+                                        <strong>{{ dest[0] }}</strong>
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-primary rounded-pill">{{ dest[1] }}</span>
+                                    </td>
+                                    <td>
+                                        <span class="badge {% if dest[2] >= 80 %}bg-success{% elif dest[2] >= 70 %}bg-info{% else %}bg-secondary{% endif %}">
+                                            {{ dest[2] | round(1) }}/100
+                                        </span>
+                                    </td>
+                                    <td>
+                                        {% set score = dest[2] | round(0) | int %}
+                                        {% for i in range(5) %}
+                                            {% if i < (score // 20) %}
+                                                <i class="bi bi-star-fill text-warning"></i>
+                                            {% else %}
+                                                <i class="bi bi-star text-muted"></i>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% else %}
+                    <div class="alert alert-info mb-0" role="alert">
+                        <i class="bi bi-info-circle-fill me-2"></i>
+                        No destination data available yet.
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick Stats -->
+        <div class="col-lg-4">
+            <div class="card bg-light">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="bi bi-speedometer2"></i>
+                        Quick Stats
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <h6 class="text-muted">Unique Destinations</h6>
+                        <h3>{{ stats.unique_destinations }}</h3>
+                    </div>
+                    <hr>
+                    <div class="mb-3">
+                        <h6 class="text-muted">Total Price Range</h6>
+                        <h3>
+                            {% if price_data %}
+                            €{{ price_data[0][0] | round(0) | int }} - €{{ price_data[-1][0] | round(0) | int }}
+                            {% else %}
+                            N/A
+                            {% endif %}
+                        </h3>
+                    </div>
+                    <hr>
+                    <div>
+                        <h6 class="text-muted">Score Range</h6>
+                        <h3>
+                            {% if score_data %}
+                            {{ score_data[-1][0] | round(0) | int }} - {{ score_data[0][0] | round(0) | int }}/100
+                            {% else %}
+                            N/A
+                            {% endif %}
+                        </h3>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+<script>
+    // Price Distribution Chart
+    const priceCtx = document.getElementById('priceChart');
+    if (priceCtx) {
+        const priceData = {{ price_data | tojson }};
+        const priceBuckets = [0, 500, 1000, 1500, 2000, 3000, 5000];
+        const priceCounts = new Array(priceBuckets.length - 1).fill(0);
+
+        priceData.forEach(([price]) => {
+            for (let i = 0; i < priceBuckets.length - 1; i++) {
+                if (price >= priceBuckets[i] && price < priceBuckets[i + 1]) {
+                    priceCounts[i]++;
+                    break;
+                }
+            }
+        });
+
+        new Chart(priceCtx, {
+            type: 'bar',
+            data: {
+                labels: priceBuckets.slice(0, -1).map((val, i) =>
+                    `€${val}-${priceBuckets[i + 1]}`
+                ),
+                datasets: [{
+                    label: 'Number of Packages',
+                    data: priceCounts,
+                    backgroundColor: 'rgba(13, 110, 253, 0.7)',
+                    borderColor: 'rgba(13, 110, 253, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            stepSize: 1
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    }
+                }
+            }
+        });
+    }
+
+    // Score Distribution Chart
+    const scoreCtx = document.getElementById('scoreChart');
+    if (scoreCtx) {
+        const scoreData = {{ score_data | tojson }};
+        const scoreRanges = {
+            'Excellent (80-100)': 0,
+            'Good (70-79)': 0,
+            'Fair (60-69)': 0,
+            'Poor (0-59)': 0
+        };
+
+        scoreData.forEach(([score]) => {
+            if (score >= 80) scoreRanges['Excellent (80-100)']++;
+            else if (score >= 70) scoreRanges['Good (70-79)']++;
+            else if (score >= 60) scoreRanges['Fair (60-69)']++;
+            else scoreRanges['Poor (0-59)']++;
+        });
+
+        new Chart(scoreCtx, {
+            type: 'doughnut',
+            data: {
+                labels: Object.keys(scoreRanges),
+                datasets: [{
+                    data: Object.values(scoreRanges),
+                    backgroundColor: [
+                        'rgba(25, 135, 84, 0.7)',   // Green
+                        'rgba(13, 202, 240, 0.7)',  // Cyan
+                        'rgba(255, 193, 7, 0.7)',   // Yellow
+                        'rgba(220, 53, 69, 0.7)'    // Red
+                    ],
+                    borderColor: [
+                        'rgba(25, 135, 84, 1)',
+                        'rgba(13, 202, 240, 1)',
+                        'rgba(255, 193, 7, 1)',
+                        'rgba(220, 53, 69, 1)'
+                    ],
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: {
+                        position: 'bottom'
+                    }
+                }
+            }
+        });
+    }
+</script>
+{% endblock %}

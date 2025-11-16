@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <!-- Page Header -->
+    <div class="row mb-4">
+        <div class="col">
+            <h1 class="display-4">
+                <i class="bi bi-tag-fill text-primary"></i>
+                All Deals
+            </h1>
+            <p class="lead text-muted">Browse and filter family travel packages</p>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="card mb-4">
+        <div class="card-header bg-light">
+            <h5 class="mb-0">
+                <i class="bi bi-funnel-fill"></i>
+                Filters
+            </h5>
+        </div>
+        <div class="card-body">
+            <form method="get" action="/deals" class="row g-3">
+                <div class="col-md-3">
+                    <label for="min_score" class="form-label">Min AI Score</label>
+                    <select name="min_score" id="min_score" class="form-select">
+                        <option value="0" {% if not filters.min_score %}selected{% endif %}>Any</option>
+                        <option value="50" {% if filters.min_score == 50 %}selected{% endif %}>50+</option>
+                        <option value="60" {% if filters.min_score == 60 %}selected{% endif %}>60+</option>
+                        <option value="70" {% if filters.min_score == 70 %}selected{% endif %}>70+</option>
+                        <option value="80" {% if filters.min_score == 80 %}selected{% endif %}>80+</option>
+                        <option value="90" {% if filters.min_score == 90 %}selected{% endif %}>90+</option>
+                    </select>
+                </div>
+
+                <div class="col-md-3">
+                    <label for="destination" class="form-label">Destination</label>
+                    <select name="destination" id="destination" class="form-select">
+                        <option value="">All Destinations</option>
+                        {% for dest in destinations %}
+                        <option value="{{ dest }}" {% if filters.destination == dest %}selected{% endif %}>
+                            {{ dest }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="col-md-2">
+                    <label for="min_price" class="form-label">Min Price (€)</label>
+                    <input type="number" name="min_price" id="min_price" class="form-control"
+                           value="{{ filters.min_price or '' }}" placeholder="0">
+                </div>
+
+                <div class="col-md-2">
+                    <label for="max_price" class="form-label">Max Price (€)</label>
+                    <input type="number" name="max_price" id="max_price" class="form-control"
+                           value="{{ filters.max_price or '' }}" placeholder="5000">
+                </div>
+
+                <div class="col-md-2">
+                    <label for="package_type" class="form-label">Package Type</label>
+                    <select name="package_type" id="package_type" class="form-select">
+                        <option value="">All Types</option>
+                        <option value="family_trip" {% if filters.package_type == 'family_trip' %}selected{% endif %}>
+                            Family Trip
+                        </option>
+                        <option value="romantic_getaway" {% if filters.package_type == 'romantic_getaway' %}selected{% endif %}>
+                            Romantic Getaway
+                        </option>
+                    </select>
+                </div>
+
+                <div class="col-12">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-search"></i>
+                        Apply Filters
+                    </button>
+                    <a href="/deals" class="btn btn-secondary">
+                        <i class="bi bi-x-circle"></i>
+                        Clear Filters
+                    </a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Results Count -->
+    <div class="row mb-3">
+        <div class="col">
+            <h5 class="text-muted">
+                Found {{ deals|length }} deal{% if deals|length != 1 %}s{% endif %}
+            </h5>
+        </div>
+    </div>
+
+    <!-- Deals Grid -->
+    {% if deals %}
+    <div class="row">
+        {% for deal in deals %}
+        <div class="col-lg-4 col-md-6 mb-4">
+            <div class="card h-100 shadow-sm hover-shadow">
+                <div class="card-header bg-white">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-geo-alt-fill text-danger"></i>
+                            {{ deal.destination_city }}
+                        </h5>
+                        <span class="badge {% if deal.ai_score >= 80 %}bg-success{% elif deal.ai_score >= 70 %}bg-info{% else %}bg-secondary{% endif %} rounded-pill">
+                            {{ deal.ai_score | round(0) | int }}/100
+                        </span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <small class="text-muted">
+                            <i class="bi bi-calendar3"></i>
+                            {{ deal.departure_date.strftime('%b %d, %Y') if deal.departure_date else 'TBD' }}
+                            -
+                            {{ deal.return_date.strftime('%b %d, %Y') if deal.return_date else 'TBD' }}
+                        </small>
+                        <br>
+                        <small class="text-muted">
+                            <i class="bi bi-moon-stars-fill"></i>
+                            {{ deal.num_nights }} nights
+                        </small>
+                    </div>
+
+                    <div class="mb-3">
+                        <span class="badge bg-light text-dark">
+                            {{ deal.package_type | replace('_', ' ') | capitalize }}
+                        </span>
+                    </div>
+
+                    <h3 class="text-primary mb-2">
+                        €{{ deal.total_price | round(0) | int }}
+                    </h3>
+                    <p class="small text-muted mb-0">
+                        €{{ (deal.total_price / deal.num_nights) | round(0) | int }} per night
+                    </p>
+
+                    {% if deal.ai_reasoning %}
+                    <p class="card-text small text-muted mb-3 mt-2">
+                        {{ deal.ai_reasoning[:100] }}{% if deal.ai_reasoning|length > 100 %}...{% endif %}
+                    </p>
+                    {% endif %}
+                </div>
+                <div class="card-footer bg-white border-top">
+                    <a href="/deal/{{ deal.id }}" class="btn btn-primary btn-sm w-100">
+                        <i class="bi bi-eye-fill"></i>
+                        View Details
+                    </a>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="row">
+        <div class="col">
+            <div class="alert alert-warning" role="alert">
+                <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                No deals found matching your filters. Try adjusting the criteria.
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .hover-shadow {
+        transition: box-shadow 0.3s ease-in-out;
+    }
+    .hover-shadow:hover {
+        box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15) !important;
+    }
+</style>
+{% endblock %}

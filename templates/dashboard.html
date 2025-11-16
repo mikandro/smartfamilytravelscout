@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <!-- Page Header -->
+    <div class="row mb-4">
+        <div class="col">
+            <h1 class="display-4">
+                <i class="bi bi-house-fill text-primary"></i>
+                Dashboard
+            </h1>
+            <p class="lead text-muted">Welcome to your family travel deal finder</p>
+        </div>
+    </div>
+
+    <!-- Statistics Cards -->
+    <div class="row mb-4">
+        <div class="col-md-3 mb-3">
+            <div class="card bg-primary text-white h-100">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h6 class="card-subtitle mb-2 text-white-50">Total Deals</h6>
+                            <h2 class="card-title mb-0">{{ stats.total_packages }}</h2>
+                        </div>
+                        <i class="bi bi-bag-fill display-4 opacity-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-3 mb-3">
+            <div class="card bg-success text-white h-100">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h6 class="card-subtitle mb-2 text-white-50">High Score Deals</h6>
+                            <h2 class="card-title mb-0">{{ stats.high_score_packages }}</h2>
+                        </div>
+                        <i class="bi bi-star-fill display-4 opacity-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-3 mb-3">
+            <div class="card bg-info text-white h-100">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h6 class="card-subtitle mb-2 text-white-50">Avg Score</h6>
+                            <h2 class="card-title mb-0">{{ stats.avg_score }}/100</h2>
+                        </div>
+                        <i class="bi bi-graph-up display-4 opacity-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-3 mb-3">
+            <div class="card bg-warning text-dark h-100">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h6 class="card-subtitle mb-2">Avg Price</h6>
+                            <h2 class="card-title mb-0">€{{ stats.avg_price | int }}</h2>
+                        </div>
+                        <i class="bi bi-currency-euro display-4 opacity-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Deals Section -->
+    <div class="row mb-4">
+        <div class="col">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h2>
+                    <i class="bi bi-lightning-fill text-warning"></i>
+                    Top Scoring Deals
+                </h2>
+                <a href="/deals" class="btn btn-outline-primary">
+                    View All Deals <i class="bi bi-arrow-right"></i>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Deals Grid -->
+    {% if deals %}
+    <div class="row">
+        {% for deal in deals %}
+        <div class="col-lg-4 col-md-6 mb-4">
+            <div class="card h-100 shadow-sm hover-shadow">
+                <div class="card-header bg-white">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-geo-alt-fill text-danger"></i>
+                            {{ deal.destination_city }}
+                        </h5>
+                        <span class="badge {% if deal.ai_score >= 80 %}bg-success{% elif deal.ai_score >= 70 %}bg-info{% else %}bg-secondary{% endif %} rounded-pill">
+                            {{ deal.ai_score | round(0) | int }}/100
+                        </span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <small class="text-muted">
+                            <i class="bi bi-calendar3"></i>
+                            {{ deal.departure_date.strftime('%b %d, %Y') if deal.departure_date else 'TBD' }}
+                            -
+                            {{ deal.return_date.strftime('%b %d, %Y') if deal.return_date else 'TBD' }}
+                        </small>
+                        <br>
+                        <small class="text-muted">
+                            <i class="bi bi-moon-stars-fill"></i>
+                            {{ deal.num_nights }} nights
+                        </small>
+                    </div>
+
+                    <div class="mb-3">
+                        <span class="badge bg-light text-dark">
+                            {{ deal.package_type | capitalize }}
+                        </span>
+                    </div>
+
+                    <h3 class="text-primary mb-2">
+                        €{{ deal.total_price | round(0) | int }}
+                    </h3>
+
+                    {% if deal.ai_reasoning %}
+                    <p class="card-text small text-muted mb-3">
+                        {{ deal.ai_reasoning[:120] }}{% if deal.ai_reasoning|length > 120 %}...{% endif %}
+                    </p>
+                    {% endif %}
+                </div>
+                <div class="card-footer bg-white border-top">
+                    <a href="/deal/{{ deal.id }}" class="btn btn-primary btn-sm w-100">
+                        <i class="bi bi-eye-fill"></i>
+                        View Details
+                    </a>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="row">
+        <div class="col">
+            <div class="alert alert-info" role="alert">
+                <i class="bi bi-info-circle-fill me-2"></i>
+                No deals found yet. Start by running the search and AI scoring tasks!
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .hover-shadow {
+        transition: box-shadow 0.3s ease-in-out;
+    }
+    .hover-shadow:hover {
+        box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15) !important;
+    }
+</style>
+{% endblock %}
