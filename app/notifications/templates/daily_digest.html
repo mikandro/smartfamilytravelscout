@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>Daily Travel Deals</title>
+    <style>
+        /* Reset and Base Styles */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f5f7fa;
+            color: #333333;
+            line-height: 1.6;
+        }
+
+        table {
+            border-spacing: 0;
+            border-collapse: collapse;
+        }
+
+        img {
+            border: 0;
+            display: block;
+            max-width: 100%;
+            height: auto;
+        }
+
+        /* Container */
+        .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #ffffff;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #ffffff;
+            text-align: center;
+            padding: 40px 20px;
+        }
+
+        .header h1 {
+            margin: 0 0 10px 0;
+            font-size: 32px;
+            font-weight: 700;
+        }
+
+        .header p {
+            margin: 0;
+            font-size: 16px;
+            opacity: 0.95;
+        }
+
+        /* Content */
+        .content {
+            padding: 30px 20px;
+        }
+
+        .summary {
+            background-color: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px 20px;
+            margin-bottom: 30px;
+            border-radius: 4px;
+        }
+
+        .summary p {
+            margin: 0;
+            font-size: 16px;
+            color: #495057;
+        }
+
+        /* Deal Cards */
+        .deal-card {
+            background-color: #ffffff;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            margin-bottom: 25px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+            transition: box-shadow 0.3s ease;
+        }
+
+        .deal-header {
+            background: linear-gradient(to right, #f8f9fa, #ffffff);
+            padding: 20px;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .destination {
+            font-size: 24px;
+            font-weight: 700;
+            color: #2c3e50;
+            margin: 0 0 8px 0;
+        }
+
+        .deal-dates {
+            color: #6c757d;
+            font-size: 15px;
+            margin: 0;
+        }
+
+        .deal-body {
+            padding: 20px;
+        }
+
+        .deal-info {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+
+        .price {
+            font-size: 28px;
+            font-weight: 700;
+            color: #27ae60;
+            margin: 0;
+        }
+
+        .score-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+            color: #ffffff;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .score-high {
+            background: linear-gradient(135deg, #27ae60 0%, #229954 100%);
+        }
+
+        .ai-reasoning {
+            color: #495057;
+            font-size: 15px;
+            line-height: 1.6;
+            margin: 15px 0;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 6px;
+        }
+
+        .deal-footer {
+            padding: 0 20px 20px 20px;
+        }
+
+        .cta-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #ffffff !important;
+            text-decoration: none;
+            padding: 14px 32px;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            text-align: center;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .cta-button:hover {
+            background: linear-gradient(135deg, #5568d3 0%, #6941a0 100%);
+        }
+
+        /* Footer */
+        .footer {
+            background-color: #f8f9fa;
+            padding: 30px 20px;
+            text-align: center;
+            color: #6c757d;
+            font-size: 14px;
+        }
+
+        .footer p {
+            margin: 5px 0;
+        }
+
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        /* Mobile Responsive */
+        @media only screen and (max-width: 600px) {
+            .header h1 {
+                font-size: 26px;
+            }
+
+            .destination {
+                font-size: 20px;
+            }
+
+            .price {
+                font-size: 24px;
+            }
+
+            .deal-info {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+
+            .content {
+                padding: 20px 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+        <tr>
+            <td align="center" style="padding: 20px 0;">
+                <table role="presentation" class="email-container" width="600" cellspacing="0" cellpadding="0">
+                    <!-- Header -->
+                    <tr>
+                        <td class="header">
+                            <h1>🌍 Your Daily Travel Deals</h1>
+                            <p>{{ date | format_date }}</p>
+                        </td>
+                    </tr>
+
+                    <!-- Content -->
+                    <tr>
+                        <td class="content">
+                            <!-- Summary -->
+                            <div class="summary">
+                                <p>{{ summary }}</p>
+                            </div>
+
+                            <!-- Deal Cards -->
+                            {% for deal in deals %}
+                            <div class="deal-card">
+                                <div class="deal-header">
+                                    <h2 class="destination">{{ deal.destination_city }}</h2>
+                                    <p class="deal-dates">
+                                        {{ deal.departure_date | format_date }} - {{ deal.return_date | format_date }}
+                                        ({{ deal.num_nights }} night{% if deal.num_nights != 1 %}s{% endif %})
+                                    </p>
+                                </div>
+
+                                <div class="deal-body">
+                                    <div class="deal-info">
+                                        <p class="price">{{ deal.total_price | format_price }}</p>
+                                        <span class="score-badge {% if deal.ai_score >= 85 %}score-high{% endif %}">
+                                            ⭐ Score: {{ deal.ai_score | round(0) }}/100
+                                        </span>
+                                    </div>
+
+                                    {% if deal.ai_reasoning %}
+                                    <div class="ai-reasoning">
+                                        {{ deal.ai_reasoning }}
+                                    </div>
+                                    {% endif %}
+
+                                    <p style="color: #6c757d; font-size: 14px; margin: 10px 0;">
+                                        💰 {{ deal.price_per_person | format_price }} per person
+                                        • {{ deal.price_per_night | format_price }} per night
+                                    </p>
+                                </div>
+
+                                <div class="deal-footer">
+                                    <a href="https://smartfamilytravelscout.com/deals/{{ deal.id }}" class="cta-button">
+                                        View Full Details →
+                                    </a>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </td>
+                    </tr>
+
+                    <!-- Footer -->
+                    <tr>
+                        <td class="footer">
+                            <p><strong>SmartFamilyTravelScout</strong></p>
+                            <p>Finding the best family travel deals, powered by AI</p>
+                            <p style="margin-top: 15px;">
+                                <a href="https://smartfamilytravelscout.com/preferences">Update Preferences</a> •
+                                <a href="https://smartfamilytravelscout.com/unsubscribe">Unsubscribe</a>
+                            </p>
+                            <p style="margin-top: 10px; font-size: 12px; color: #adb5bd;">
+                                You're receiving this email because you subscribed to daily travel deal alerts.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

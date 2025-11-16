@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>Exceptional Deal Alert</title>
+    <style>
+        /* Reset and Base Styles */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f5f7fa;
+            color: #333333;
+            line-height: 1.6;
+        }
+
+        table {
+            border-spacing: 0;
+            border-collapse: collapse;
+        }
+
+        img {
+            border: 0;
+            display: block;
+            max-width: 100%;
+            height: auto;
+        }
+
+        /* Container */
+        .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #ffffff;
+        }
+
+        /* Alert Banner */
+        .alert-banner {
+            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+            color: #ffffff;
+            text-align: center;
+            padding: 15px 20px;
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #27ae60 0%, #229954 100%);
+            color: #ffffff;
+            text-align: center;
+            padding: 50px 20px;
+        }
+
+        .header h1 {
+            margin: 0 0 15px 0;
+            font-size: 36px;
+            font-weight: 700;
+        }
+
+        .header .score-large {
+            font-size: 48px;
+            font-weight: 800;
+            margin: 20px 0;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .header p {
+            margin: 10px 0 0 0;
+            font-size: 16px;
+            opacity: 0.95;
+        }
+
+        /* Content */
+        .content {
+            padding: 40px 30px;
+        }
+
+        .urgency-notice {
+            background: linear-gradient(to right, #fff3cd, #fcf8e3);
+            border-left: 4px solid #f39c12;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 4px;
+            text-align: center;
+        }
+
+        .urgency-notice p {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+            color: #856404;
+        }
+
+        /* Deal Highlight */
+        .deal-highlight {
+            background: linear-gradient(to bottom, #ffffff, #f8f9fa);
+            border: 2px solid #27ae60;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .destination-large {
+            font-size: 32px;
+            font-weight: 700;
+            color: #2c3e50;
+            margin: 0 0 15px 0;
+            text-align: center;
+        }
+
+        .deal-dates {
+            text-align: center;
+            color: #6c757d;
+            font-size: 17px;
+            margin: 0 0 25px 0;
+        }
+
+        .price-section {
+            background-color: #ffffff;
+            border-radius: 8px;
+            padding: 25px;
+            margin: 25px 0;
+            text-align: center;
+            border: 1px solid #e9ecef;
+        }
+
+        .price-label {
+            font-size: 14px;
+            color: #6c757d;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+
+        .price-large {
+            font-size: 42px;
+            font-weight: 800;
+            color: #27ae60;
+            margin: 10px 0;
+        }
+
+        .price-details {
+            font-size: 15px;
+            color: #6c757d;
+            margin-top: 15px;
+        }
+
+        .ai-reasoning {
+            background-color: #f8f9fa;
+            border-left: 4px solid #27ae60;
+            padding: 20px;
+            margin: 25px 0;
+            border-radius: 6px;
+            font-size: 16px;
+            line-height: 1.7;
+            color: #495057;
+        }
+
+        .ai-reasoning::before {
+            content: "🤖 AI Analysis:";
+            display: block;
+            font-weight: 700;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        /* Features Grid */
+        .features {
+            display: table;
+            width: 100%;
+            margin: 25px 0;
+        }
+
+        .feature-row {
+            display: table-row;
+        }
+
+        .feature-item {
+            display: table-cell;
+            padding: 10px;
+            text-align: center;
+        }
+
+        .feature-icon {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+
+        .feature-label {
+            font-size: 13px;
+            color: #6c757d;
+        }
+
+        .feature-value {
+            font-size: 16px;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        /* CTA Section */
+        .cta-section {
+            text-align: center;
+            padding: 30px 0;
+        }
+
+        .cta-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #27ae60 0%, #229954 100%);
+            color: #ffffff !important;
+            text-decoration: none;
+            padding: 18px 48px;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 700;
+            text-align: center;
+            box-shadow: 0 4px 12px rgba(39, 174, 96, 0.3);
+        }
+
+        .cta-button:hover {
+            background: linear-gradient(135deg, #229954 0%, #1e8449 100%);
+        }
+
+        .cta-subtext {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #6c757d;
+        }
+
+        /* Footer */
+        .footer {
+            background-color: #f8f9fa;
+            padding: 30px 20px;
+            text-align: center;
+            color: #6c757d;
+            font-size: 14px;
+        }
+
+        .footer p {
+            margin: 5px 0;
+        }
+
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        /* Mobile Responsive */
+        @media only screen and (max-width: 600px) {
+            .header h1 {
+                font-size: 28px;
+            }
+
+            .header .score-large {
+                font-size: 36px;
+            }
+
+            .destination-large {
+                font-size: 26px;
+            }
+
+            .price-large {
+                font-size: 36px;
+            }
+
+            .content {
+                padding: 30px 20px;
+            }
+
+            .deal-highlight {
+                padding: 20px;
+            }
+
+            .feature-item {
+                display: block;
+                padding: 10px 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+        <tr>
+            <td align="center" style="padding: 20px 0;">
+                <table role="presentation" class="email-container" width="600" cellspacing="0" cellpadding="0">
+                    <!-- Alert Banner -->
+                    <tr>
+                        <td class="alert-banner">
+                            🚨 Exceptional Deal Alert - Act Fast!
+                        </td>
+                    </tr>
+
+                    <!-- Header -->
+                    <tr>
+                        <td class="header">
+                            <h1>Exceptional Deal Found!</h1>
+                            <div class="score-large">⭐ {{ deal.ai_score | round(0) }}/100</div>
+                            <p>This deal scored exceptionally high on our AI analysis</p>
+                        </td>
+                    </tr>
+
+                    <!-- Content -->
+                    <tr>
+                        <td class="content">
+                            <!-- Urgency Notice -->
+                            <div class="urgency-notice">
+                                <p>⏰ Great deals like this don't last long - Book soon to secure this price!</p>
+                            </div>
+
+                            <!-- Deal Highlight -->
+                            <div class="deal-highlight">
+                                <h2 class="destination-large">{{ deal.destination_city }}</h2>
+                                <p class="deal-dates">
+                                    📅 {{ deal.departure_date | format_date }} - {{ deal.return_date | format_date }}<br>
+                                    {{ deal.num_nights }} night{% if deal.num_nights != 1 %}s{% endif %} of family adventure
+                                </p>
+
+                                <!-- Price Section -->
+                                <div class="price-section">
+                                    <div class="price-label">Total Package Price</div>
+                                    <div class="price-large">{{ deal.total_price | format_price }}</div>
+                                    <div class="price-details">
+                                        💰 {{ deal.price_per_person | format_price }} per person
+                                        • {{ deal.price_per_night | format_price }} per night
+                                    </div>
+                                </div>
+
+                                <!-- Features -->
+                                <table class="features" role="presentation" width="100%">
+                                    <tr class="feature-row">
+                                        <td class="feature-item">
+                                            <div class="feature-icon">✈️</div>
+                                            <div class="feature-label">Flights</div>
+                                            <div class="feature-value">Included</div>
+                                        </td>
+                                        <td class="feature-item">
+                                            <div class="feature-icon">🏨</div>
+                                            <div class="feature-label">Accommodation</div>
+                                            <div class="feature-value">{{ deal.num_nights }} nights</div>
+                                        </td>
+                                        <td class="feature-item">
+                                            <div class="feature-icon">👨‍👩‍👧‍👦</div>
+                                            <div class="feature-label">Type</div>
+                                            <div class="feature-value">Family Trip</div>
+                                        </td>
+                                    </tr>
+                                </table>
+
+                                <!-- AI Reasoning -->
+                                {% if deal.ai_reasoning %}
+                                <div class="ai-reasoning">
+                                    {{ deal.ai_reasoning }}
+                                </div>
+                                {% endif %}
+                            </div>
+
+                            <!-- CTA Section -->
+                            <div class="cta-section">
+                                <a href="https://smartfamilytravelscout.com/deals/{{ deal.id }}" class="cta-button">
+                                    Book This Amazing Deal →
+                                </a>
+                                <p class="cta-subtext">
+                                    Limited availability • Best price guarantee
+                                </p>
+                            </div>
+                        </td>
+                    </tr>
+
+                    <!-- Footer -->
+                    <tr>
+                        <td class="footer">
+                            <p><strong>SmartFamilyTravelScout</strong></p>
+                            <p>Finding the best family travel deals, powered by AI</p>
+                            <p style="margin-top: 15px;">
+                                <a href="https://smartfamilytravelscout.com/preferences">Update Alert Preferences</a> •
+                                <a href="https://smartfamilytravelscout.com/unsubscribe">Unsubscribe</a>
+                            </p>
+                            <p style="margin-top: 10px; font-size: 12px; color: #adb5bd;">
+                                You're receiving this alert because you subscribed to exceptional deal notifications (score ≥ 85).
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
