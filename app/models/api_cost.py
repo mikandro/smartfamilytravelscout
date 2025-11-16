@@ -87,7 +87,8 @@ class ApiCost(Base, TimestampMixin):
     )
 
     # Additional metadata (JSON in string format)
-    metadata: Mapped[Optional[str]] = mapped_column(
+    # Note: 'metadata' is reserved in SQLAlchemy, so we use 'extra_metadata'
+    extra_metadata: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True,
         comment="Additional metadata as JSON string",

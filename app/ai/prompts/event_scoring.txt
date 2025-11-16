@@ -1,47 +1,56 @@
-You are an expert in evaluating events and activities for family-friendliness. Score the following event for its suitability for families with children.
+You are an expert in evaluating events and activities for family travel with young children. Score this event for its relevance to a family with 2 adults and 2 children (ages 3 and 6).
 
 EVENT DETAILS:
-{event_details}
+Title: {title}
+Category: {category}
+Description: {description}
+Date: {event_date}
+Price Range: {price_range}
+Destination: {destination_city}
+
+USER INTERESTS:
+{user_interests}
 
 SCORING CRITERIA:
-Evaluate the event on the following factors:
+Evaluate the event on these factors for family travel relevance:
 
-1. Age Appropriateness
-   - Suitable content for children
-   - Minimum/maximum age recommendations
-   - Educational value
+1. Age Appropriateness (0-3 points)
+   - Is this suitable for children ages 3-6?
+   - Age-inappropriate content = score 0
+   - Perfect for toddlers/young children = score 3
 
-2. Practical Considerations
-   - Duration (not too long for kids)
-   - Timing (during reasonable hours)
-   - Accessibility
-   - Cost/value
+2. Engagement & Interest (0-3 points)
+   - Will this engage young children?
+   - Interactive, visual, or hands-on elements
+   - Educational or entertainment value
 
-3. Engagement Level
-   - Interactive elements
-   - Visual/sensory appeal
-   - Likelihood to maintain children's interest
+3. Practical Considerations (0-2 points)
+   - Duration appropriate for young kids (< 2-3 hours ideal)
+   - Timing (not too early/late)
+   - Accessibility (stroller-friendly, facilities)
+   - Reasonable cost for families
 
-4. Safety & Comfort
-   - Safe environment
-   - Facilities (restrooms, changing areas)
-   - Food/drink availability
-   - Stroller accessibility
+4. Alignment with User Interests (0-2 points)
+   - Does this match the family's stated interests?
+   - Cultural, educational, outdoor, or entertainment preferences
 
-Return your scoring in the following JSON format:
-{
-  "family_score": <number 0-100>,
-  "age_range": {
-    "min": <minimum recommended age>,
-    "max": <maximum recommended age or null>,
-    "ideal": "<ideal age range description>"
-  },
-  "engagement_rating": <number 0-10>,
-  "practical_rating": <number 0-10>,
-  "pros": [<list of family-friendly advantages>],
-  "cons": [<list of potential challenges>],
-  "tips_for_parents": [<list of practical tips>],
-  "similar_alternatives": [<list of similar events if available>],
-  "recommendation": "<brief recommendation>",
-  "verdict": "<one-line summary>"
-}
+RELEVANCE SCORE: 0-10
+- 0-3: Not suitable (skip)
+- 4-5: Marginal (consider as backup)
+- 6-7: Good option (recommended)
+- 8-9: Excellent match (highly recommended)
+- 10: Perfect event (must-see for this family)
+
+Return your analysis in this JSON format:
+{{
+  "relevance_score": <number 0-10>,
+  "age_appropriate": <boolean>,
+  "min_age": <minimum recommended age>,
+  "max_age": <maximum recommended age or null>,
+  "category_refined": "<family_event|parent_escape|cultural|outdoor|educational|skip>",
+  "engagement_level": "<low|medium|high>",
+  "duration_suitable": <boolean>,
+  "matches_interests": [<list of matching user interests>],
+  "reasoning": "<2-3 sentence explanation of score>",
+  "recommendation": "<book|consider|skip>"
+}}
