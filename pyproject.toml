@@ -51,7 +51,7 @@ httpx = "^0.26.0"
 playwright-stealth = "^2.0.0"
 
 [tool.poetry.scripts]
-travelscout = "app.cli.main:app"
+scout = "app.cli.main:app"
 
 [build-system]
 requires = ["poetry-core"]
