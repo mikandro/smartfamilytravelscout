@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <!-- Page Header -->
+    <div class="row mb-4">
+        <div class="col">
+            <h1 class="display-4">
+                <i class="bi bi-gear-fill text-primary"></i>
+                Preferences
+            </h1>
+            <p class="lead text-muted">Configure your travel search preferences</p>
+        </div>
+    </div>
+
+    <!-- Preferences Form -->
+    <div class="row">
+        <div class="col-lg-8">
+            <form method="post" action="/preferences">
+                <!-- Budget Settings -->
+                <div class="card mb-4">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0">
+                            <i class="bi bi-currency-euro"></i>
+                            Budget Settings
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="max_flight_price_family" class="form-label">
+                                    Max Flight Price (Family) *
+                                </label>
+                                <div class="input-group">
+                                    <span class="input-group-text">€</span>
+                                    <input type="number" class="form-control" id="max_flight_price_family"
+                                           name="max_flight_price_family"
+                                           value="{{ preferences.max_flight_price_family if preferences else 800 }}"
+                                           required min="0" step="10">
+                                </div>
+                                <small class="form-text text-muted">Total for all family members</small>
+                            </div>
+
+                            <div class="col-md-6">
+                                <label for="max_flight_price_parents" class="form-label">
+                                    Max Flight Price (Parents) *
+                                </label>
+                                <div class="input-group">
+                                    <span class="input-group-text">€</span>
+                                    <input type="number" class="form-control" id="max_flight_price_parents"
+                                           name="max_flight_price_parents"
+                                           value="{{ preferences.max_flight_price_parents if preferences else 600 }}"
+                                           required min="0" step="10">
+                                </div>
+                                <small class="form-text text-muted">For romantic getaways</small>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="max_total_budget_family" class="form-label">
+                                    Max Total Budget (Family) *
+                                </label>
+                                <div class="input-group">
+                                    <span class="input-group-text">€</span>
+                                    <input type="number" class="form-control" id="max_total_budget_family"
+                                           name="max_total_budget_family"
+                                           value="{{ preferences.max_total_budget_family if preferences else 2000 }}"
+                                           required min="0" step="50">
+                                </div>
+                                <small class="form-text text-muted">Including flights, accommodation, and activities</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Destination Preferences -->
+                <div class="card mb-4">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="mb-0">
+                            <i class="bi bi-globe"></i>
+                            Destination Preferences
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="preferred_destinations" class="form-label">
+                                Preferred Destinations
+                            </label>
+                            <input type="text" class="form-control" id="preferred_destinations"
+                                   name="preferred_destinations"
+                                   value="{% if preferences and preferences.preferred_destinations %}{{ preferences.preferred_destinations | join(', ') }}{% endif %}"
+                                   placeholder="e.g., Prague, Lisbon, Barcelona">
+                            <small class="form-text text-muted">Comma-separated list of cities you'd like to visit</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="avoid_destinations" class="form-label">
+                                Destinations to Avoid
+                            </label>
+                            <input type="text" class="form-control" id="avoid_destinations"
+                                   name="avoid_destinations"
+                                   value="{% if preferences and preferences.avoid_destinations %}{{ preferences.avoid_destinations | join(', ') }}{% endif %}"
+                                   placeholder="e.g., London, Paris">
+                            <small class="form-text text-muted">Comma-separated list of cities to exclude from searches</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="interests" class="form-label">
+                                Interests & Activities
+                            </label>
+                            <input type="text" class="form-control" id="interests"
+                                   name="interests"
+                                   value="{% if preferences and preferences.interests %}{{ preferences.interests | join(', ') }}{% endif %}"
+                                   placeholder="e.g., museums, beaches, hiking, theme parks">
+                            <small class="form-text text-muted">Comma-separated list of interests to help AI score deals</small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Notification Settings -->
+                <div class="card mb-4">
+                    <div class="card-header bg-success text-white">
+                        <h5 class="mb-0">
+                            <i class="bi bi-bell-fill"></i>
+                            Notification Settings
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="notification_threshold" class="form-label">
+                                    AI Score Threshold *
+                                </label>
+                                <div class="input-group">
+                                    <input type="number" class="form-control" id="notification_threshold"
+                                           name="notification_threshold"
+                                           value="{{ preferences.notification_threshold if preferences else 70 }}"
+                                           required min="0" max="100">
+                                    <span class="input-group-text">/100</span>
+                                </div>
+                                <small class="form-text text-muted">Only notify for deals above this score</small>
+                            </div>
+
+                            <div class="col-md-6">
+                                <label for="parent_escape_frequency" class="form-label">
+                                    Parent Escape Frequency *
+                                </label>
+                                <select class="form-select" id="parent_escape_frequency"
+                                        name="parent_escape_frequency" required>
+                                    <option value="weekly" {% if preferences and preferences.parent_escape_frequency == 'weekly' %}selected{% endif %}>
+                                        Weekly
+                                    </option>
+                                    <option value="biweekly" {% if preferences and preferences.parent_escape_frequency == 'biweekly' %}selected{% endif %}>
+                                        Bi-weekly
+                                    </option>
+                                    <option value="monthly" {% if preferences and preferences.parent_escape_frequency == 'monthly' %}selected{% endif %}>
+                                        Monthly
+                                    </option>
+                                    <option value="quarterly" {% if preferences and preferences.parent_escape_frequency == 'quarterly' %}selected{% endif %}>
+                                        Quarterly
+                                    </option>
+                                </select>
+                                <small class="form-text text-muted">How often to search for romantic getaways</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Submit Button -->
+                <div class="d-grid gap-2">
+                    <button type="submit" class="btn btn-primary btn-lg">
+                        <i class="bi bi-save"></i>
+                        Save Preferences
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Help Sidebar -->
+        <div class="col-lg-4">
+            <div class="card bg-light">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="bi bi-info-circle-fill"></i>
+                        Help
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <h6>Budget Settings</h6>
+                    <p class="small">
+                        Set maximum prices for flights and total trip costs. The AI will only recommend
+                        deals that fit within your budget.
+                    </p>
+
+                    <h6>Destinations</h6>
+                    <p class="small">
+                        List cities you'd like to visit or want to avoid. This helps narrow down search results.
+                    </p>
+
+                    <h6>Interests</h6>
+                    <p class="small">
+                        Add activities and interests to help the AI score deals based on what's available
+                        at each destination.
+                    </p>
+
+                    <h6>AI Score Threshold</h6>
+                    <p class="small">
+                        The AI rates each deal from 0-100. Set your threshold to only see deals that meet
+                        your minimum requirements.
+                    </p>
+
+                    <h6>Parent Escape</h6>
+                    <p class="small">
+                        Set how often you'd like to see romantic getaway options for just the parents.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,302 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <!-- Back Button -->
+    <div class="row mb-3">
+        <div class="col">
+            <a href="/deals" class="btn btn-outline-secondary">
+                <i class="bi bi-arrow-left"></i>
+                Back to Deals
+            </a>
+        </div>
+    </div>
+
+    <!-- Deal Header -->
+    <div class="row mb-4">
+        <div class="col">
+            <div class="card border-primary">
+                <div class="card-header bg-primary text-white">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <h2 class="mb-1">
+                                <i class="bi bi-geo-alt-fill"></i>
+                                {{ deal.destination_city }}
+                            </h2>
+                            <p class="mb-0">
+                                <span class="badge bg-light text-dark">
+                                    {{ deal.package_type | replace('_', ' ') | capitalize }}
+                                </span>
+                            </p>
+                        </div>
+                        <div class="text-end">
+                            <h1 class="mb-1">€{{ deal.total_price | round(0) | int }}</h1>
+                            <span class="badge {% if deal.ai_score >= 80 %}bg-success{% elif deal.ai_score >= 70 %}bg-info{% else %}bg-secondary{% endif %} fs-5">
+                                AI Score: {{ deal.ai_score | round(0) | int }}/100
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <p class="mb-2">
+                                <i class="bi bi-calendar3"></i>
+                                <strong>Departure:</strong>
+                                {{ deal.departure_date.strftime('%A, %B %d, %Y') if deal.departure_date else 'TBD' }}
+                            </p>
+                            <p class="mb-2">
+                                <i class="bi bi-calendar-check"></i>
+                                <strong>Return:</strong>
+                                {{ deal.return_date.strftime('%A, %B %d, %Y') if deal.return_date else 'TBD' }}
+                            </p>
+                        </div>
+                        <div class="col-md-6">
+                            <p class="mb-2">
+                                <i class="bi bi-moon-stars-fill"></i>
+                                <strong>Duration:</strong>
+                                {{ deal.num_nights }} nights
+                            </p>
+                            <p class="mb-2">
+                                <i class="bi bi-calculator"></i>
+                                <strong>Price per night:</strong>
+                                €{{ (deal.total_price / deal.num_nights) | round(0) | int }}
+                            </p>
+                        </div>
+                    </div>
+
+                    {% if deal.ai_reasoning %}
+                    <hr>
+                    <div class="alert alert-info mb-0">
+                        <h6 class="alert-heading">
+                            <i class="bi bi-lightbulb-fill"></i>
+                            AI Analysis
+                        </h6>
+                        <p class="mb-0">{{ deal.ai_reasoning }}</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <!-- Main Content -->
+        <div class="col-lg-8">
+            <!-- Flights -->
+            {% if deal.flights_json %}
+            <div class="card mb-4">
+                <div class="card-header bg-light">
+                    <h4 class="mb-0">
+                        <i class="bi bi-airplane-fill"></i>
+                        Flight Details
+                    </h4>
+                </div>
+                <div class="card-body">
+                    {% set flights = deal.flights_json %}
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6 class="text-primary">Outbound Flight</h6>
+                            {% if flights.outbound %}
+                            <p class="mb-1">
+                                <strong>Airline:</strong> {{ flights.outbound.airline or 'N/A' }}
+                            </p>
+                            <p class="mb-1">
+                                <strong>Departure:</strong> {{ flights.outbound.departure_time or 'N/A' }}
+                            </p>
+                            <p class="mb-1">
+                                <strong>Price:</strong> €{{ flights.outbound.price or 'N/A' }}
+                            </p>
+                            {% else %}
+                            <p class="text-muted">Details not available</p>
+                            {% endif %}
+                        </div>
+                        <div class="col-md-6">
+                            <h6 class="text-primary">Return Flight</h6>
+                            {% if flights.return %}
+                            <p class="mb-1">
+                                <strong>Airline:</strong> {{ flights.return.airline or 'N/A' }}
+                            </p>
+                            <p class="mb-1">
+                                <strong>Departure:</strong> {{ flights.return.departure_time or 'N/A' }}
+                            </p>
+                            <p class="mb-1">
+                                <strong>Price:</strong> €{{ flights.return.price or 'N/A' }}
+                            </p>
+                            {% else %}
+                            <p class="text-muted">Details not available</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Accommodation -->
+            {% if accommodation %}
+            <div class="card mb-4">
+                <div class="card-header bg-light">
+                    <h4 class="mb-0">
+                        <i class="bi bi-house-fill"></i>
+                        Accommodation
+                    </h4>
+                </div>
+                <div class="card-body">
+                    <h5>{{ accommodation.name }}</h5>
+                    <p class="text-muted mb-3">
+                        <i class="bi bi-building"></i>
+                        {{ accommodation.type | capitalize }}
+                        {% if accommodation.bedrooms %}
+                        | {{ accommodation.bedrooms }} bedroom{% if accommodation.bedrooms > 1 %}s{% endif %}
+                        {% endif %}
+                    </p>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <p class="mb-1">
+                                <strong>Price per night:</strong> €{{ accommodation.price_per_night | round(0) | int }}
+                            </p>
+                            {% if accommodation.rating %}
+                            <p class="mb-1">
+                                <strong>Rating:</strong>
+                                {{ accommodation.rating }}/5
+                                {% if accommodation.review_count %}
+                                ({{ accommodation.review_count }} reviews)
+                                {% endif %}
+                            </p>
+                            {% endif %}
+                        </div>
+                        <div class="col-md-6">
+                            <p class="mb-1">
+                                {% if accommodation.family_friendly %}
+                                <i class="bi bi-check-circle-fill text-success"></i>
+                                Family Friendly
+                                {% endif %}
+                            </p>
+                            <p class="mb-1">
+                                {% if accommodation.has_kitchen %}
+                                <i class="bi bi-check-circle-fill text-success"></i>
+                                Kitchen Available
+                                {% endif %}
+                            </p>
+                            <p class="mb-1">
+                                {% if accommodation.has_kids_club %}
+                                <i class="bi bi-check-circle-fill text-success"></i>
+                                Kids Club
+                                {% endif %}
+                            </p>
+                        </div>
+                    </div>
+
+                    {% if accommodation.url %}
+                    <a href="{{ accommodation.url }}" target="_blank" class="btn btn-primary">
+                        <i class="bi bi-box-arrow-up-right"></i>
+                        View on {{ accommodation.source | capitalize }}
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Events -->
+            {% if deal.events_json %}
+            <div class="card mb-4">
+                <div class="card-header bg-light">
+                    <h4 class="mb-0">
+                        <i class="bi bi-calendar-event-fill"></i>
+                        Events & Activities
+                    </h4>
+                </div>
+                <div class="card-body">
+                    {% set events = deal.events_json %}
+                    {% if events is iterable and events is not string %}
+                    <div class="list-group list-group-flush">
+                        {% for event in events %}
+                        <div class="list-group-item">
+                            <h6 class="mb-1">{{ event.title or event.name or 'Event' }}</h6>
+                            {% if event.date or event.event_date %}
+                            <p class="small text-muted mb-1">
+                                <i class="bi bi-calendar"></i>
+                                {{ event.date or event.event_date }}
+                            </p>
+                            {% endif %}
+                            {% if event.description %}
+                            <p class="small mb-1">{{ event.description[:150] }}...</p>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p class="text-muted">Event details not available</p>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Itinerary -->
+            {% if deal.itinerary_json %}
+            <div class="card mb-4">
+                <div class="card-header bg-light">
+                    <h4 class="mb-0">
+                        <i class="bi bi-map-fill"></i>
+                        Suggested Itinerary
+                    </h4>
+                </div>
+                <div class="card-body">
+                    <div class="text-muted">
+                        {{ deal.itinerary_json if deal.itinerary_json is string else 'Itinerary available' }}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Sidebar -->
+        <div class="col-lg-4">
+            <!-- Quick Actions -->
+            <div class="card mb-4">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0">
+                        <i class="bi bi-bookmark-star-fill"></i>
+                        Quick Actions
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="d-grid gap-2">
+                        <button class="btn btn-primary" onclick="window.print()">
+                            <i class="bi bi-printer-fill"></i>
+                            Print Details
+                        </button>
+                        <button class="btn btn-outline-primary" onclick="navigator.share ? navigator.share({title: '{{ deal.destination_city }}', text: 'Check out this deal!', url: window.location.href}) : alert('Share not supported')">
+                            <i class="bi bi-share-fill"></i>
+                            Share Deal
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Price Breakdown -->
+            <div class="card">
+                <div class="card-header bg-light">
+                    <h5 class="mb-0">
+                        <i class="bi bi-receipt"></i>
+                        Price Breakdown
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <dl class="row mb-0">
+                        <dt class="col-sm-7">Total Price:</dt>
+                        <dd class="col-sm-5 text-end">€{{ deal.total_price | round(0) | int }}</dd>
+
+                        <dt class="col-sm-7">Per Night:</dt>
+                        <dd class="col-sm-5 text-end">€{{ (deal.total_price / deal.num_nights) | round(0) | int }}</dd>
+
+                        <dt class="col-sm-7">Duration:</dt>
+                        <dd class="col-sm-5 text-end">{{ deal.num_nights }} nights</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 import redis.asyncio as aioredis
 
 from app import __version__, __app_name__
@@ -93,6 +94,9 @@ app.add_middleware(
 # Add GZip middleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 
 # Exception handlers
 @app.exception_handler(Exception)
@@ -145,9 +149,10 @@ async def health_check() -> Dict[str, Any]:
     return JSONResponse(content=response, status_code=status_code)
 
 
-@app.get("/", tags=["Root"])
-async def root() -> Dict[str, str]:
-    """Root endpoint."""
+# API root endpoint (moved to /api)
+@app.get("/api", tags=["Root"])
+async def api_root() -> Dict[str, str]:
+    """API root endpoint."""
     return {
         "name": settings.app_name,
         "version": settings.app_version,
@@ -156,7 +161,13 @@ async def root() -> Dict[str, str]:
     }
 
 
-# Import and include routers (to be implemented)
+# Import and include routers
+from app.api.routes import web
+
+# Include web dashboard routes (handles /, /deals, /preferences, /stats)
+app.include_router(web.router, tags=["Web Dashboard"])
+
+# API routes (to be implemented)
 # from app.api.routes import flights, accommodations, events, search
 # app.include_router(flights.router, prefix="/api/v1/flights", tags=["Flights"])
 # app.include_router(accommodations.router, prefix="/api/v1/accommodations", tags=["Accommodations"])
