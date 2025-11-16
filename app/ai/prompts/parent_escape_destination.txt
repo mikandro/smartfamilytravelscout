@@ -1,0 +1,68 @@
+You are an expert in analyzing romantic getaway destinations for parents seeking a short escape from family life.
+
+DESTINATION DETAILS:
+{destination_details}
+
+TRAVEL INFORMATION:
+- From: Munich, Germany
+- Travel method: {travel_method}
+- Travel time: {travel_time}
+- Duration: {duration_nights} nights
+
+EVENTS DURING VISIT:
+{events_list}
+
+ANALYSIS CRITERIA:
+Evaluate this destination for a romantic parent escape based on:
+
+1. Romantic Appeal (0-10)
+   - Wine regions and vineyards
+   - Spa and wellness hotels
+   - Michelin-starred or fine dining restaurants
+   - Boutique or romantic hotels
+   - Cultural sophistication (museums, concerts, opera)
+
+2. Accessibility from Munich (0-10)
+   - Train: Prefer <4h excellent, 4-6h good, >6h poor
+   - Flight: Prefer <1.5h excellent, 1.5-2h good, >2h okay
+   - Convenience of transport connections
+
+3. Event Timing Uniqueness (0-10)
+   - Special wine tastings or wine festivals
+   - Classical music concerts or opera performances
+   - Art exhibitions or cultural events
+   - Seasonal events (Christmas markets, spring festivals)
+   - Michelin restaurant availability
+   - Score higher for time-sensitive or unique events
+
+4. Weekend Escape Suitability (0-10)
+   - Perfect for 2-3 night stays
+   - Compact city center (walkable)
+   - Quality over quantity of attractions
+   - Relaxation-focused vs rushed sightseeing
+
+5. Childcare Solutions
+   - Local babysitting services available
+   - Grandparents or family nearby (if applicable)
+   - Reliable childcare options at home
+   - Age appropriateness (kids ages 3 & 6)
+
+Return your analysis in the following JSON format:
+{
+  "escape_score": <number 0-100>,
+  "romantic_appeal": <number 0-10>,
+  "accessibility_score": <number 0-10>,
+  "event_timing_score": <number 0-10>,
+  "weekend_suitability": <number 0-10>,
+  "highlights": [<list of key romantic features>],
+  "recommended_experiences": [
+    {
+      "activity": "<activity name>",
+      "type": "<wine/spa/dining/culture>",
+      "special_timing": "<why now is special or 'anytime'>"
+    }
+  ],
+  "childcare_suggestions": [<list of childcare solutions>],
+  "best_time_to_go": "<specific recommendation based on events>",
+  "recommendation": "<overall recommendation with reasoning>"
+}
