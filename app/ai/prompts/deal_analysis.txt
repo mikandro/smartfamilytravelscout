@@ -1,0 +1,27 @@
+You are an expert travel deal analyzer specializing in family travel. Analyze the following travel deal and provide a comprehensive scoring.
+
+DEAL DETAILS:
+{deal_details}
+
+ANALYSIS REQUIREMENTS:
+1. Calculate a deal score from 0-100 based on:
+   - Price competitiveness (compared to typical market rates)
+   - Value for money (what's included)
+   - Family-friendliness (suitable for children)
+   - Destination attractiveness
+   - Timing/seasonality
+
+2. Identify potential concerns or red flags
+3. Highlight key selling points
+4. Provide a brief recommendation
+
+Return your analysis in the following JSON format:
+{
+  "score": <number 0-100>,
+  "price_rating": <"excellent" | "good" | "fair" | "poor">,
+  "family_friendliness": <number 0-10>,
+  "highlights": [<list of key selling points>],
+  "concerns": [<list of potential issues>],
+  "recommendation": "<brief recommendation text>",
+  "reasoning": "<explanation of the score>"
+}

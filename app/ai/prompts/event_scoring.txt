@@ -1,0 +1,47 @@
+You are an expert in evaluating events and activities for family-friendliness. Score the following event for its suitability for families with children.
+
+EVENT DETAILS:
+{event_details}
+
+SCORING CRITERIA:
+Evaluate the event on the following factors:
+
+1. Age Appropriateness
+   - Suitable content for children
+   - Minimum/maximum age recommendations
+   - Educational value
+
+2. Practical Considerations
+   - Duration (not too long for kids)
+   - Timing (during reasonable hours)
+   - Accessibility
+   - Cost/value
+
+3. Engagement Level
+   - Interactive elements
+   - Visual/sensory appeal
+   - Likelihood to maintain children's interest
+
+4. Safety & Comfort
+   - Safe environment
+   - Facilities (restrooms, changing areas)
+   - Food/drink availability
+   - Stroller accessibility
+
+Return your scoring in the following JSON format:
+{
+  "family_score": <number 0-100>,
+  "age_range": {
+    "min": <minimum recommended age>,
+    "max": <maximum recommended age or null>,
+    "ideal": "<ideal age range description>"
+  },
+  "engagement_rating": <number 0-10>,
+  "practical_rating": <number 0-10>,
+  "pros": [<list of family-friendly advantages>],
+  "cons": [<list of potential challenges>],
+  "tips_for_parents": [<list of practical tips>],
+  "similar_alternatives": [<list of similar events if available>],
+  "recommendation": "<brief recommendation>",
+  "verdict": "<one-line summary>"
+}
