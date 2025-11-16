@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     amadeus_api_key: Optional[str] = Field(default=None, description="Amadeus API key")
     amadeus_api_secret: Optional[str] = Field(default=None, description="Amadeus API secret")
     eventbrite_api_key: Optional[str] = Field(default=None, description="Eventbrite API key")
+    apify_api_key: Optional[str] = Field(default=None, description="Apify API key for web scraping")
 
     # API Keys - AI Services
     anthropic_api_key: str = Field(..., description="Anthropic Claude API key")
