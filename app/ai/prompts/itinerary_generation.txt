@@ -1,47 +1,74 @@
-You are an expert family travel itinerary planner. Create a detailed day-by-day itinerary for a family trip based on the following information.
+You are an expert family travel itinerary planner specializing in trips with young children. Create a detailed 3-day family itinerary for the following trip.
 
-TRIP DETAILS:
-Destination: {destination}
-Duration: {duration_days} days
-Travelers: {travelers}
-Interests: {interests}
-Budget Level: {budget_level}
+DESTINATION: {city}
+DATES: {dates}
+FAMILY: 2 adults, 2 children (ages 3 & 6)
+ACCOMMODATION: {accommodation_name} - {accommodation_address}
+ACCOMMODATION TYPE: {accommodation_type}
 
-AVAILABLE ACTIVITIES:
-{available_activities}
+EVENTS AVAILABLE DURING VISIT:
+{events_list}
 
-ITINERARY REQUIREMENTS:
-1. Create a balanced daily schedule suitable for families with children
-2. Include mix of activities, rest time, and meals
-3. Consider children's attention spans and energy levels
-4. Suggest age-appropriate activities
-5. Include practical tips (best times to visit, booking advice, etc.)
-6. Account for nap times and meal breaks for younger children
+REQUIREMENTS:
+1. Create a day-by-day plan with morning/afternoon/evening sections
+2. Include kid-friendly activities appropriate for ages 3 and 6
+3. NAP TIME CRITICAL: Account for nap time between 1-2pm daily for the 3-year-old
+4. Restaurant recommendations must include:
+   - High chairs availability
+   - Kids menu
+   - Family-friendly atmosphere
+5. Include walking distances from accommodation for all activities
+6. Provide backup plans for bad weather
+7. Keep activities within 30 minutes walking distance or suggest transportation
+8. Balance high-energy activities with calm periods
+9. Prioritize morning activities (young children are most energetic 9am-12pm)
+10. Include practical tips for each activity (best times, booking advice, what to bring)
 
-Return your itinerary in the following JSON format:
+IMPORTANT CONSTRAINTS:
+- The 3-year-old needs a nap from 1-2pm - plan accordingly!
+- Maximum 2 major activities per day
+- Include rest breaks every 2-3 hours
+- Evening activities should end by 7pm (bedtime consideration)
+- All restaurants must be within walking distance and family-friendly
+
+Output as JSON with the following exact structure:
 {
-  "summary": "<brief overview of the trip>",
-  "days": [
-    {
-      "day": 1,
-      "title": "<theme for the day>",
-      "activities": [
-        {
-          "time": "<time range>",
-          "activity": "<activity name>",
-          "description": "<brief description>",
-          "duration": "<estimated duration>",
-          "kid_friendly_rating": <number 1-10>,
-          "tips": "<practical tips>"
-        }
-      ],
-      "meals": {
-        "breakfast": "<suggestion>",
-        "lunch": "<suggestion>",
-        "dinner": "<suggestion>"
-      }
-    }
+  "day_1": {
+    "morning": "<detailed morning plan with specific activities, times, and walking distances>",
+    "afternoon": "<afternoon plan accounting for 1-2pm nap time>",
+    "evening": "<evening plan with family restaurant recommendation>",
+    "breakfast_spot": "<restaurant name and why it's good for families>",
+    "lunch_spot": "<restaurant name, distance from activities, kids menu info>",
+    "dinner_spot": "<restaurant name, distance from accommodation, high chairs available>",
+    "weather_backup": "<alternative indoor activities if weather is bad>"
+  },
+  "day_2": {
+    "morning": "...",
+    "afternoon": "...",
+    "evening": "...",
+    "breakfast_spot": "...",
+    "lunch_spot": "...",
+    "dinner_spot": "...",
+    "weather_backup": "..."
+  },
+  "day_3": {
+    "morning": "...",
+    "afternoon": "...",
+    "evening": "...",
+    "breakfast_spot": "...",
+    "lunch_spot": "...",
+    "dinner_spot": "...",
+    "weather_backup": "..."
+  },
+  "tips": [
+    "<practical tip 1 for traveling with young children>",
+    "<practical tip 2 about the destination>",
+    "<practical tip 3 about transportation/logistics>",
+    "..."
   ],
-  "packing_tips": [<list of items to pack>],
-  "parent_tips": [<list of tips for traveling with kids>]
+  "packing_essentials": [
+    "<specific items needed for activities>",
+    "<items for young children (stroller, etc.)>",
+    "..."
+  ]
 }
