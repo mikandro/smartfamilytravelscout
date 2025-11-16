@@ -48,6 +48,7 @@ ruff = "^0.2.0"
 mypy = "^1.8.0"
 ipython = "^8.21.0"
 httpx = "^0.26.0"
+playwright-stealth = "^2.0.0"
 
 [tool.poetry.scripts]
 travelscout = "app.cli.main:app"
