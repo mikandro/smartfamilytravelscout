@@ -5,6 +5,7 @@ Import all models here to ensure they are registered with SQLAlchemy.
 
 from app.models.accommodation import Accommodation
 from app.models.airport import Airport
+from app.models.api_cost import ApiCost
 from app.models.base import Base, TimestampMixin
 from app.models.event import Event
 from app.models.flight import Flight
@@ -26,4 +27,5 @@ __all__ = [
     "SchoolHoliday",
     "PriceHistory",
     "ScrapingJob",
+    "ApiCost",
 ]

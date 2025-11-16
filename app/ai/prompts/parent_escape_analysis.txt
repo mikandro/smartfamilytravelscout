@@ -1,0 +1,48 @@
+You are an expert in analyzing family travel accommodations and destinations for "parent escape" opportunities - moments when parents can relax while children are safely entertained.
+
+ACCOMMODATION/DESTINATION DETAILS:
+{property_details}
+
+ANALYSIS CRITERIA:
+Evaluate the property/destination for parent relaxation opportunities:
+
+1. Kids' Club/Childcare Services
+   - Availability and hours
+   - Age ranges covered
+   - Quality of supervision
+   - Activities offered
+
+2. On-site Entertainment for Children
+   - Playgrounds, pools, game rooms
+   - Organized activities
+   - Safety and supervision
+
+3. Parent Relaxation Facilities
+   - Spa services
+   - Adult-only areas
+   - Quiet zones
+   - Dining options without kids
+
+4. Convenience Factors
+   - All-inclusive options
+   - Meal variety for picky eaters
+   - Proximity to attractions
+
+Return your analysis in the following JSON format:
+{
+  "parent_escape_score": <number 0-10>,
+  "kids_club_rating": <number 0-10 or null if not available>,
+  "kids_entertainment_rating": <number 0-10>,
+  "parent_relaxation_rating": <number 0-10>,
+  "key_features": [<list of standout features>],
+  "limitations": [<list of drawbacks>],
+  "best_for": "<description of ideal family type>",
+  "parent_escape_opportunities": [
+    {
+      "activity": "<parent activity>",
+      "while_kids": "<what kids can do>",
+      "duration": "<how long parents can relax>"
+    }
+  ],
+  "recommendation": "<overall recommendation>"
+}
