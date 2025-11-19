@@ -49,7 +49,12 @@ services:
       - DATABASE_URL=postgresql+asyncpg://travelscout:travelscout_password@postgres:5432/travelscout
       - REDIS_URL=redis://redis:6379/0
       - PYTHONUNBUFFERED=1
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEBUG=${DEBUG:-False}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-in-production}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
     env_file:
       - .env
     ports:
@@ -58,6 +63,7 @@ services:
       - ./app:/app/app
       - ./alembic:/app/alembic
       - ./logs:/app/logs
+      - ./static:/app/static
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,7 +72,6 @@ services:
     networks:
       - travelscout-network
     restart: unless-stopped
-    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload
 
   celery-worker:
     build:
@@ -78,7 +83,12 @@ services:
       - DATABASE_URL=postgresql+asyncpg://travelscout:travelscout_password@postgres:5432/travelscout
       - REDIS_URL=redis://redis:6379/0
       - PYTHONUNBUFFERED=1
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEBUG=${DEBUG:-False}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-in-production}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
     env_file:
       - .env
     volumes:
@@ -89,9 +99,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      app:
+        condition: service_started
     networks:
       - travelscout-network
     restart: unless-stopped
+    entrypoint: []
     command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4
 
   celery-beat:
@@ -104,7 +117,12 @@ services:
       - DATABASE_URL=postgresql+asyncpg://travelscout:travelscout_password@postgres:5432/travelscout
       - REDIS_URL=redis://redis:6379/0
       - PYTHONUNBUFFERED=1
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEBUG=${DEBUG:-False}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-in-production}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
     env_file:
       - .env
     volumes:
@@ -115,9 +133,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      app:
+        condition: service_started
     networks:
       - travelscout-network
     restart: unless-stopped
+    entrypoint: []
     command: celery -A app.tasks.celery_app beat --loglevel=info
 
 volumes:
