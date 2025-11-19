@@ -44,7 +44,8 @@ FROM python:3.11-slim as runtime
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/app/.venv/bin:$PATH" \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # Install runtime system dependencies
 RUN apt-get update && apt-get install -y \
@@ -61,16 +62,20 @@ WORKDIR /app
 # Copy virtual environment from builder
 COPY --from=builder /app/.venv /app/.venv
 
-# Copy Playwright browsers from builder
-COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
+# Copy Playwright browsers from builder to shared location
+COPY --from=builder /root/.cache/ms-playwright /ms-playwright
 
 # Copy application code
 COPY app ./app
 COPY alembic.ini ./
 COPY alembic ./alembic
+COPY entrypoint.sh ./
 
-# Create logs directory and set permissions
-RUN mkdir -p /app/logs && chown -R appuser:appuser /app
+# Create necessary directories and set permissions
+RUN mkdir -p /app/logs /app/static && \
+    chown -R appuser:appuser /app && \
+    chown -R appuser:appuser /ms-playwright && \
+    chmod +x /app/entrypoint.sh
 
 # Switch to non-root user
 USER appuser
@@ -79,8 +84,11 @@ USER appuser
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
+
+# Set entrypoint
+ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Default command
 CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
