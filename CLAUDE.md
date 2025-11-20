@@ -1,0 +1,343 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+SmartFamilyTravelScout is an AI-powered family travel deal finder that scrapes flights, accommodations, and events from multiple sources, then uses Claude AI to score and recommend the best travel packages for families.
+
+**Tech Stack**: Python 3.11+, FastAPI, PostgreSQL, Redis, Celery, Playwright, SQLAlchemy (async), Anthropic Claude API
+
+## Development Commands
+
+### Setup & Installation
+
+```bash
+# Install dependencies
+poetry install
+
+# Install Playwright browsers
+poetry run playwright install chromium
+
+# Start infrastructure (PostgreSQL + Redis)
+docker-compose up -d postgres redis
+
+# Run database migrations
+poetry run alembic upgrade head
+
+# Seed database with airports and sample data
+poetry run scout db seed
+```
+
+### Running the Application
+
+```bash
+# Start FastAPI server (development)
+poetry run uvicorn app.api.main:app --reload
+
+# Start with Docker Compose (all services)
+docker-compose up -d
+
+# CLI commands (using 'scout')
+poetry run scout health          # Check system health
+poetry run scout run             # Run full pipeline
+poetry run scout deals           # View top deals
+poetry run scout stats           # Show statistics
+```
+
+### Testing
+
+```bash
+# Run all tests
+poetry run pytest
+
+# Run with coverage report
+poetry run pytest --cov=app --cov-report=html
+
+# Run specific test file
+poetry run pytest tests/unit/test_scrapers.py
+
+# Run only unit tests (fast, mocked)
+poetry run pytest -m unit
+
+# Run only integration tests (slow, real browsers)
+poetry run pytest -m integration
+```
+
+### Database Operations
+
+```bash
+# Create a new migration
+poetry run alembic revision --autogenerate -m "description"
+
+# Apply migrations
+poetry run alembic upgrade head
+
+# Rollback one migration
+poetry run alembic downgrade -1
+
+# View migration history
+poetry run alembic history
+
+# Reset database (WARNING: deletes all data)
+poetry run scout db reset
+```
+
+### Celery Workers
+
+```bash
+# Start worker
+celery -A app.tasks.celery_app worker --loglevel=info
+
+# Start beat scheduler
+celery -A app.tasks.celery_app beat --loglevel=info
+
+# Or use CLI shortcuts
+poetry run scout worker
+poetry run scout beat
+```
+
+### Code Quality
+
+```bash
+# Format code
+poetry run black app/
+
+# Lint code
+poetry run ruff check app/
+
+# Type checking
+poetry run mypy app/
+```
+
+## Architecture Overview
+
+### Core Components
+
+**Scrapers** (`app/scrapers/`): Web scrapers for multiple data sources
+- `kiwi_scraper.py`: Kiwi.com API client (flight aggregator)
+- `skyscanner_scraper.py`: Skyscanner web scraper (Playwright)
+- `ryanair_scraper.py`: Ryanair web scraper
+- `wizzair_scraper.py`: WizzAir API scraper
+- `booking_scraper.py`: Booking.com scraper (accommodations)
+- `airbnb_scraper.py`: Airbnb scraper (accommodations)
+- `eventbrite_scraper.py`: Eventbrite API client (events)
+- Tourism scrapers: Barcelona, Prague, Lisbon city events
+
+**Orchestration** (`app/orchestration/`): Coordinates multiple scrapers and data sources
+- `flight_orchestrator.py`: Runs all flight scrapers in parallel, deduplicates results
+- `accommodation_matcher.py`: Matches accommodations to flights, generates trip packages
+- `event_matcher.py`: Matches local events to trip packages
+
+**AI Integration** (`app/ai/`): Claude API integration for intelligent analysis
+- `claude_client.py`: Anthropic API client wrapper
+- `deal_scorer.py`: Scores trip packages (0-100) based on value, family-friendliness
+- `event_scorer.py`: Scores events for family relevance
+- `itinerary_generator.py`: Generates day-by-day trip itineraries
+- `parent_escape_analyzer.py`: Analyzes destinations for parents-only trips
+- `prompt_loader.py`: Loads prompt templates from `app/ai/prompts/`
+
+**Models** (`app/models/`): SQLAlchemy ORM models (all async-capable)
+- Core entities: `Airport`, `Flight`, `Accommodation`, `Event`, `TripPackage`
+- Supporting: `SchoolHoliday`, `PriceHistory`, `ScrapingJob`, `UserPreference`, `ApiCost`
+
+**Tasks** (`app/tasks/`): Celery background tasks
+- `celery_app.py`: Celery configuration and beat schedule
+- `scheduled_tasks.py`: Periodic tasks (daily flights, hourly prices, weekly events)
+
+**API** (`app/api/`): FastAPI REST endpoints
+- `main.py`: FastAPI app with lifespan management
+- `routes/web.py`: Web dashboard routes
+
+**Notifications** (`app/notifications/`): Email notifications
+- `email_sender.py`: SMTP email sender with HTML templates
+- `email_preview.py`: Preview emails locally
+- `smtp_config.py`: SMTP configuration
+
+### Data Flow
+
+1. **Scraping**: Celery beat triggers scheduled tasks → Orchestrators run scrapers in parallel → Raw data saved to database
+2. **Package Generation**: `AccommodationMatcher` combines flights + accommodations → `EventMatcher` adds local events → Trip packages created
+3. **AI Scoring**: `DealScorer` evaluates each package using Claude API → Scores and reasoning saved to database
+4. **Notifications**: High-scoring packages trigger email notifications to users
+
+### Database Architecture
+
+**Connection Management**:
+- Async engine (`asyncpg`) for FastAPI routes
+- Sync engine (`psycopg2`) for Celery tasks and CLI
+- Both use `app.database` module: `get_async_session()`, `get_sync_session()`, `get_async_session_context()`
+
+**Key Relationships**:
+- `Airport` → `Flight` (origin/destination, CASCADE delete)
+- `Accommodation` → `TripPackage` (SET NULL delete)
+- `TripPackage` stores JSONB for: `flights_json`, `events_json`, `itinerary_json`
+
+**Critical Indexes**: All queries filter by: `ai_score`, `departure_date`, `destination_city`, `source`, `scraped_at`
+
+### AI Prompt System
+
+Prompts are stored as `.txt` files in `app/ai/prompts/`:
+- `deal_analysis.txt`: Analyzes trip packages for value and family-friendliness
+- `event_scoring.txt`: Scores events for families with kids
+- `itinerary_generation.txt`: Creates day-by-day trip plans
+- `parent_escape_analysis.txt`: Evaluates parent-only trip potential
+- `parent_escape_destination.txt`: Analyzes wine regions for romantic getaways
+
+Use `PromptLoader` to load templates: `load_prompt("deal_analysis")`
+
+### Configuration
+
+All settings use Pydantic Settings in `app/config.py`:
+- Required: `DATABASE_URL`, `REDIS_URL`, `ANTHROPIC_API_KEY`, `SECRET_KEY`
+- Optional: `KIWI_API_KEY`, `EVENTBRITE_API_KEY`, SMTP config, feature flags
+- Access via: `from app.config import settings`
+
+## Important Implementation Details
+
+### Async/Sync Pattern
+
+**Always use async in FastAPI routes**:
+```python
+from app.database import get_async_session
+from sqlalchemy.ext.asyncio import AsyncSession
+
+async def route(db: AsyncSession = Depends(get_async_session)):
+    result = await db.execute(select(Flight))
+```
+
+**Use sync in Celery tasks and CLI**:
+```python
+from app.database import get_sync_session
+
+def celery_task():
+    db = get_sync_session()
+    try:
+        flights = db.query(Flight).all()
+        db.commit()
+    finally:
+        db.close()
+```
+
+### Scraper Design Pattern
+
+All scrapers follow this pattern:
+1. Inherit from base or implement `scrape_flights()` / `scrape_accommodations()`
+2. Return list of dicts with standardized fields
+3. Handle retries with `@retry` decorator from `app.utils.retry`
+4. Log all errors but don't raise (fail gracefully)
+5. Track scraping job status in `scraping_jobs` table
+
+### Cost Tracking
+
+All Claude API calls are tracked in `api_cost` table via `app.utils.cost_calculator`:
+```python
+from app.utils.cost_calculator import track_api_cost
+
+await track_api_cost(
+    service="claude",
+    model="claude-3-5-sonnet-20241022",
+    input_tokens=1000,
+    output_tokens=500
+)
+```
+
+### True Cost Calculation
+
+Flights have `price_per_person` AND `true_cost` which includes:
+- Flight price × 4 people
+- Airport parking (days × parking_cost_per_day)
+- Driving distance cost
+- Formula in `app/utils/cost_calculator.py:calculate_true_cost()`
+
+### School Holiday Integration
+
+Trip searches prioritize school holiday periods from `school_holidays` table:
+- Bavaria school calendar seeded via `app/utils/seed_data.py`
+- Use `app/utils/date_utils.get_school_holiday_periods()` to get date ranges
+- Flights/packages automatically filtered to holiday windows
+
+## Common Development Tasks
+
+### Adding a New Scraper
+
+1. Create `app/scrapers/newsource_scraper.py`
+2. Implement `scrape_flights()` or `scrape_accommodations()` returning standardized dicts
+3. Add to `FlightOrchestrator` or create new orchestrator
+4. Add Celery task in `app/tasks/scheduled_tasks.py`
+5. Add test in `tests/unit/test_newsource_scraper.py`
+
+### Adding a New AI Analyzer
+
+1. Create prompt in `app/ai/prompts/new_analyzer.txt`
+2. Create analyzer class in `app/ai/new_analyzer.py`
+3. Use `ClaudeClient` from `app/ai/claude_client.py`
+4. Track costs with `track_api_cost()`
+5. Add example in `examples/new_analyzer_example.py`
+
+### Debugging Scrapers
+
+```bash
+# Test individual scraper
+poetry run scout test-scraper kiwi --origin MUC --dest LIS
+
+# Run scraper example directly
+poetry run python examples/kiwi_scraper_example.py
+
+# Check scraping job history
+poetry run scout stats --scraper kiwi
+```
+
+### Working with Migrations
+
+When modifying models:
+1. Make changes to model classes in `app/models/`
+2. Generate migration: `poetry run alembic revision --autogenerate -m "description"`
+3. Review generated migration in `alembic/versions/`
+4. Apply: `poetry run alembic upgrade head`
+5. If issues, rollback: `poetry run alembic downgrade -1`
+
+## Testing Guidelines
+
+- **Unit tests** (`tests/unit/`): Mock external services, fast, no browser/network
+- **Integration tests** (`tests/integration/`): Real browsers, real network, mark with `@pytest.mark.integration`
+- **Fixtures**: Database fixtures in `tests/conftest.py`, data fixtures in `tests/fixtures/`
+- Use `pytest-asyncio` for async tests
+- Mock scrapers to avoid rate limits: `from unittest.mock import AsyncMock, patch`
+
+## Deployment Notes
+
+### Docker Compose Services
+
+- `postgres`: PostgreSQL 15, port 5432
+- `redis`: Redis 7, port 6379
+- `app`: FastAPI application, port 8000
+- `celery-worker`: Background task worker
+- `celery-beat`: Scheduled task scheduler
+
+### Environment Variables
+
+Copy `.env.example` to `.env` and configure:
+- `ANTHROPIC_API_KEY`: Required for AI features
+- `KIWI_API_KEY`: Optional, for Kiwi.com scraper
+- `EVENTBRITE_API_KEY`: Optional, for Eventbrite events
+- SMTP settings: For email notifications
+
+### Monitoring
+
+- View logs: `docker-compose logs -f app`
+- Check health: `curl http://localhost:8000/health`
+- API docs: `http://localhost:8000/docs`
+- Celery flower (if enabled): Task monitoring dashboard
+
+## Troubleshooting
+
+**Database connection issues**: Ensure PostgreSQL is running (`docker-compose ps postgres`)
+
+**Playwright errors**: Run `poetry run playwright install chromium` and `poetry run playwright install-deps`
+
+**Celery tasks not running**: Check Redis connection and ensure beat scheduler is running
+
+**API rate limits**: Check `poetry run scout kiwi-status` for Kiwi API limits
+
+**Migration conflicts**: Use `poetry run alembic history` and `poetry run alembic current` to debug

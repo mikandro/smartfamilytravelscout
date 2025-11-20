@@ -4,7 +4,7 @@ Airport model for storing departure airport information.
 
 from typing import List, Optional
 
-from sqlalchemy import ARRAY, Integer, Numeric, String
+from sqlalchemy import ARRAY, Boolean, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -33,6 +33,14 @@ class Airport(Base, TimestampMixin):
     )
     parking_cost_per_day: Mapped[Optional[float]] = mapped_column(
         Numeric(10, 2), nullable=True, comment="Parking cost in euros per day"
+    )
+    is_origin: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+        comment="Whether this airport can be used as an origin"
+    )
+    is_destination: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+        comment="Whether this airport can be used as a destination"
     )
 
     # Relationships

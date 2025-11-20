@@ -36,7 +36,6 @@ app = typer.Typer(
     name="scout",
     help="SmartFamilyTravelScout - AI-powered family travel deal finder",
     add_completion=False,
-    rich_markup_mode="rich",
 )
 
 # Create sub-commands
@@ -99,16 +98,7 @@ def version_callback(value: bool):
 # ============================================================================
 
 @app.callback()
-def main(
-    version: Optional[bool] = typer.Option(
-        None,
-        "--version",
-        "-v",
-        callback=version_callback,
-        is_eager=True,
-        help="Show version and exit",
-    ),
-):
+def main():
     """
     SmartFamilyTravelScout CLI - AI-powered family travel deal finder.
 
@@ -125,23 +115,18 @@ def main(
 def run(
     destinations: str = typer.Option(
         "all",
-        "--destinations",
-        "-d",
         help="Destinations to search (comma-separated IATA codes or 'all')",
     ),
     dates: str = typer.Option(
         "next-3-months",
-        "--dates",
         help="Date range: 'next-3-months', 'next-6-months', or specific dates",
     ),
     analyze: bool = typer.Option(
         True,
-        "--analyze/--no-analyze",
         help="Run AI analysis on results",
     ),
     max_price: Optional[float] = typer.Option(
         None,
-        "--max-price",
         help="Maximum price per person in EUR",
     ),
 ):
@@ -344,31 +329,22 @@ async def _run_pipeline(
 def deals(
     min_score: int = typer.Option(
         70,
-        "--min-score",
         help="Minimum AI score (0-100)",
     ),
     destination: Optional[str] = typer.Option(
         None,
-        "--destination",
-        "-d",
         help="Filter by destination city",
     ),
     limit: int = typer.Option(
         10,
-        "--limit",
-        "-n",
         help="Number of deals to show",
     ),
     package_type: Optional[str] = typer.Option(
         None,
-        "--type",
-        "-t",
         help="Package type: 'family' or 'parent_escape'",
     ),
     format: str = typer.Option(
         "table",
-        "--format",
-        "-f",
         help="Output format: 'table' or 'json'",
     ),
 ):
@@ -599,19 +575,14 @@ def test_scraper(
     ),
     origin: str = typer.Option(
         "MUC",
-        "--origin",
-        "-o",
         help="Origin airport IATA code",
     ),
     dest: str = typer.Option(
         "LIS",
-        "--dest",
-        "-d",
         help="Destination airport IATA code",
     ),
     save: bool = typer.Option(
         False,
-        "--save/--no-save",
         help="Save results to database",
     ),
 ):
@@ -732,14 +703,10 @@ async def _test_scraper(scraper: str, origin: str, dest: str, save: bool):
 def stats(
     period: str = typer.Option(
         "week",
-        "--period",
-        "-p",
         help="Time period: 'day', 'week', 'month', 'all'",
     ),
     scraper: Optional[str] = typer.Option(
         None,
-        "--scraper",
-        "-s",
         help="Filter by scraper source",
     ),
 ):
@@ -1046,13 +1013,13 @@ def health():
 
 @app.command(name="kiwi-search")
 def kiwi_search(
-    origin: str = typer.Option(..., "--origin", "-o", help="Origin airport IATA code (e.g., MUC)"),
-    destination: Optional[str] = typer.Option(None, "--destination", "-d", help="Destination airport IATA code (e.g., LIS). Omit for 'anywhere' search."),
-    departure_date: Optional[str] = typer.Option(None, "--departure", help="Departure date (YYYY-MM-DD). Default: 60 days from today"),
-    return_date: Optional[str] = typer.Option(None, "--return", help="Return date (YYYY-MM-DD). Default: 7 days after departure"),
-    adults: int = typer.Option(2, "--adults", help="Number of adults"),
-    children: int = typer.Option(2, "--children", help="Number of children"),
-    save: bool = typer.Option(True, "--save/--no-save", help="Save results to database"),
+    origin: str = typer.Option(..., help="Origin airport IATA code (e.g., MUC)"),
+    destination: Optional[str] = typer.Option(None, help="Destination airport IATA code (e.g., LIS). Omit for 'anywhere' search."),
+    departure_date: Optional[str] = typer.Option(None, help="Departure date (YYYY-MM-DD). Default: 60 days from today"),
+    return_date: Optional[str] = typer.Option(None, help="Return date (YYYY-MM-DD). Default: 7 days after departure"),
+    adults: int = typer.Option(2, help="Number of adults"),
+    children: int = typer.Option(2, help="Number of children"),
+    save: bool = typer.Option(True, help="Save results to database"),
 ):
     """
     Search for flights using Kiwi.com API.

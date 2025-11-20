@@ -433,3 +433,47 @@ def parse_date(date_str: str) -> date | None:
             continue
 
     return None
+
+
+def get_school_holiday_periods(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    holidays: List[Holiday] | None = None,
+) -> List[Tuple[date, date]]:
+    """
+    Get school holiday periods within a date range.
+
+    Args:
+        start_date: Start of the search range. If None, uses today.
+        end_date: End of the search range. If None, uses 6 months from start.
+        holidays: List of Holiday objects. If None, uses Bavaria 2025-2026 holidays.
+
+    Returns:
+        List of tuples (start_date, end_date) for holidays in the range
+
+    Examples:
+        >>> periods = get_school_holiday_periods(date(2025, 7, 1), date(2025, 9, 1))
+        >>> len(periods) >= 1  # Should include summer holidays
+        True
+    """
+    if start_date is None:
+        start_date = date.today()
+
+    if end_date is None:
+        end_date = start_date + timedelta(days=180)  # 6 months
+
+    if holidays is None:
+        holidays = BAVARIA_HOLIDAYS_2025_2026
+
+    # Filter holidays that overlap with the date range
+    matching_holidays = [
+        holiday
+        for holiday in holidays
+        if (
+            holiday.start_date <= end_date
+            and holiday.end_date >= start_date
+        )
+    ]
+
+    # Convert to date range tuples
+    return [(h.start_date, h.end_date) for h in matching_holidays]
