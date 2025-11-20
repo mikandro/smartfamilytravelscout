@@ -133,6 +133,12 @@ class Settings(BaseSettings):
     enable_notifications: bool = Field(default=True, description="Enable notifications")
     enable_metrics: bool = Field(default=True, description="Enable metrics collection")
 
+    # Scraper Flags - Control which scrapers to use
+    use_kiwi_scraper: bool = Field(default=True, description="Enable Kiwi.com scraper (requires API key)")
+    use_skyscanner_scraper: bool = Field(default=True, description="Enable Skyscanner scraper (free, no API key)")
+    use_ryanair_scraper: bool = Field(default=True, description="Enable Ryanair scraper (free, no API key)")
+    use_wizzair_scraper: bool = Field(default=True, description="Enable WizzAir scraper (free, no API key)")
+
     # AWS Configuration (Optional)
     aws_access_key_id: Optional[str] = Field(default=None, description="AWS access key ID")
     aws_secret_access_key: Optional[str] = Field(
@@ -178,6 +184,46 @@ class Settings(BaseSettings):
     def database_url_sync(self) -> str:
         """Get synchronous database URL (for Alembic)."""
         return str(self.database_url).replace("+asyncpg", "")
+
+    def get_available_scrapers(self) -> List[str]:
+        """
+        Get list of enabled and available scrapers.
+
+        Automatically filters out scrapers that require API keys if keys are not set.
+
+        Returns:
+            List of scraper names that are enabled and have required credentials
+        """
+        available = []
+
+        # Kiwi requires API key
+        if self.use_kiwi_scraper and self.kiwi_api_key:
+            available.append("kiwi")
+
+        # These don't require API keys
+        if self.use_skyscanner_scraper:
+            available.append("skyscanner")
+
+        if self.use_ryanair_scraper:
+            available.append("ryanair")
+
+        if self.use_wizzair_scraper:
+            available.append("wizzair")
+
+        return available
+
+    def has_default_scraper(self) -> bool:
+        """
+        Check if at least one default (no API key) scraper is enabled.
+
+        Returns:
+            True if Skyscanner, Ryanair, or WizzAir is enabled
+        """
+        return (
+            self.use_skyscanner_scraper
+            or self.use_ryanair_scraper
+            or self.use_wizzair_scraper
+        )
 
 
 @lru_cache()

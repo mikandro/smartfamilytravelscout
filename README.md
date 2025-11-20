@@ -8,12 +8,40 @@ SmartFamilyTravelScout combines web scraping, AI-powered analysis, and intellige
 
 ### Key Features
 
+- **No API Key Needed to Start**: Use default scrapers (Skyscanner, Ryanair, WizzAir) without configuration! 🚀
 - **Intelligent Flight Discovery**: Scrapes multiple airlines (Ryanair, Wizz Air, etc.) and aggregators (Kiwi, Skyscanner)
 - **Accommodation Matching**: Finds family-friendly accommodations (Booking.com, Airbnb)
 - **Event Integration**: Discovers local family events and activities (Eventbrite)
 - **AI-Powered Scoring**: Uses Claude AI to evaluate deal quality and family-friendliness
 - **Smart Orchestration**: Celery-based task scheduling for automated deal discovery
 - **Price Tracking**: Monitor prices over time and get alerts for the best deals
+
+### 🎯 Quick Start - No Setup Required!
+
+Want to start immediately without any API keys? Use the default scrapers:
+
+```bash
+# Install dependencies
+poetry install
+
+# Scrape flights using free scrapers (no API key needed!)
+poetry run scout scrape --origin MUC --destination BCN
+
+# Use a specific scraper
+poetry run scout scrape --origin VIE --destination LIS --scraper skyscanner
+
+# Test individual scrapers
+poetry run scout test-scraper ryanair --origin MUC --dest PRG
+```
+
+**Default (free) scrapers:**
+- ✅ **Skyscanner** - Web scraper (Playwright)
+- ✅ **Ryanair** - Web scraper (Playwright)
+- ✅ **WizzAir** - API scraper (no auth)
+
+**Optional scrapers (require API keys):**
+- Kiwi.com - Requires `KIWI_API_KEY` (100 calls/month free)
+- Eventbrite - Requires `EVENTBRITE_API_KEY`
 
 ## Technology Stack
 
