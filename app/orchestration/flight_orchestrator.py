@@ -38,6 +38,7 @@ from app.scrapers.kiwi_scraper import KiwiClient
 from app.scrapers.ryanair_scraper import RyanairScraper
 from app.scrapers.skyscanner_scraper import SkyscannerScraper
 from app.scrapers.wizzair_scraper import WizzAirScraper
+from app.services.price_history_service import PriceHistoryService
 from app.utils.date_utils import parse_time
 from app.utils.flight_cache import FlightDeduplicationCache
 
@@ -990,6 +991,7 @@ class FlightOrchestrator:
                             if existing_flight:
                                 # Update if new price is cheaper
                                 if price_per_person < existing_flight.price_per_person:
+                                    old_price = existing_flight.price_per_person
                                     logger.info(
                                         f"Updating flight {existing_flight.id}: "
                                         f"€{existing_flight.price_per_person} → €{price_per_person}"
@@ -1000,8 +1002,18 @@ class FlightOrchestrator:
                                         "booking_url", existing_flight.booking_url
                                     )
                                     existing_flight.scraped_at = datetime.now()
+
+                                    # Track price change
+                                    await PriceHistoryService.track_price_change(
+                                        db, existing_flight, old_price
+                                    )
+
                                     stats["updated"] += 1
                                 else:
+                                    # Track price even if not updating (for history)
+                                    await PriceHistoryService.track_price_change(
+                                        db, existing_flight, None
+                                    )
                                     stats["skipped"] += 1
                             else:
                                 # Insert new flight
@@ -1022,6 +1034,13 @@ class FlightOrchestrator:
                                     scraped_at=datetime.now(),
                                 )
                                 db.add(new_flight)
+                                await db.flush()  # Get the flight ID and load relationships
+
+                                # Track initial price
+                                await PriceHistoryService.track_price_change(
+                                    db, new_flight, None
+                                )
+
                                 stats["inserted"] += 1
 
                         except Exception as e:

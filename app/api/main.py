@@ -241,7 +241,7 @@ async def api_root() -> Dict[str, str]:
 
 
 # Import and include routers
-from app.api.routes import web, notifications, parent_escape
+from app.api.routes import web, notifications, parent_escape, price_history
 from app.api.routes import api_deals, api_flights, api_packages, api_search, api_stats
 
 # Include web dashboard routes (handles /, /deals, /preferences, /stats)
@@ -257,6 +257,7 @@ app.include_router(api_packages.router, prefix="/api/v1", tags=["API - Packages"
 app.include_router(api_search.router, prefix="/api/v1", tags=["API - Search"])
 app.include_router(api_stats.router, prefix="/api/v1", tags=["API - Statistics"])
 app.include_router(parent_escape.router, prefix="/api/v1/parent-escape", tags=["Parent Escape"])
+app.include_router(price_history.router, prefix="/api/v1", tags=["Price History"])
 
 
 if __name__ == "__main__":
