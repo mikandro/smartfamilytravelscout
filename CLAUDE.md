@@ -58,6 +58,7 @@ docker-compose up -d
 # CLI commands (using 'scout')
 poetry run scout health          # Check system health
 poetry run scout scrape --origin MUC --destination LIS  # Quick scrape (no API key needed!)
+poetry run scout scrape-accommodations --city Barcelona  # Scrape accommodations
 poetry run scout run             # Run full pipeline
 poetry run scout deals           # View top deals
 poetry run scout stats           # Show statistics
@@ -66,6 +67,12 @@ poetry run scout stats           # Show statistics
 poetry run scout scrape --origin MUC --destination BCN
 poetry run scout scrape --origin VIE --destination LIS --scraper skyscanner
 poetry run scout test-scraper skyscanner --origin MUC --dest PRG
+
+# Accommodation scraping:
+poetry run scout scrape-accommodations --city Lisbon
+poetry run scout scrape-accommodations --city Barcelona --check-in 2025-07-01 --check-out 2025-07-08
+poetry run scout test-scraper booking --dest Barcelona
+poetry run scout test-scraper airbnb --dest Lisbon
 ```
 
 ### Testing
@@ -159,6 +166,7 @@ poetry run mypy app/
 - `flight_orchestrator.py`: Runs all flight scrapers in parallel, deduplicates results, tracks failures
   - **Failure Threshold**: Raises `ScraperFailureThresholdExceeded` if >50% (configurable) of scrapers fail
   - Prevents silent failures that mask critical system issues
+- `accommodation_orchestrator.py`: Runs all accommodation scrapers in parallel, deduplicates results
 - `accommodation_matcher.py`: Matches accommodations to flights, generates trip packages
 - `event_matcher.py`: Matches local events to trip packages
 
