@@ -81,14 +81,14 @@ The easiest way to use the Kiwi scraper is through the CLI:
 
 ```bash
 # Search Munich to Lisbon
-travelscout kiwi-search --origin MUC --destination LIS
+scout kiwi-search --origin MUC --destination LIS
 
 # Custom dates
-travelscout kiwi-search --origin MUC --destination BCN \
+scout kiwi-search --origin MUC --destination BCN \
   --departure 2025-12-20 --return 2025-12-27
 
 # Custom passengers
-travelscout kiwi-search --origin MUC --destination LIS \
+scout kiwi-search --origin MUC --destination LIS \
   --adults 2 --children 3
 ```
 
@@ -96,13 +96,13 @@ travelscout kiwi-search --origin MUC --destination LIS \
 
 ```bash
 # Find deals from Munich to any destination
-travelscout kiwi-search --origin MUC
+scout kiwi-search --origin MUC
 ```
 
 #### Check Rate Limit Status
 
 ```bash
-travelscout kiwi-status
+scout kiwi-status
 ```
 
 ### Python API
@@ -426,7 +426,7 @@ For issues or questions:
 
 1. Check the logs: `tail -f /tmp/kiwi_api_calls.txt`
 2. Verify API key: `echo $KIWI_API_KEY`
-3. Check rate limit: `travelscout kiwi-status`
+3. Check rate limit: `scout kiwi-status`
 4. Run tests: `poetry run pytest tests/unit/test_kiwi_scraper.py`
 
 ## References

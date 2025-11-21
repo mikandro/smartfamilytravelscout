@@ -305,7 +305,7 @@ def search_airbnb(
 Usage:
 
 ```bash
-poetry run travelscout search-airbnb "Lisbon, Portugal" 2025-12-20 2025-12-27
+poetry run scout search-airbnb "Lisbon, Portugal" 2025-12-20 2025-12-27
 ```
 
 ## Troubleshooting

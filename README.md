@@ -185,13 +185,13 @@ See `.env.example` for a complete list of available variables.
 
 ```bash
 # Search for deals
-poetry run travelscout search --from VIE --departure-date 2024-07-15
+poetry run scout search --from VIE --departure-date 2024-07-15
 
 # Check health
-poetry run travelscout health
+poetry run scout health
 
 # Run scrapers manually
-poetry run travelscout scrape --scraper kiwi
+poetry run scout scrape --scraper kiwi
 ```
 
 ### Using the API
