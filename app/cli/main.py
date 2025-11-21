@@ -796,6 +796,10 @@ def test_scraper(
         False,
         help="Save results to database",
     ),
+    debug: bool = typer.Option(
+        False,
+        help="Show full stack traces for errors",
+    ),
 ):
     """
     Test individual scrapers with sample queries.
@@ -804,6 +808,7 @@ def test_scraper(
         scout test-scraper kiwi --origin MUC --dest LIS
         scout test-scraper ryanair --save
         scout test-scraper skyscanner --origin VIE --dest BCN
+        scout test-scraper wizzair --origin MUC --dest PRG --debug
     """
     console.print(Panel(
         f"[bold]Testing {scraper.upper()} Scraper[/bold]",
@@ -811,20 +816,42 @@ def test_scraper(
     ))
 
     try:
-        asyncio.run(_test_scraper(scraper, origin, dest, save))
+        asyncio.run(_test_scraper(scraper, origin, dest, save, debug))
+    except typer.Exit:
+        # Re-raise typer.Exit (already handled in _test_scraper)
+        raise
     except Exception as e:
-        handle_error(e, f"Scraper test failed")
+        # Unexpected error not caught by _test_scraper
+        if debug:
+            handle_error(e, f"Unexpected error in scraper test")
+        else:
+            console.print(f"\n[bold red]✗ Unexpected error: {type(e).__name__}: {str(e)}[/bold red]")
+            console.print("[dim]💡 Tip: Use --debug flag to see full stack trace[/dim]\n")
+            raise typer.Exit(code=1)
 
 
-async def _test_scraper(scraper: str, origin: str, dest: str, save: bool):
+async def _test_scraper(scraper: str, origin: str, dest: str, save: bool, debug: bool = False):
     """Test a specific scraper."""
     from datetime import date, timedelta
+    import traceback
 
     # Default dates
     dep_date = date.today() + timedelta(days=60)
     ret_date = dep_date + timedelta(days=7)
 
     results = []
+
+    # Display test parameters
+    info_table = Table(show_header=False, box=None)
+    info_table.add_column(style="cyan")
+    info_table.add_column(style="white")
+    info_table.add_row("Scraper:", scraper.upper())
+    info_table.add_row("Route:", f"{origin.upper()} → {dest.upper()}")
+    info_table.add_row("Departure:", dep_date.strftime("%Y-%m-%d"))
+    info_table.add_row("Return:", ret_date.strftime("%Y-%m-%d"))
+    console.print("\n")
+    console.print(info_table)
+    console.print("\n")
 
     with Progress(
         SpinnerColumn(),
@@ -833,48 +860,82 @@ async def _test_scraper(scraper: str, origin: str, dest: str, save: bool):
     ) as progress:
         task = progress.add_task(f"[yellow]Running {scraper} scraper...", total=None)
 
-        if scraper.lower() == "kiwi":
-            from app.scrapers.kiwi_scraper import KiwiClient
-            client = KiwiClient()
-            results = await client.search_flights(
-                origin=origin,
-                destination=dest,
-                departure_date=dep_date,
-                return_date=ret_date,
-            )
-        elif scraper.lower() == "skyscanner":
-            from app.scrapers.skyscanner_scraper import SkyscannerScraper
-            scraper_instance = SkyscannerScraper(headless=True)
-            results = await scraper_instance.scrape_flights(
-                origin=origin,
-                destination=dest,
-                departure_date=dep_date,
-                return_date=ret_date,
-            )
-        elif scraper.lower() == "ryanair":
-            from app.scrapers.ryanair_scraper import RyanairScraper
-            scraper_instance = RyanairScraper()
-            results = await scraper_instance.scrape_flights(
-                origin=origin,
-                destination=dest,
-                departure_date=dep_date,
-                return_date=ret_date,
-            )
-        elif scraper.lower() == "wizzair":
-            from app.scrapers.wizzair_scraper import WizzAirScraper
-            scraper_instance = WizzAirScraper()
-            results = await scraper_instance.scrape_flights(
-                origin=origin,
-                destination=dest,
-                departure_date=dep_date,
-                return_date=ret_date,
-            )
-        else:
-            console.print(f"[red]Unknown scraper: {scraper}[/red]")
-            console.print("[yellow]Available scrapers: kiwi, skyscanner, ryanair, wizzair[/yellow]")
-            raise typer.Exit(code=1)
+        try:
+            if scraper.lower() == "kiwi":
+                from app.scrapers.kiwi_scraper import KiwiClient
+                client = KiwiClient()
+                results = await client.search_flights(
+                    origin=origin,
+                    destination=dest,
+                    departure_date=dep_date,
+                    return_date=ret_date,
+                )
+            elif scraper.lower() == "skyscanner":
+                from app.scrapers.skyscanner_scraper import SkyscannerScraper
+                scraper_instance = SkyscannerScraper(headless=True)
+                results = await scraper_instance.scrape_flights(
+                    origin=origin,
+                    destination=dest,
+                    departure_date=dep_date,
+                    return_date=ret_date,
+                )
+            elif scraper.lower() == "ryanair":
+                from app.scrapers.ryanair_scraper import RyanairScraper
+                scraper_instance = RyanairScraper()
+                results = await scraper_instance.scrape_flights(
+                    origin=origin,
+                    destination=dest,
+                    departure_date=dep_date,
+                    return_date=ret_date,
+                )
+            elif scraper.lower() == "wizzair":
+                from app.scrapers.wizzair_scraper import WizzAirScraper
+                scraper_instance = WizzAirScraper()
+                results = await scraper_instance.scrape_flights(
+                    origin=origin,
+                    destination=dest,
+                    departure_date=dep_date,
+                    return_date=ret_date,
+                )
+            else:
+                console.print(f"[red]Unknown scraper: {scraper}[/red]")
+                console.print("[yellow]Available scrapers: kiwi, skyscanner, ryanair, wizzair[/yellow]")
+                raise typer.Exit(code=1)
 
-        progress.update(task, completed=1)
+            progress.update(task, completed=1)
+
+        except Exception as e:
+            progress.update(task, completed=1)
+
+            # Enhanced error reporting
+            console.print("\n")
+            console.print(Panel(
+                f"[bold red]Scraper Error[/bold red]",
+                border_style="red",
+            ))
+
+            error_table = Table(show_header=False, box=None, padding=(0, 1))
+            error_table.add_column(style="bold cyan", no_wrap=True)
+            error_table.add_column(style="white")
+
+            error_table.add_row("Scraper:", scraper.upper())
+            error_table.add_row("Route:", f"{origin.upper()} → {dest.upper()}")
+            error_table.add_row("Departure:", dep_date.strftime("%Y-%m-%d"))
+            error_table.add_row("Return:", ret_date.strftime("%Y-%m-%d"))
+            error_table.add_row("Error Type:", type(e).__name__)
+            error_table.add_row("Error Message:", str(e))
+
+            console.print(error_table)
+            console.print("\n")
+
+            if debug:
+                console.print("[bold yellow]Full Stack Trace:[/bold yellow]")
+                console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            else:
+                console.print("[dim]💡 Tip: Use --debug flag to see full stack trace[/dim]")
+
+            console.print("\n")
+            raise typer.Exit(code=1)
 
     # Display results
     if results:
