@@ -1629,5 +1629,211 @@ def beat():
     ])
 
 
+# ============================================================================
+# PARENT-ESCAPE Command - Find Romantic Getaway Opportunities
+# ============================================================================
+
+@app.command("parent-escape")
+def parent_escape(
+    start_date: Optional[str] = typer.Option(
+        None,
+        help="Start date for search (YYYY-MM-DD). Default: today",
+    ),
+    end_date: Optional[str] = typer.Option(
+        None,
+        help="End date for search (YYYY-MM-DD). Default: 3 months from start",
+    ),
+    max_budget: float = typer.Option(
+        1200.0,
+        help="Maximum total trip budget in EUR (for 2 people)",
+    ),
+    min_nights: int = typer.Option(
+        2,
+        help="Minimum trip duration in nights",
+    ),
+    max_nights: int = typer.Option(
+        3,
+        help="Maximum trip duration in nights",
+    ),
+    max_train_hours: float = typer.Option(
+        6.0,
+        help="Maximum train travel time in hours",
+    ),
+    limit: int = typer.Option(
+        10,
+        help="Number of top opportunities to display",
+    ),
+    format: str = typer.Option(
+        "table",
+        help="Output format: 'table' or 'json'",
+    ),
+):
+    """
+    Find romantic getaway opportunities for parents.
+
+    Searches for train-accessible destinations from Munich with romantic features
+    like wine regions, spa hotels, and cultural events. Perfect for 2-3 night
+    weekend escapes!
+
+    Examples:
+        scout parent-escape
+        scout parent-escape --max-budget 1000 --min-nights 2 --max-nights 2
+        scout parent-escape --start-date 2025-04-01 --end-date 2025-06-30
+        scout parent-escape --max-train-hours 4.0 --limit 15
+        scout parent-escape --format json
+    """
+    console.print(Panel(
+        "[bold]🌹 Parent Escape Opportunity Finder[/bold]\n\n"
+        "Finding romantic getaways for parents...\n"
+        "Train-accessible destinations with wine, spa, and culture!",
+        border_style="magenta",
+    ))
+
+    try:
+        asyncio.run(_find_parent_escapes(
+            start_date,
+            end_date,
+            max_budget,
+            min_nights,
+            max_nights,
+            max_train_hours,
+            limit,
+            format,
+        ))
+    except Exception as e:
+        handle_error(e, "Parent escape search failed")
+
+
+async def _find_parent_escapes(
+    start_date_str: Optional[str],
+    end_date_str: Optional[str],
+    max_budget: float,
+    min_nights: int,
+    max_nights: int,
+    max_train_hours: float,
+    limit: int,
+    format: str,
+):
+    """Execute parent escape search."""
+    from app.ai.parent_escape_analyzer import ParentEscapeAnalyzer
+    from app.ai.claude_client import ClaudeClient
+
+    # Parse dates
+    if start_date_str:
+        start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+    else:
+        start = date.today()
+
+    if end_date_str:
+        end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+    else:
+        end = start + timedelta(days=90)
+
+    # Display search parameters
+    params_table = Table(show_header=True, header_style="bold magenta")
+    params_table.add_column("Parameter", style="cyan")
+    params_table.add_column("Value", style="green")
+
+    params_table.add_row("Date Range", f"{start} to {end}")
+    params_table.add_row("Max Budget", f"€{max_budget:.0f}")
+    params_table.add_row("Trip Duration", f"{min_nights}-{max_nights} nights")
+    params_table.add_row("Max Train Travel", f"{max_train_hours}h")
+    params_table.add_row("Results to Show", str(limit))
+
+    console.print("\n")
+    console.print(params_table)
+    console.print("\n")
+
+    # Initialize analyzer
+    claude_client = ClaudeClient()
+    analyzer = ParentEscapeAnalyzer(claude_client)
+
+    # Find opportunities
+    async with get_async_session_context() as db:
+        packages = await analyzer.find_escape_opportunities(
+            db=db,
+            date_range=(start, end),
+            max_budget=max_budget,
+            min_nights=min_nights,
+            max_nights=max_nights,
+            max_train_hours=max_train_hours,
+        )
+
+    if not packages:
+        warning("No parent escape opportunities found matching your criteria")
+        info("Try adjusting the date range, budget, or max train hours")
+        return
+
+    # Sort by AI score
+    sorted_packages = sorted(
+        packages,
+        key=lambda p: p.ai_score if p.ai_score else 0,
+        reverse=True
+    )
+
+    if format == "json":
+        # JSON output
+        escapes_data = []
+        for pkg in sorted_packages[:limit]:
+            escape_data = {
+                "destination": pkg.destination_city,
+                "country": pkg.flights_json.get("details", {}).get("country", "Unknown"),
+                "departure_date": pkg.departure_date.isoformat(),
+                "return_date": pkg.return_date.isoformat(),
+                "nights": pkg.num_nights,
+                "total_cost": float(pkg.total_price),
+                "escape_score": float(pkg.ai_score) if pkg.ai_score else None,
+                "romantic_appeal": pkg.itinerary_json.get("romantic_appeal") if pkg.itinerary_json else None,
+                "highlights": pkg.itinerary_json.get("highlights", []) if pkg.itinerary_json else [],
+                "recommended_experiences": pkg.itinerary_json.get("recommended_experiences", []) if pkg.itinerary_json else [],
+                "childcare_suggestions": pkg.itinerary_json.get("childcare_suggestions", []) if pkg.itinerary_json else [],
+            }
+            escapes_data.append(escape_data)
+
+        console.print(json.dumps(escapes_data, indent=2))
+    else:
+        # Table output
+        await analyzer.print_escape_summary(sorted_packages, show_top=limit)
+
+        # Show detailed information for top result
+        if sorted_packages:
+            top_package = sorted_packages[0]
+            console.print("\n")
+            console.print(Panel(
+                f"[bold cyan]🏆 Top Recommendation: {top_package.destination_city}[/bold cyan]\n\n"
+                f"[white]{top_package.ai_reasoning}[/white]",
+                border_style="cyan",
+                title="Best Romantic Getaway",
+            ))
+
+            # Show highlights if available
+            if top_package.itinerary_json and "highlights" in top_package.itinerary_json:
+                highlights = top_package.itinerary_json["highlights"]
+                if highlights:
+                    console.print("\n[bold magenta]Highlights:[/bold magenta]")
+                    for highlight in highlights[:3]:
+                        console.print(f"  • {highlight}")
+
+            # Show recommended experiences
+            if top_package.itinerary_json and "recommended_experiences" in top_package.itinerary_json:
+                experiences = top_package.itinerary_json["recommended_experiences"]
+                if experiences:
+                    console.print("\n[bold magenta]Recommended Experiences:[/bold magenta]")
+                    for exp in experiences[:3]:
+                        console.print(f"  • {exp}")
+
+            # Show childcare suggestions
+            if top_package.itinerary_json and "childcare_suggestions" in top_package.itinerary_json:
+                childcare = top_package.itinerary_json["childcare_suggestions"]
+                if childcare:
+                    console.print("\n[bold magenta]Childcare Options:[/bold magenta]")
+                    for option in childcare[:2]:
+                        console.print(f"  • {option}")
+
+            console.print("\n")
+
+    success(f"Found {len(packages)} parent escape opportunities!")
+
+
 if __name__ == "__main__":
     app()
