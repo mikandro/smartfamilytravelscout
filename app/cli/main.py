@@ -469,20 +469,23 @@ async def _run_pipeline(
         # Step 5: Match packages
         task5 = progress.add_task("[cyan]Generating trip packages...", total=None)
 
-        matcher = AccommodationMatcher()
-        packages = await matcher.generate_trip_packages(
-            max_budget_per_person=max_price or settings.max_flight_price_per_person,
-        )
+        async with get_async_session_context() as db:
+            matcher = AccommodationMatcher()
+            packages = await matcher.generate_trip_packages(
+                db=db,
+                max_budget=max_price or settings.max_flight_price_per_person,
+            )
 
-        stats["packages"] = len(packages)
-        progress.update(task5, completed=1)
-        success(f"Generated {stats['packages']} trip packages")
+            stats["packages"] = len(packages)
+            progress.update(task5, completed=1)
+            success(f"Generated {stats['packages']} trip packages")
 
         # Step 6: Match events
         task6 = progress.add_task("[cyan]Matching events to packages...", total=None)
 
-        event_matcher = EventMatcher()
-        await event_matcher.match_events_to_packages()
+        async with get_async_session_context() as db:
+            event_matcher = EventMatcher(db_session=db)
+            packages = await event_matcher.match_events_to_packages(packages)
 
         progress.update(task6, completed=1)
 
@@ -490,30 +493,48 @@ async def _run_pipeline(
         if analyze and stats["packages"] > 0:
             task7 = progress.add_task("[magenta]Running AI analysis...", total=stats["packages"])
 
+            from app.ai.claude_client import ClaudeClient
             from app.ai.deal_scorer import DealScorer
+            from redis.asyncio import Redis
 
-            scorer = DealScorer()
-            async with get_async_session_context() as db:
-                from app.models.trip_package import TripPackage
+            # Initialize Redis client for caching
+            redis_client = await Redis.from_url(str(settings.redis_url))
 
-                result = await db.execute(
-                    select(TripPackage).where(TripPackage.ai_score.is_(None))
-                )
-                unscored = result.scalars().all()
+            try:
+                async with get_async_session_context() as db:
+                    from app.models.trip_package import TripPackage
 
-                for idx, package in enumerate(unscored[:50]):  # Limit to 50 for cost control
-                    try:
-                        score_data = await scorer.score_trip(package)
-                        package.ai_score = score_data["score"]
-                        package.ai_reasoning = score_data["reasoning"]
-                        await db.commit()
-                        stats["analyzed"] += 1
-                        progress.update(task7, advance=1)
-                    except Exception as e:
-                        logger.error(f"Failed to score package {package.id}: {e}")
-                        continue
+                    # Create Claude client and deal scorer
+                    claude_client = ClaudeClient(
+                        api_key=settings.anthropic_api_key,
+                        redis_client=redis_client,
+                        db_session=db,
+                    )
+                    scorer = DealScorer(
+                        claude_client=claude_client,
+                        db_session=db,
+                    )
 
-            success(f"Analyzed {stats['analyzed']} packages")
+                    result = await db.execute(
+                        select(TripPackage).where(TripPackage.ai_score.is_(None))
+                    )
+                    unscored = result.scalars().all()
+
+                    for idx, package in enumerate(unscored[:50]):  # Limit to 50 for cost control
+                        try:
+                            score_data = await scorer.score_trip(package)
+                            package.ai_score = score_data["score"]
+                            package.ai_reasoning = score_data["reasoning"]
+                            await db.commit()
+                            stats["analyzed"] += 1
+                            progress.update(task7, advance=1)
+                        except Exception as e:
+                            logger.error(f"Failed to score package {package.id}: {e}")
+                            continue
+
+                success(f"Analyzed {stats['analyzed']} packages")
+            finally:
+                await redis_client.close()
 
     # Display final statistics
     console.print("\n")

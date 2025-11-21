@@ -250,6 +250,208 @@ def celery_task():
         db.close()
 ```
 
+### Database Session Management
+
+**CRITICAL: Always use proper session management patterns to prevent connection pool exhaustion and resource leaks.**
+
+The codebase provides three standardized session management approaches depending on the context:
+
+#### 1. FastAPI Routes: Dependency Injection
+
+**ALWAYS use FastAPI's `Depends` mechanism for automatic session lifecycle management:**
+
+```python
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_async_session
+
+@router.get("/deals")
+async def get_deals(db: AsyncSession = Depends(get_async_session)):
+    """FastAPI handles session creation, commit, and cleanup automatically."""
+    result = await db.execute(select(TripPackage))
+    deals = result.scalars().all()
+    return deals
+```
+
+**Benefits:**
+- Automatic session creation and cleanup
+- Auto-commit on success, auto-rollback on exception
+- No manual session management needed
+- Prevents connection leaks
+
+**❌ NEVER do this in FastAPI routes:**
+```python
+# WRONG - Manual session creation in routes
+async with AsyncSessionLocal() as db:  # Don't do this!
+    ...
+```
+
+#### 2. CLI Commands & Background Tasks: Async Context Managers
+
+**Use `get_async_session_context()` for explicit session lifecycle control:**
+
+```python
+from app.database import get_async_session_context
+
+async def cli_command():
+    """CLI commands should use context manager for proper cleanup."""
+    async with get_async_session_context() as db:
+        # Query data
+        flights = await db.execute(select(Flight))
+
+        # Modify data
+        package = TripPackage(...)
+        db.add(package)
+
+        # Auto-commit on success, auto-rollback on exception
+    # Session automatically closed here
+```
+
+**Benefits:**
+- Explicit session lifecycle (clear ownership)
+- Guaranteed cleanup even on exceptions
+- Auto-commit/rollback handling
+
+**❌ NEVER do this in CLI/tasks:**
+```python
+# WRONG - Sync session in async context
+async with SessionLocal() as db:  # SessionLocal is SYNC, not ASYNC!
+    ...
+
+# WRONG - Direct instantiation without context manager
+db = AsyncSessionLocal()  # Risk of connection leaks!
+try:
+    ...
+finally:
+    await db.close()  # Manual cleanup is error-prone
+```
+
+#### 3. Utility Functions & Services: Require Session Parameter
+
+**Utility functions should NEVER create sessions internally. Always accept session as a parameter:**
+
+```python
+async def save_flights(
+    flights: List[Dict],
+    db: AsyncSession,  # ✓ REQUIRED parameter
+) -> int:
+    """
+    Save flights to database.
+
+    Args:
+        flights: List of flight dictionaries
+        db: Database session (caller owns lifecycle)
+
+    Returns:
+        Number of flights saved
+    """
+    for flight_data in flights:
+        flight = Flight(**flight_data)
+        db.add(flight)
+
+    await db.commit()
+    return len(flights)
+
+# Usage in CLI
+async with get_async_session_context() as db:
+    count = await save_flights(flights, db)
+
+# Usage in FastAPI route
+@router.post("/flights")
+async def create_flights(
+    flights: List[Dict],
+    db: AsyncSession = Depends(get_async_session)
+):
+    count = await save_flights(flights, db)
+    return {"saved": count}
+```
+
+**Benefits:**
+- Clear ownership (caller controls session lifecycle)
+- Easier testing (can inject mock sessions)
+- Prevents nested session creation
+- No hidden resource management
+
+**❌ NEVER do this in utility functions:**
+```python
+# WRONG - Creating session internally
+async def save_flights(flights: List[Dict]) -> int:
+    async with AsyncSessionLocal() as db:  # Hidden session creation!
+        ...
+    # Caller has no control over session lifecycle
+```
+
+**✓ Acceptable compromise (for backward compatibility):**
+```python
+async def save_flights(
+    flights: List[Dict],
+    db: Optional[AsyncSession] = None,  # Optional for convenience
+) -> int:
+    """If no session provided, create one with proper context manager."""
+    if db is not None:
+        # Use provided session
+        return await _save_flights_impl(flights, db)
+
+    # Create session using context manager (not direct instantiation)
+    from app.database import get_async_session_context
+    async with get_async_session_context() as session:
+        return await _save_flights_impl(flights, session)
+```
+
+#### Session Management Anti-Patterns
+
+**❌ NEVER:**
+1. Use `SessionLocal()` (sync) in `async` context
+2. Create sessions with direct `AsyncSessionLocal()` instantiation (use context managers)
+3. Create sessions inside utility functions (accept as parameter)
+4. Forget to close sessions (use context managers or dependency injection)
+5. Mix sync and async sessions in the same code path
+
+**✓ ALWAYS:**
+1. Use `Depends(get_async_session)` in FastAPI routes
+2. Use `async with get_async_session_context()` in CLI/tasks
+3. Accept `db: AsyncSession` as parameter in utility functions
+4. Let context managers or FastAPI handle commits/rollbacks
+5. Use async sessions for async code, sync sessions for sync code (Celery/Alembic)
+
+#### Common Patterns
+
+**Pattern: Multiple operations in a transaction**
+```python
+async with get_async_session_context() as db:
+    # All operations in single transaction
+    flight = Flight(...)
+    db.add(flight)
+
+    package = TripPackage(...)
+    db.add(package)
+
+    # Auto-commit on success
+```
+
+**Pattern: Conditional session creation**
+```python
+async def process_data(data: List[Dict], db: Optional[AsyncSession] = None):
+    """Prefer accepting session, but create if needed."""
+    if db is not None:
+        return await _process_impl(data, db)
+
+    async with get_async_session_context() as session:
+        return await _process_impl(data, session)
+```
+
+**Pattern: FastAPI route with multiple DB calls**
+```python
+@router.get("/dashboard")
+async def dashboard(db: AsyncSession = Depends(get_async_session)):
+    # Single session for all queries in this request
+    flights = await db.execute(select(Flight))
+    packages = await db.execute(select(TripPackage))
+
+    # FastAPI commits and closes session automatically
+    return {"flights": flights, "packages": packages}
+```
+
 ### Scraper Design Pattern
 
 All scrapers follow this pattern:
