@@ -133,6 +133,16 @@ class Settings(BaseSettings):
     enable_notifications: bool = Field(default=True, description="Enable notifications")
     enable_metrics: bool = Field(default=True, description="Enable metrics collection")
 
+    # Notification Settings
+    notification_threshold: float = Field(
+        default=70.0,
+        description="Default minimum AI score to trigger notifications (0-100)"
+    )
+    notification_alert_threshold: float = Field(
+        default=85.0,
+        description="Score threshold for immediate deal alerts (0-100)"
+    )
+
     # Scraper Flags - Control which scrapers to use
     use_kiwi_scraper: bool = Field(default=True, description="Enable Kiwi.com scraper (requires API key)")
     use_skyscanner_scraper: bool = Field(default=True, description="Enable Skyscanner scraper (free, no API key)")

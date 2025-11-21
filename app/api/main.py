@@ -162,10 +162,13 @@ async def api_root() -> Dict[str, str]:
 
 
 # Import and include routers
-from app.api.routes import web
+from app.api.routes import web, notifications
 
 # Include web dashboard routes (handles /, /deals, /preferences, /stats)
 app.include_router(web.router, tags=["Web Dashboard"])
+
+# Include notification routes (unsubscribe, preferences)
+app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
 
 # API routes (to be implemented)
 # from app.api.routes import flights, accommodations, events, search
