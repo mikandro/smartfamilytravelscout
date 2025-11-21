@@ -102,6 +102,14 @@ poetry run alembic downgrade -1
 # View migration history
 poetry run alembic history
 
+# Seed database with sample airports
+poetry run scout db seed
+
+# Import comprehensive airport data from OurAirports.com (3,000+ airports)
+poetry run scout db import-airports
+poetry run scout db import-airports --dry-run  # Preview without importing
+poetry run scout db import-airports --airport-types large_airport,medium_airport,small_airport
+
 # Reset database (WARNING: deletes all data)
 poetry run scout db reset
 ```
@@ -171,6 +179,13 @@ poetry run mypy app/
 **Models** (`app/models/`): SQLAlchemy ORM models (all async-capable)
 - Core entities: `Airport`, `Flight`, `Accommodation`, `Event`, `TripPackage`
 - Supporting: `SchoolHoliday`, `PriceHistory`, `ScrapingJob`, `UserPreference`, `ApiCost`
+
+**Airport Data** (`app/models/airport.py`): Comprehensive airport database
+- Extended with OurAirports.com data for worldwide coverage (3,000+ commercial airports)
+- Includes: IATA/ICAO codes, city, country, lat/long coordinates, timezone, airport type
+- Import command: `poetry run scout db import-airports` (filters for commercial airports only)
+- Origin airports include distance/driving time from Munich home base
+- All imported airports default to `is_destination=True`
 
 **Tasks** (`app/tasks/`): Celery background tasks
 - `celery_app.py`: Celery configuration and beat schedule

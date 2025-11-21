@@ -1155,6 +1155,306 @@ async def _db_reset():
     success("Database reset complete")
 
 
+@db_app.command("import-airports")
+def db_import_airports(
+    source: str = typer.Option(
+        "ourairports",
+        help="Data source: 'ourairports' (default)",
+    ),
+    csv_path: Optional[str] = typer.Option(
+        None,
+        help="Path to local CSV file (if not provided, will download from GitHub)",
+    ),
+    airport_types: str = typer.Option(
+        "large_airport,medium_airport",
+        help="Comma-separated airport types to import",
+    ),
+    min_scheduled: bool = typer.Option(
+        True,
+        help="Only import airports with scheduled service",
+    ),
+    require_iata: bool = typer.Option(
+        True,
+        help="Only import airports with IATA codes",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        help="Preview import without saving to database",
+    ),
+):
+    """
+    Import comprehensive airport data from OurAirports.com.
+
+    This command imports airport data including geographic coordinates,
+    timezones, ICAO codes, and other metadata for comprehensive coverage.
+
+    Examples:
+        scout db import-airports
+        scout db import-airports --dry-run
+        scout db import-airports --csv-path /path/to/airports.csv
+        scout db import-airports --airport-types large_airport,medium_airport,small_airport
+    """
+    console.print("\n")
+    console.print(Panel(
+        "[bold]Import Airports from OurAirports.com[/bold]",
+        border_style="blue",
+    ))
+
+    try:
+        asyncio.run(
+            _import_airports(
+                source,
+                csv_path,
+                airport_types,
+                min_scheduled,
+                require_iata,
+                dry_run,
+            )
+        )
+    except Exception as e:
+        handle_error(e, "Airport import failed")
+
+
+async def _import_airports(
+    source: str,
+    csv_path: Optional[str],
+    airport_types_str: str,
+    min_scheduled: bool,
+    require_iata: bool,
+    dry_run: bool,
+):
+    """Import airports from CSV data."""
+    import csv
+    import urllib.request
+    from decimal import Decimal
+    from app.models.airport import Airport
+
+    # Parse airport types
+    airport_types = [t.strip() for t in airport_types_str.split(",")]
+
+    # Download or use local CSV
+    if csv_path:
+        csv_file_path = csv_path
+        info(f"Using local CSV file: {csv_path}")
+    else:
+        csv_file_path = "/tmp/airports.csv"
+
+        # Check if already downloaded
+        if not Path(csv_file_path).exists():
+            with console.status("[yellow]Downloading OurAirports dataset..."):
+                url = "https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/airports.csv"
+                urllib.request.urlretrieve(url, csv_file_path)
+            success(f"Downloaded to {csv_file_path}")
+        else:
+            info(f"Using cached file: {csv_file_path}")
+
+    # Parse CSV and filter
+    info("Parsing CSV and applying filters...")
+
+    airports_to_import = []
+    total_count = 0
+    filtered_count = 0
+
+    # Try to import timezonefinder for timezone calculation
+    try:
+        from timezonefinder import TimezoneFinder
+        tf = TimezoneFinder()
+        has_timezone_finder = True
+    except ImportError:
+        warning("timezonefinder not installed - timezones will not be populated")
+        warning("Install with: pip install timezonefinder")
+        tf = None
+        has_timezone_finder = False
+
+    with open(csv_file_path, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            total_count += 1
+
+            # Apply filters
+            if airport_types and row['type'] not in airport_types:
+                continue
+
+            if require_iata and not row['iata_code']:
+                continue
+
+            if min_scheduled and row['scheduled_service'] != 'yes':
+                continue
+
+            # Calculate timezone from lat/long if available
+            timezone = None
+            if has_timezone_finder and row['latitude_deg'] and row['longitude_deg']:
+                try:
+                    lat = float(row['latitude_deg'])
+                    lon = float(row['longitude_deg'])
+                    timezone = tf.timezone_at(lat=lat, lng=lon)
+                except (ValueError, TypeError):
+                    pass
+
+            airport_data = {
+                'iata_code': row['iata_code'],
+                'name': row['name'],
+                'city': row['municipality'] or 'Unknown',
+                'country': row['iso_country'],
+                'latitude': Decimal(row['latitude_deg']) if row['latitude_deg'] else None,
+                'longitude': Decimal(row['longitude_deg']) if row['longitude_deg'] else None,
+                'timezone': timezone,
+                'icao_code': row['icao_code'] or None,
+                'airport_type': row['type'],
+                'distance_from_home': 0,
+                'driving_time': 0,
+                'is_origin': False,
+                'is_destination': True,  # Default all imported airports as destinations
+            }
+
+            airports_to_import.append(airport_data)
+            filtered_count += 1
+
+    # Display statistics
+    stats_table = Table(show_header=True, header_style="bold magenta")
+    stats_table.add_column("Metric", style="cyan")
+    stats_table.add_column("Count", style="green", justify="right")
+
+    stats_table.add_row("Total airports in CSV", f"{total_count:,}")
+    stats_table.add_row("After filtering", f"{filtered_count:,}")
+    stats_table.add_row("Filters applied", "")
+    stats_table.add_row("  Airport types", airport_types_str)
+    stats_table.add_row("  Scheduled service", "Yes" if min_scheduled else "Any")
+    stats_table.add_row("  IATA code required", "Yes" if require_iata else "No")
+
+    console.print("\n")
+    console.print(stats_table)
+    console.print("\n")
+
+    if dry_run:
+        info("DRY RUN - No data will be saved")
+
+        # Show sample airports
+        if filtered_count > 0:
+            sample_table = Table(
+                title="Sample Airports (first 10)",
+                show_header=True,
+                header_style="bold magenta",
+            )
+            sample_table.add_column("IATA", style="cyan")
+            sample_table.add_column("Name", style="white")
+            sample_table.add_column("City", style="yellow")
+            sample_table.add_column("Country", style="green")
+            sample_table.add_column("Type", style="blue")
+
+            for airport in airports_to_import[:10]:
+                sample_table.add_row(
+                    airport['iata_code'],
+                    airport['name'][:40],
+                    airport['city'],
+                    airport['country'],
+                    airport['airport_type'],
+                )
+
+            console.print(sample_table)
+            console.print("\n")
+
+        return
+
+    # Import to database
+    if filtered_count == 0:
+        warning("No airports to import after filtering")
+        return
+
+    confirm = typer.confirm(f"\nImport {filtered_count:,} airports to database?")
+    if not confirm:
+        warning("Import cancelled")
+        return
+
+    inserted = 0
+    updated = 0
+    skipped = 0
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task(
+            "[yellow]Importing airports...",
+            total=filtered_count,
+        )
+
+        # Import in batches
+        batch_size = 100
+        db = get_sync_session()
+
+        try:
+            for i in range(0, len(airports_to_import), batch_size):
+                batch = airports_to_import[i:i + batch_size]
+
+                for airport_data in batch:
+                    try:
+                        # Check if airport exists
+                        existing = (
+                            db.query(Airport)
+                            .filter_by(iata_code=airport_data['iata_code'])
+                            .first()
+                        )
+
+                        if existing:
+                            # Update existing airport with new data
+                            for key, value in airport_data.items():
+                                # Don't overwrite origin-specific data if it exists
+                                if key in ['distance_from_home', 'driving_time', 'parking_cost_per_day', 'preferred_for']:
+                                    if getattr(existing, key, None) not in [None, 0, []]:
+                                        continue
+                                setattr(existing, key, value)
+                            updated += 1
+                        else:
+                            # Create new airport
+                            airport = Airport(**airport_data)
+                            db.add(airport)
+                            inserted += 1
+
+                        progress.update(task, advance=1)
+
+                    except Exception as e:
+                        logger.error(f"Error importing {airport_data['iata_code']}: {e}")
+                        skipped += 1
+                        progress.update(task, advance=1)
+                        continue
+
+                # Commit batch
+                db.commit()
+
+        finally:
+            db.close()
+
+    # Display results
+    console.print("\n")
+    results_table = Table(
+        title="Import Results",
+        show_header=True,
+        header_style="bold magenta",
+    )
+    results_table.add_column("Operation", style="cyan")
+    results_table.add_column("Count", style="green", justify="right")
+
+    results_table.add_row("Inserted", f"{inserted:,}")
+    results_table.add_row("Updated", f"{updated:,}")
+    results_table.add_row("Skipped", f"{skipped:,}")
+    results_table.add_row("Total", f"{inserted + updated:,}")
+
+    console.print(results_table)
+    console.print("\n")
+
+    success(f"Successfully imported {inserted + updated:,} airports!")
+
+    if not has_timezone_finder:
+        info("\nTip: Install timezonefinder to automatically populate timezone data:")
+        info("  poetry add timezonefinder")
+
+
 # ============================================================================
 # HEALTH Command
 # ============================================================================

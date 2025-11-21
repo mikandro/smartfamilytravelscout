@@ -14,19 +14,42 @@ class Airport(Base, TimestampMixin):
     """
     Model for storing airport information.
     Includes distance and driving time from Munich home base.
+    Extended with OurAirports.com data for comprehensive airport coverage.
     """
 
     __tablename__ = "airports"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     iata_code: Mapped[str] = mapped_column(String(3), unique=True, nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
-    city: Mapped[str] = mapped_column(String(50), nullable=False)
-    distance_from_home: Mapped[int] = mapped_column(
-        Integer, nullable=False, comment="Distance in kilometers from Munich home"
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    city: Mapped[str] = mapped_column(String(100), nullable=False)
+
+    # Location and geography fields (from OurAirports)
+    country: Mapped[Optional[str]] = mapped_column(
+        String(2), nullable=True, index=True, comment="ISO 3166-1 alpha-2 country code"
     )
-    driving_time: Mapped[int] = mapped_column(
-        Integer, nullable=False, comment="Driving time in minutes from Munich home"
+    latitude: Mapped[Optional[float]] = mapped_column(
+        Numeric(10, 6), nullable=True, comment="Latitude in decimal degrees"
+    )
+    longitude: Mapped[Optional[float]] = mapped_column(
+        Numeric(10, 6), nullable=True, comment="Longitude in decimal degrees"
+    )
+    timezone: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True, comment="IANA timezone identifier (e.g., Europe/Berlin)"
+    )
+    icao_code: Mapped[Optional[str]] = mapped_column(
+        String(4), nullable=True, index=True, comment="4-letter ICAO code"
+    )
+    airport_type: Mapped[Optional[str]] = mapped_column(
+        String(30), nullable=True, comment="Airport type: large_airport, medium_airport, etc."
+    )
+
+    # Distance and cost fields (for origin airports)
+    distance_from_home: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, default=0, comment="Distance in kilometers from Munich home"
+    )
+    driving_time: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, default=0, comment="Driving time in minutes from Munich home"
     )
     preferred_for: Mapped[Optional[List[str]]] = mapped_column(
         ARRAY(String), nullable=True, comment="e.g., ['budget', 'direct_flights']"
