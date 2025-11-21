@@ -105,7 +105,7 @@ services:
       - travelscout-network
     restart: unless-stopped
     entrypoint: []
-    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4 --time-limit=300 --soft-time-limit=270
 
   celery-beat:
     build:

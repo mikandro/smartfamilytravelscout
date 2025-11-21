@@ -1388,9 +1388,14 @@ def kiwi_status():
 @app.command()
 def worker():
     """
-    Start Celery worker.
+    Start Celery worker with graceful shutdown support.
+
+    Includes timeout settings for proper task termination:
+    - Soft time limit: 270 seconds (warning before hard limit)
+    - Hard time limit: 300 seconds (5 minutes)
     """
-    console.print("\n[bold]Starting Celery worker[/bold]\n", style="blue")
+    console.print("\n[bold]Starting Celery worker with graceful shutdown[/bold]\n", style="blue")
+    console.print("[cyan]Timeout settings: soft-limit=270s, time-limit=300s[/cyan]\n")
 
     import subprocess
     subprocess.run([
@@ -1399,6 +1404,8 @@ def worker():
         "app.tasks.celery_app",
         "worker",
         "--loglevel=info",
+        "--time-limit=300",
+        "--soft-time-limit=270",
     ])
 
 

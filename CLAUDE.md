@@ -109,16 +109,23 @@ poetry run scout db reset
 ### Celery Workers
 
 ```bash
-# Start worker
-celery -A app.tasks.celery_app worker --loglevel=info
+# Start worker (with graceful shutdown support)
+celery -A app.tasks.celery_app worker --loglevel=info --time-limit=300 --soft-time-limit=270
 
 # Start beat scheduler
 celery -A app.tasks.celery_app beat --loglevel=info
 
-# Or use CLI shortcuts
+# Or use CLI shortcuts (includes timeout settings)
 poetry run scout worker
 poetry run scout beat
 ```
+
+**Graceful Shutdown**: All Celery tasks use the `GracefulTask` base class which:
+- Intercepts SIGTERM signals for graceful termination
+- Marks interrupted scraping jobs as 'interrupted' (not 'failed')
+- Prevents data corruption during deployments
+- Soft time limit: 270 seconds (warning)
+- Hard time limit: 300 seconds (forced termination)
 
 ### Code Quality
 
@@ -258,6 +265,45 @@ All scrapers follow this pattern:
 3. Handle retries with `@retry` decorator from `app.utils.retry`
 4. Log all errors but don't raise (fail gracefully)
 5. Track scraping job status in `scraping_jobs` table
+
+### Celery Task Design Pattern
+
+All Celery tasks MUST use the `GracefulTask` base class for proper shutdown handling:
+
+```python
+from app.tasks.celery_app import celery_app, GracefulTask, cleanup_scraping_job
+
+@celery_app.task(name="app.tasks.my_module.my_task", base=GracefulTask, bind=True)
+def my_task(self):
+    """Task with graceful shutdown support."""
+    scraping_job_id = None
+
+    try:
+        # Your task logic here
+
+        # For long-running tasks, check for shutdown periodically
+        if hasattr(self, 'check_shutdown'):
+            self.check_shutdown()
+
+        # Continue task logic...
+
+    except SystemExit:
+        # Handle graceful shutdown
+        logger.warning(f"Task {self.request.id} interrupted by shutdown")
+        if scraping_job_id:
+            cleanup_scraping_job(scraping_job_id, "Task interrupted by shutdown")
+        raise
+    except Exception as e:
+        logger.error(f"Task error: {e}", exc_info=True)
+        raise
+```
+
+**Key Points**:
+- Always use `base=GracefulTask` and `bind=True` in task decorator
+- Call `self.check_shutdown()` periodically in long-running loops
+- Handle `SystemExit` exception to perform cleanup
+- Use `cleanup_scraping_job()` to mark interrupted scraping jobs
+- ScrapingJob status can be: 'running', 'completed', 'failed', or 'interrupted'
 
 ### Cost Tracking
 
