@@ -127,6 +127,48 @@ class Settings(BaseSettings):
         description="Allowed CORS origins (comma-separated)",
     )
 
+    @field_validator("secret_key")
+    @classmethod
+    def validate_secret_key(cls, v: str) -> str:
+        """
+        Validate that the secret key is secure and not a default placeholder.
+
+        Security requirements:
+        - Minimum length: 32 characters
+        - Must not be a known insecure default/placeholder value
+
+        Raises:
+            ValueError: If the secret key is insecure or using a default placeholder
+        """
+        # List of known insecure default values
+        insecure_defaults = [
+            "change-this-secret-key-in-production",
+            "your_secret_key_here",
+            "your_secret_key_here_change_in_production",
+            "CHANGE_THIS_TO_A_SECURE_SECRET_KEY_MINIMUM_32_CHARS",
+            "secret",
+            "secret_key",
+            "secretkey",
+            "change_me",
+            "changeme",
+        ]
+
+        # Check if secret key is a known insecure default (case-insensitive)
+        if v.lower() in [default.lower() for default in insecure_defaults]:
+            raise ValueError(
+                f"SECRET_KEY is using an insecure default placeholder value! "
+                f"Generate a secure key with: python3 -c \"import secrets; print(secrets.token_urlsafe(32))\""
+            )
+
+        # Check minimum length requirement
+        if len(v) < 32:
+            raise ValueError(
+                f"SECRET_KEY must be at least 32 characters long (current: {len(v)}). "
+                f"Generate a secure key with: python3 -c \"import secrets; print(secrets.token_urlsafe(32))\""
+            )
+
+        return v
+
     # Feature Flags
     enable_scraping: bool = Field(default=True, description="Enable web scraping")
     enable_ai_scoring: bool = Field(default=True, description="Enable AI scoring")
