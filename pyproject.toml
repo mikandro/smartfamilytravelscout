@@ -39,6 +39,7 @@ pytz = "^2024.1"
 schedule = "^1.2.1"
 tenacity = "^8.2.3"
 apify-client = "^1.7.0"
+playwright-stealth = "^2.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

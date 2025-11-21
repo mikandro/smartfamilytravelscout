@@ -21,6 +21,7 @@ from playwright.async_api import (
     async_playwright,
     TimeoutError as PlaywrightTimeoutError,
 )
+from playwright_stealth.stealth import Stealth
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -73,6 +74,7 @@ class SkyscannerScraper:
     - Rate limiting (max 10 searches per hour)
     - Error handling with screenshots
     - Cookie consent handling
+    - Stealth mode to avoid bot detection
     """
 
     def __init__(self, headless: bool = True, slow_mo: int = 0):
@@ -88,13 +90,14 @@ class SkyscannerScraper:
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.playwright = None
+        self.stealth = Stealth()  # Initialize stealth mode
 
         # Create logs directory for screenshots
         self.logs_dir = Path("logs")
         self.logs_dir.mkdir(exist_ok=True)
 
         logger.info(
-            f"SkyscannerScraper initialized (headless={headless}, slow_mo={slow_mo})"
+            f"SkyscannerScraper initialized with stealth mode (headless={headless}, slow_mo={slow_mo})"
         )
 
     async def __aenter__(self):
@@ -107,32 +110,46 @@ class SkyscannerScraper:
         await self._close_browser()
 
     async def _start_browser(self):
-        """Start Playwright browser with random user agent."""
+        """Start Playwright browser with random user agent and stealth mode."""
         if self.browser:
             logger.warning("Browser already started")
             return
 
-        logger.info("Starting Playwright browser...")
+        logger.info("Starting Playwright browser with stealth mode...")
         self.playwright = await async_playwright().start()
 
         # Random user agent for this session
         user_agent = random.choice(USER_AGENTS)
         logger.debug(f"Using user agent: {user_agent[:50]}...")
 
-        # Launch browser
+        # Launch browser with additional args to avoid detection
         self.browser = await self.playwright.chromium.launch(
-            headless=self.headless, slow_mo=self.slow_mo
+            headless=self.headless,
+            slow_mo=self.slow_mo,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+            ]
         )
 
-        # Create context with user agent
+        # Create context with user agent and additional options
         self.context = await self.browser.new_context(
             user_agent=user_agent,
             viewport={"width": 1920, "height": 1080},
             locale="en-US",
             timezone_id="Europe/Vienna",
+            # Additional stealth options
+            extra_http_headers={
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
         )
 
-        logger.info("Browser started successfully")
+        # Apply stealth mode to the context
+        await self.stealth.apply_stealth_async(self.context)
+        logger.debug("Stealth mode applied to browser context")
+
+        logger.info("Browser started successfully with stealth mode enabled")
 
     async def _close_browser(self):
         """Close Playwright browser and cleanup."""
@@ -328,7 +345,7 @@ class SkyscannerScraper:
         url = self._build_url(origin, destination, departure_date, return_date)
         logger.info(f"Scraping route: {origin} → {destination} ({url})")
 
-        # Create new page
+        # Create new page (stealth already applied to context)
         page = await self.context.new_page()
 
         try:
