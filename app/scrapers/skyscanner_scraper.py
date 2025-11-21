@@ -30,6 +30,13 @@ from app.database import get_async_session_context
 from app.models.airport import Airport
 from app.models.flight import Flight
 from app.utils.retry import retry_with_backoff
+from app.scrapers.base import BaseWebScraper
+from app.scrapers.exceptions import (
+    RateLimitError,
+    CaptchaError,
+    TimeoutError as ScraperTimeoutError,
+    ParsingError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,19 +59,7 @@ USER_AGENTS = [
 ]
 
 
-class RateLimitExceededError(Exception):
-    """Raised when rate limit is exceeded."""
-
-    pass
-
-
-class CaptchaDetectedError(Exception):
-    """Raised when CAPTCHA is detected."""
-
-    pass
-
-
-class SkyscannerScraper:
+class SkyscannerScraper(BaseWebScraper):
     """
     Skyscanner web scraper using Playwright for browser automation.
 
@@ -77,16 +72,22 @@ class SkyscannerScraper:
     - Stealth mode to avoid bot detection
     """
 
-    def __init__(self, headless: bool = True, slow_mo: int = 0):
+    SCRAPER_NAME = "skyscanner"
+    SCRAPER_TYPE = "web"
+    REQUIRES_API_KEY = False
+    DEFAULT_TIMEOUT = 30
+
+    def __init__(self, headless: bool = True, slow_mo: int = 0, timeout: Optional[int] = None):
         """
         Initialize Skyscanner scraper.
 
         Args:
             headless: Run browser in headless mode (default: True)
             slow_mo: Slow down operations by specified ms (useful for debugging)
+            timeout: Request timeout in seconds
         """
-        self.headless = headless
-        self.slow_mo = slow_mo
+        super().__init__(headless=headless, slow_mo=slow_mo, timeout=timeout)
+
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.playwright = None
@@ -190,9 +191,13 @@ class SkyscannerScraper:
         # Check limit
         if _request_count >= MAX_REQUESTS_PER_HOUR:
             wait_time = 3600 - hour_elapsed
-            raise RateLimitExceededError(
-                f"Rate limit exceeded. {_request_count} requests in last hour. "
-                f"Wait {wait_time:.0f} seconds before next request."
+            raise RateLimitError(
+                f"Rate limit exceeded. {_request_count} requests in last hour.",
+                scraper_name=self.SCRAPER_NAME,
+                retry_after=int(wait_time),
+                limit_type="hourly",
+                current_count=_request_count,
+                max_count=MAX_REQUESTS_PER_HOUR,
             )
 
         _request_count += 1
@@ -309,6 +314,42 @@ class SkyscannerScraper:
         except Exception as e:
             logger.error(f"Failed to save screenshot: {e}")
 
+    async def scrape_flights(
+        self,
+        origin: str,
+        destination: str,
+        departure_date: date,
+        return_date: Optional[date] = None,
+        **kwargs,
+    ) -> List[Dict]:
+        """
+        Scrape flights for the given route and dates (base class interface).
+
+        This method implements the BaseScraper interface and delegates to scrape_route.
+
+        Args:
+            origin: Origin airport IATA code (e.g., 'MUC')
+            destination: Destination airport IATA code (e.g., 'LIS')
+            departure_date: Departure date
+            return_date: Return date (optional)
+            **kwargs: Additional parameters (ignored)
+
+        Returns:
+            List of standardized flight dictionaries
+
+        Raises:
+            RateLimitError: When rate limit is exceeded
+            CaptchaError: When CAPTCHA is detected
+            TimeoutError: When page load times out
+            ParsingError: When page parsing fails
+        """
+        # Validate inputs
+        origin = self._validate_airport_code(origin, "origin")
+        destination = self._validate_airport_code(destination, "destination")
+        self._validate_dates(departure_date, return_date)
+
+        return await self.scrape_route(origin, destination, departure_date, return_date)
+
     @retry_with_backoff(max_attempts=2, backoff_seconds=5)
     async def scrape_route(
         self,
@@ -361,9 +402,13 @@ class SkyscannerScraper:
 
             # Check for CAPTCHA
             if await self._detect_captcha(page):
-                await self._save_screenshot(page, prefix="captcha")
-                raise CaptchaDetectedError(
-                    "CAPTCHA detected. Aborting scrape. Screenshot saved."
+                screenshot_path = await self._save_screenshot(page, prefix="captcha")
+                raise CaptchaError(
+                    "CAPTCHA detected. Aborting scrape to avoid detection.",
+                    scraper_name=self.SCRAPER_NAME,
+                    captcha_type="unknown",
+                    page_url=url,
+                    screenshot_path=screenshot_path,
                 )
 
             # Wait for results to load
@@ -377,12 +422,29 @@ class SkyscannerScraper:
 
         except PlaywrightTimeoutError as e:
             logger.error(f"Timeout loading page: {e}")
-            await self._save_screenshot(page, prefix="timeout")
+            screenshot_path = await self._save_screenshot(page, prefix="timeout")
+            raise ScraperTimeoutError(
+                f"Page load timeout: {str(e)}",
+                scraper_name=self.SCRAPER_NAME,
+                timeout_seconds=30,
+                operation="page_load",
+                original_error=e,
+            )
+
+        except (RateLimitError, CaptchaError, ScraperTimeoutError):
+            # Re-raise expected scraper errors
             raise
 
         except Exception as e:
             logger.error(f"Error scraping route: {e}", exc_info=True)
             await self._save_screenshot(page, prefix="error")
+            # Wrap as ParsingError if it looks like a parsing issue
+            if "parse" in str(e).lower() or "selector" in str(e).lower():
+                raise ParsingError(
+                    f"Failed to parse Skyscanner page: {str(e)}",
+                    scraper_name=self.SCRAPER_NAME,
+                    original_error=e,
+                )
             raise
 
         finally:

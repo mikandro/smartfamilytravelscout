@@ -21,29 +21,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.airport import Airport
 from app.models.flight import Flight
+from app.scrapers.base import BaseAPIScraper
+from app.scrapers.exceptions import (
+    RateLimitError,
+    NetworkError,
+    ParsingError,
+    TimeoutError as ScraperTimeoutError,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class WizzAirAPIError(Exception):
-    """Raised when WizzAir API returns an error."""
-
-    pass
-
-
-class WizzAirRateLimitError(Exception):
-    """Raised when WizzAir API rate limit is exceeded."""
-
-    pass
-
-
-class WizzAirScraper:
+class WizzAirScraper(BaseAPIScraper):
     """
     Scraper for WizzAir flights using their unofficial API.
 
     WizzAir is a budget airline with excellent routes to Eastern Europe,
     particularly Moldova (Chisinau).
     """
+
+    SCRAPER_NAME = "wizzair"
+    SCRAPER_TYPE = "api"
+    REQUIRES_API_KEY = False
+    DEFAULT_TIMEOUT = 30
 
     # WizzAir API endpoint (the * is a wildcard for API version)
     BASE_URL = "https://be.wizzair.com/*/Api/search/search"
@@ -54,14 +54,15 @@ class WizzAirScraper:
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
 
-    def __init__(self, timeout: int = 30) -> None:
+    def __init__(self, timeout: Optional[int] = None) -> None:
         """
         Initialize the WizzAir scraper.
 
         Args:
             timeout: HTTP request timeout in seconds (default: 30)
         """
-        self.timeout = timeout
+        super().__init__(api_key=None, timeout=timeout)
+
         self.headers = {
             "User-Agent": self.USER_AGENT,
             "Content-Type": "application/json",
@@ -125,6 +126,53 @@ class WizzAirScraper:
 
         return payload
 
+    async def scrape_flights(
+        self,
+        origin: str,
+        destination: str,
+        departure_date: date,
+        return_date: Optional[date] = None,
+        **kwargs,
+    ) -> List[Dict]:
+        """
+        Scrape flights for the given route and dates (base class interface).
+
+        This method implements the BaseScraper interface and delegates to search_flights.
+
+        Args:
+            origin: Origin airport IATA code (e.g., 'MUC')
+            destination: Destination airport IATA code (e.g., 'CHI')
+            departure_date: Departure date
+            return_date: Return date (optional)
+            **kwargs: Additional parameters (adult_count, child_count)
+
+        Returns:
+            List of standardized flight dictionaries
+
+        Raises:
+            RateLimitError: When API rate limit is exceeded
+            NetworkError: When network errors occur
+            TimeoutError: When API request times out
+            ParsingError: When response parsing fails
+        """
+        # Validate inputs
+        origin = self._validate_airport_code(origin, "origin")
+        destination = self._validate_airport_code(destination, "destination")
+        self._validate_dates(departure_date, return_date)
+
+        # Extract kwargs with defaults
+        adult_count = kwargs.get("adult_count", 2)
+        child_count = kwargs.get("child_count", 2)
+
+        return await self.search_flights(
+            origin=origin,
+            destination=destination,
+            departure_date=departure_date,
+            return_date=return_date,
+            adult_count=adult_count,
+            child_count=child_count,
+        )
+
     async def search_flights(
         self,
         origin: str,
@@ -176,8 +224,11 @@ class WizzAirScraper:
                 # Check for rate limiting
                 if response.status_code == 429:
                     logger.error("WizzAir API rate limit exceeded")
-                    raise WizzAirRateLimitError(
-                        "Rate limit exceeded. Please wait 60 seconds before retrying."
+                    raise RateLimitError(
+                        "Rate limit exceeded by WizzAir API",
+                        scraper_name=self.SCRAPER_NAME,
+                        retry_after=60,
+                        limit_type="api",
                     )
 
                 # Check for other HTTP errors
@@ -197,18 +248,45 @@ class WizzAirScraper:
                 logger.info(f"Found {len(flights)} flight combinations from WizzAir")
                 return flights
 
-            except WizzAirRateLimitError:
+            except RateLimitError:
                 # Re-raise rate limit error without wrapping
                 raise
             except httpx.HTTPStatusError as e:
                 logger.error(f"WizzAir API HTTP error: {e.response.status_code} - {e}")
-                raise WizzAirAPIError(f"API returned error: {e.response.status_code}") from e
+                raise NetworkError(
+                    f"API returned HTTP error: {e.response.status_code}",
+                    scraper_name=self.SCRAPER_NAME,
+                    status_code=e.response.status_code,
+                    url=self.BASE_URL,
+                    original_error=e,
+                )
+            except httpx.TimeoutException as e:
+                logger.error(f"WizzAir API timeout: {e}")
+                raise ScraperTimeoutError(
+                    "API request timed out",
+                    scraper_name=self.SCRAPER_NAME,
+                    timeout_seconds=self.timeout,
+                    operation="api_request",
+                    original_error=e,
+                )
             except httpx.RequestError as e:
                 logger.error(f"WizzAir API network error: {e}")
-                raise
+                raise NetworkError(
+                    f"Network error: {str(e)}",
+                    scraper_name=self.SCRAPER_NAME,
+                    url=self.BASE_URL,
+                    original_error=e,
+                )
             except Exception as e:
                 logger.error(f"Unexpected error calling WizzAir API: {e}", exc_info=True)
-                raise WizzAirAPIError(f"Unexpected error: {e}") from e
+                # Wrap as ParsingError if it looks like JSON parsing issue
+                if "json" in str(e).lower() or "parse" in str(e).lower():
+                    raise ParsingError(
+                        f"Failed to parse API response: {str(e)}",
+                        scraper_name=self.SCRAPER_NAME,
+                        original_error=e,
+                    )
+                raise
 
     def _parse_api_response(
         self,

@@ -23,23 +23,18 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from playwright_stealth import Stealth
 
 from app.utils.logging_config import get_logger
+from app.scrapers.base import BaseWebScraper
+from app.scrapers.exceptions import (
+    RateLimitError,
+    CaptchaError,
+    TimeoutError as ScraperTimeoutError,
+    ParsingError,
+)
 
 logger = get_logger(__name__)
 
 
-class RateLimitExceeded(Exception):
-    """Raised when daily rate limit is exceeded."""
-
-    pass
-
-
-class CaptchaDetected(Exception):
-    """Raised when CAPTCHA is detected."""
-
-    pass
-
-
-class RyanairScraper:
+class RyanairScraper(BaseWebScraper):
     """
     Scraper for Ryanair flights with anti-detection measures.
 
@@ -51,6 +46,11 @@ class RyanairScraper:
     - Fare calendar parsing for price discovery
     - Error screenshots and logging
     """
+
+    SCRAPER_NAME = "ryanair"
+    SCRAPER_TYPE = "web"
+    REQUIRES_API_KEY = False
+    DEFAULT_TIMEOUT = 60
 
     BASE_URL = "https://www.ryanair.com"
     MAX_DAILY_SEARCHES = 5
@@ -64,13 +64,22 @@ class RyanairScraper:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
     ]
 
-    def __init__(self, log_dir: str = "/home/user/smartfamilytravelscout/logs/ryanair"):
+    def __init__(
+        self,
+        log_dir: str = "/home/user/smartfamilytravelscout/logs/ryanair",
+        headless: bool = True,
+        timeout: Optional[int] = None,
+    ):
         """
         Initialize Ryanair scraper with stealth configuration.
 
         Args:
             log_dir: Directory to save error screenshots
+            headless: Run browser in headless mode
+            timeout: Request timeout in seconds
         """
+        super().__init__(headless=headless, slow_mo=0, timeout=timeout)
+
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.browser: Optional[Browser] = None
@@ -201,9 +210,13 @@ class RyanairScraper:
         # Check limit
         if data["count"] >= self.MAX_DAILY_SEARCHES:
             logger.warning(f"Rate limit exceeded: {data['count']}/{self.MAX_DAILY_SEARCHES}")
-            raise RateLimitExceeded(
-                f"Daily rate limit exceeded ({self.MAX_DAILY_SEARCHES} searches/day). "
-                f"Try again tomorrow."
+            raise RateLimitError(
+                f"Daily rate limit exceeded ({self.MAX_DAILY_SEARCHES} searches/day).",
+                scraper_name=self.SCRAPER_NAME,
+                retry_after=86400,  # 24 hours
+                limit_type="daily",
+                current_count=data["count"],
+                max_count=self.MAX_DAILY_SEARCHES,
             )
 
         # Increment counter
@@ -845,8 +858,14 @@ class RyanairScraper:
 
             # Check for CAPTCHA
             if await self._detect_captcha():
-                await self._save_screenshot("captcha_detected")
-                raise CaptchaDetected("CAPTCHA detected, aborting to avoid detection")
+                screenshot_path = await self._save_screenshot("captcha_detected")
+                raise CaptchaError(
+                    "CAPTCHA detected, aborting to avoid detection",
+                    scraper_name=self.SCRAPER_NAME,
+                    captcha_type="unknown",
+                    page_url=self.BASE_URL,
+                    screenshot_path=screenshot_path,
+                )
 
             # Handle popups
             await self.handle_popups(self.page)
@@ -856,8 +875,14 @@ class RyanairScraper:
 
             # Check for CAPTCHA after submission
             if await self._detect_captcha():
-                await self._save_screenshot("captcha_detected_after_search")
-                raise CaptchaDetected("CAPTCHA detected after search, aborting")
+                screenshot_path = await self._save_screenshot("captcha_detected_after_search")
+                raise CaptchaError(
+                    "CAPTCHA detected after search, aborting",
+                    scraper_name=self.SCRAPER_NAME,
+                    captcha_type="unknown",
+                    page_url=self.page.url if self.page else None,
+                    screenshot_path=screenshot_path,
+                )
 
             # Parse results
             flights = await self.parse_fare_calendar(self.page)
@@ -883,18 +908,65 @@ class RyanairScraper:
 
             return flights
 
-        except CaptchaDetected:
-            logger.error("CAPTCHA detected, aborting gracefully")
+        except (RateLimitError, CaptchaError):
+            # Re-raise expected scraper errors
             raise
 
         except Exception as e:
             logger.error(f"Scraping failed: {e}")
             await self._save_screenshot("error_general")
+            # Wrap as ParsingError if it looks like a parsing issue
+            if "parse" in str(e).lower() or "selector" in str(e).lower():
+                raise ParsingError(
+                    f"Failed to parse Ryanair page: {str(e)}",
+                    scraper_name=self.SCRAPER_NAME,
+                    original_error=e,
+                )
             raise
 
         finally:
             # Add conservative delay before closing
             await self._human_delay(5, 10)
+
+    async def scrape_flights(
+        self,
+        origin: str,
+        destination: str,
+        departure_date: date,
+        return_date: Optional[date] = None,
+        **kwargs,
+    ) -> List[Dict]:
+        """
+        Scrape flights for the given route and dates (base class interface).
+
+        This method implements the BaseScraper interface and delegates to scrape_route.
+
+        Args:
+            origin: Origin airport IATA code (e.g., 'FMM')
+            destination: Destination airport IATA code (e.g., 'BCN')
+            departure_date: Departure date
+            return_date: Return date
+            **kwargs: Additional parameters (ignored)
+
+        Returns:
+            List of standardized flight dictionaries
+
+        Raises:
+            RateLimitError: When daily rate limit is exceeded
+            CaptchaError: When CAPTCHA is detected
+            ParsingError: When page parsing fails
+        """
+        # Validate inputs
+        origin = self._validate_airport_code(origin, "origin")
+        destination = self._validate_airport_code(destination, "destination")
+
+        # Default return date to 7 days after departure if not provided
+        if return_date is None:
+            return_date = departure_date + timedelta(days=7)
+
+        self._validate_dates(departure_date, return_date)
+
+        return await self.scrape_route(origin, destination, departure_date, return_date)
 
     def _construct_booking_url(
         self,

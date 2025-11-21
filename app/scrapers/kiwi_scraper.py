@@ -23,20 +23,16 @@ from app.config import settings
 from app.database import get_async_session_context
 from app.models.airport import Airport
 from app.models.flight import Flight
+from app.scrapers.base import BaseAPIScraper
+from app.scrapers.exceptions import (
+    RateLimitError,
+    AuthenticationError,
+    NetworkError,
+    ParsingError,
+    TimeoutError as ScraperTimeoutError,
+)
 
 logger = logging.getLogger(__name__)
-
-
-class RateLimitExceededError(Exception):
-    """Raised when API rate limit is exceeded."""
-
-    pass
-
-
-class KiwiAPIError(Exception):
-    """Base exception for Kiwi API errors."""
-
-    pass
 
 
 class RateLimiter:
@@ -138,7 +134,7 @@ class RateLimiter:
         self.logger.info("Rate limiter reset")
 
 
-class KiwiClient:
+class KiwiClient(BaseAPIScraper):
     """
     Client for Kiwi.com Tequila API flight search.
 
@@ -147,10 +143,15 @@ class KiwiClient:
 
     Examples:
         >>> client = KiwiClient(api_key=os.getenv('KIWI_API_KEY'))
-        >>> flights = await client.search_flights('MUC', 'LIS', date(2025, 12, 20), date(2025, 12, 27))
+        >>> flights = await client.scrape_flights('MUC', 'LIS', date(2025, 12, 20), date(2025, 12, 27))
         >>> await client.save_to_database(flights)
         >>> print(f"Found {len(flights)} flights")
     """
+
+    SCRAPER_NAME = "kiwi"
+    SCRAPER_TYPE = "api"
+    REQUIRES_API_KEY = True
+    DEFAULT_TIMEOUT = 30
 
     BASE_URL = "https://api.tequila.kiwi.com"
     SEARCH_ENDPOINT = "/v2/search"
@@ -159,7 +160,7 @@ class KiwiClient:
         self,
         api_key: Optional[str] = None,
         rate_limiter: Optional[RateLimiter] = None,
-        timeout: int = 30,
+        timeout: Optional[int] = None,
     ):
         """
         Initialize Kiwi API client.
@@ -169,13 +170,17 @@ class KiwiClient:
             rate_limiter: Custom rate limiter instance (optional)
             timeout: Request timeout in seconds (default: 30)
         """
-        self.api_key = api_key or settings.kiwi_api_key
+        # Initialize base class
+        super().__init__(api_key=api_key or settings.kiwi_api_key, timeout=timeout)
+
         if not self.api_key:
-            raise ValueError("Kiwi API key is required. Set KIWI_API_KEY environment variable.")
+            raise AuthenticationError(
+                "Kiwi API key is required. Set KIWI_API_KEY environment variable.",
+                scraper_name=self.SCRAPER_NAME,
+                api_key_hint="KIWI_API_KEY",
+            )
 
         self.rate_limiter = rate_limiter or RateLimiter()
-        self.timeout = timeout
-        self.logger = logging.getLogger(f"{__name__}.KiwiClient")
 
     async def _make_request(
         self,
@@ -193,15 +198,21 @@ class KiwiClient:
             Dict: Parsed JSON response
 
         Raises:
-            RateLimitExceededError: If rate limit is exceeded
-            KiwiAPIError: If API returns an error
-            aiohttp.ClientError: If network request fails after retries
+            RateLimitError: If rate limit is exceeded
+            AuthenticationError: If API authentication fails
+            NetworkError: If network request fails after retries
+            ParsingError: If JSON response cannot be parsed
         """
         # Check rate limit
         if not self.rate_limiter.check_limit():
             remaining = self.rate_limiter.get_remaining_calls()
-            raise RateLimitExceededError(
-                f"Monthly rate limit exceeded. {remaining} calls remaining this month."
+            raise RateLimitError(
+                f"Monthly rate limit exceeded. {remaining} calls remaining this month.",
+                scraper_name=self.SCRAPER_NAME,
+                retry_after=None,  # Unknown for monthly limits
+                limit_type="monthly",
+                current_count=100 - remaining,
+                max_count=100,
             )
 
         url = f"{self.BASE_URL}{self.SEARCH_ENDPOINT}"
@@ -235,35 +246,135 @@ class KiwiClient:
                         elif response.status == 400:
                             error_msg = await response.text()
                             self.logger.error(f"Bad request (400): {error_msg}")
-                            raise KiwiAPIError(f"Bad request: {error_msg}")
+                            raise NetworkError(
+                                f"Bad request: {error_msg}",
+                                scraper_name=self.SCRAPER_NAME,
+                                status_code=400,
+                                url=url,
+                            )
                         elif response.status == 401:
-                            raise KiwiAPIError("Unauthorized: Invalid API key")
+                            raise AuthenticationError(
+                                "Unauthorized: Invalid API key",
+                                scraper_name=self.SCRAPER_NAME,
+                                api_key_hint="KIWI_API_KEY",
+                            )
                         elif response.status == 429:
-                            raise RateLimitExceededError("API rate limit exceeded by server")
+                            raise RateLimitError(
+                                "API rate limit exceeded by server",
+                                scraper_name=self.SCRAPER_NAME,
+                                retry_after=60,  # Default retry after 60 seconds
+                                limit_type="api",
+                            )
                         else:
                             error_msg = await response.text()
                             self.logger.warning(
                                 f"API error (status {response.status}): {error_msg}"
                             )
-                            raise KiwiAPIError(
-                                f"API request failed with status {response.status}: {error_msg}"
+                            raise NetworkError(
+                                f"API request failed with status {response.status}: {error_msg}",
+                                scraper_name=self.SCRAPER_NAME,
+                                status_code=response.status,
+                                url=url,
                             )
 
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            except asyncio.TimeoutError as e:
                 if attempt >= max_retries:
                     self.logger.error(
-                        f"Request failed after {max_retries} attempts: {e}",
+                        f"Request timed out after {max_retries} attempts: {e}",
                         exc_info=True,
                     )
-                    raise
+                    raise ScraperTimeoutError(
+                        f"Request timed out after {max_retries} attempts",
+                        scraper_name=self.SCRAPER_NAME,
+                        timeout_seconds=self.timeout,
+                        operation="api_request",
+                        original_error=e,
+                    )
 
                 # Exponential backoff: 2s, 4s, 8s
                 wait_time = 2 ** attempt
                 self.logger.warning(
-                    f"Request failed (attempt {attempt}/{max_retries}): {e}. "
+                    f"Request timed out (attempt {attempt}/{max_retries}): {e}. "
                     f"Retrying in {wait_time}s..."
                 )
                 await asyncio.sleep(wait_time)
+
+            except aiohttp.ClientError as e:
+                if attempt >= max_retries:
+                    self.logger.error(
+                        f"Network error after {max_retries} attempts: {e}",
+                        exc_info=True,
+                    )
+                    raise NetworkError(
+                        f"Network error after {max_retries} attempts: {str(e)}",
+                        scraper_name=self.SCRAPER_NAME,
+                        url=url,
+                        original_error=e,
+                    )
+
+                # Exponential backoff: 2s, 4s, 8s
+                wait_time = 2 ** attempt
+                self.logger.warning(
+                    f"Network error (attempt {attempt}/{max_retries}): {e}. "
+                    f"Retrying in {wait_time}s..."
+                )
+                await asyncio.sleep(wait_time)
+
+    async def scrape_flights(
+        self,
+        origin: str,
+        destination: str,
+        departure_date: date,
+        return_date: Optional[date] = None,
+        **kwargs,
+    ) -> List[Dict]:
+        """
+        Scrape flights for the given route and dates (base class interface).
+
+        This method implements the BaseScraper interface and delegates to search_flights.
+
+        Args:
+            origin: Origin airport IATA code (e.g., 'MUC')
+            destination: Destination airport IATA code or city (e.g., 'LIS')
+            departure_date: Departure date
+            return_date: Return date (optional, defaults to 7 days after departure)
+            **kwargs: Additional parameters (adults, children, max_stopovers, currency)
+
+        Returns:
+            List of standardized flight dictionaries
+
+        Raises:
+            RateLimitError: When API rate limit is exceeded
+            AuthenticationError: When API key is invalid
+            NetworkError: When network issues occur
+            TimeoutError: When requests time out
+        """
+        # Validate inputs
+        origin = self._validate_airport_code(origin, "origin")
+        destination = self._validate_airport_code(destination, "destination")
+
+        # Default return date to 7 days after departure if not provided
+        if return_date is None:
+            return_date = departure_date + timedelta(days=7)
+
+        self._validate_dates(departure_date, return_date)
+
+        # Extract kwargs with defaults
+        adults = kwargs.get("adults", 2)
+        children = kwargs.get("children", 2)
+        max_stopovers = kwargs.get("max_stopovers", 0)
+        currency = kwargs.get("currency", "EUR")
+
+        return await self.search_flights(
+            origin=origin,
+            destination=destination,
+            departure_date=departure_date,
+            return_date=return_date,
+            adults=adults,
+            children=children,
+            max_stopovers=max_stopovers,
+            currency=currency,
+        )
 
     async def search_flights(
         self,
@@ -323,9 +434,20 @@ class KiwiClient:
             flights = self.parse_response(response)
             self.logger.info(f"Found {len(flights)} flights")
             return flights
+        except (RateLimitError, AuthenticationError, NetworkError, ScraperTimeoutError):
+            # Re-raise expected scraper errors
+            raise
         except Exception as e:
-            self.logger.error(f"Flight search failed: {e}", exc_info=True)
-            return []
+            # Wrap unexpected errors
+            self._handle_error(e, "search_flights", recoverable=True)
+            # Re-raise as ParsingError if it looks like a data issue
+            if "parse" in str(e).lower() or "json" in str(e).lower():
+                raise ParsingError(
+                    f"Failed to parse flight data: {str(e)}",
+                    scraper_name=self.SCRAPER_NAME,
+                    original_error=e,
+                )
+            raise
 
     async def search_anywhere(
         self,
@@ -384,9 +506,20 @@ class KiwiClient:
             flights = self.parse_response(response)
             self.logger.info(f"Found {len(flights)} destinations")
             return flights
+        except (RateLimitError, AuthenticationError, NetworkError, ScraperTimeoutError):
+            # Re-raise expected scraper errors
+            raise
         except Exception as e:
-            self.logger.error(f"Anywhere search failed: {e}", exc_info=True)
-            return []
+            # Wrap unexpected errors
+            self._handle_error(e, "search_anywhere", recoverable=True)
+            # Re-raise as ParsingError if it looks like a data issue
+            if "parse" in str(e).lower() or "json" in str(e).lower():
+                raise ParsingError(
+                    f"Failed to parse flight data: {str(e)}",
+                    scraper_name=self.SCRAPER_NAME,
+                    original_error=e,
+                )
+            raise
 
     def parse_response(self, raw_data: Dict) -> List[Dict]:
         """

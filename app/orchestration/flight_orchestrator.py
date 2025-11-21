@@ -35,6 +35,15 @@ from app.scrapers.kiwi_scraper import KiwiClient
 from app.scrapers.ryanair_scraper import RyanairScraper
 from app.scrapers.skyscanner_scraper import SkyscannerScraper
 from app.scrapers.wizzair_scraper import WizzAirScraper
+from app.scrapers.exceptions import (
+    ScraperError,
+    RateLimitError,
+    AuthenticationError,
+    CaptchaError,
+    TimeoutError as ScraperTimeoutError,
+    ParsingError,
+    NetworkError,
+)
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -383,9 +392,67 @@ class FlightOrchestrator:
             logger.info(f"[{scraper_name}] Found {len(flights)} flights")
             return flights
 
-        except Exception as e:
+        except RateLimitError as e:
+            # Log rate limit with details for monitoring
+            logger.warning(
+                f"[{scraper_name}] Rate limit exceeded for {origin}→{destination}. "
+                f"Retry after: {e.retry_after}s, Limit type: {e.limit_type}",
+            )
+            return []
+
+        except AuthenticationError as e:
+            # Log authentication errors - these require user intervention
             logger.error(
-                f"[{scraper_name}] Scraping failed for {origin}→{destination}: {e}",
+                f"[{scraper_name}] Authentication failed for {origin}→{destination}: {e.message}. "
+                f"API key hint: {e.api_key_hint}",
+            )
+            return []
+
+        except CaptchaError as e:
+            # Log CAPTCHA detection - might need to adjust scraping strategy
+            logger.warning(
+                f"[{scraper_name}] CAPTCHA detected for {origin}→{destination}. "
+                f"Screenshot saved at: {e.screenshot_path}",
+            )
+            return []
+
+        except ScraperTimeoutError as e:
+            # Log timeout with operation context
+            logger.warning(
+                f"[{scraper_name}] Timeout for {origin}→{destination} "
+                f"during {e.operation} ({e.timeout_seconds}s)",
+            )
+            return []
+
+        except ParsingError as e:
+            # Log parsing errors - might indicate website structure changed
+            logger.error(
+                f"[{scraper_name}] Parsing failed for {origin}→{destination}: {e.message}. "
+                f"Parsing step: {e.parsing_step}",
+            )
+            return []
+
+        except NetworkError as e:
+            # Log network errors with status code
+            logger.warning(
+                f"[{scraper_name}] Network error for {origin}→{destination}. "
+                f"Status code: {e.status_code}, URL: {e.url}",
+            )
+            return []
+
+        except ScraperError as e:
+            # Catch-all for other scraper errors
+            logger.error(
+                f"[{scraper_name}] Scraper error for {origin}→{destination}: {e.message}. "
+                f"Recoverable: {e.recoverable}",
+                exc_info=e.original_error if e.original_error else True,
+            )
+            return []
+
+        except Exception as e:
+            # Unexpected errors that aren't scraper-specific
+            logger.error(
+                f"[{scraper_name}] Unexpected error for {origin}→{destination}: {e}",
                 exc_info=True,
             )
             return []
