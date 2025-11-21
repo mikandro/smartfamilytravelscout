@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
+from app.utils.retry import database_retry
 
 # Import Base from models to ensure all models are registered
 from app.models.base import Base  # noqa: F401
@@ -201,9 +202,10 @@ def reset_db_sync() -> None:
     logger.info("Database reset complete (sync)")
 
 
+@database_retry(max_attempts=3, min_wait_seconds=1, max_wait_seconds=5)
 async def check_db_connection() -> bool:
     """
-    Check if database connection is healthy.
+    Check if database connection is healthy with automatic retry logic.
 
     Returns:
         bool: True if connection is healthy, False otherwise

@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.airport import Airport
 from app.models.flight import Flight
+from app.utils.retry import api_retry
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,7 @@ class WizzAirScraper:
 
         return payload
 
+    @api_retry(max_attempts=3, min_wait_seconds=2, max_wait_seconds=10)
     async def search_flights(
         self,
         origin: str,
@@ -135,7 +137,7 @@ class WizzAirScraper:
         child_count: int = 2,
     ) -> List[Dict[str, Any]]:
         """
-        Search for flights using WizzAir API.
+        Search for flights using WizzAir API with automatic retry logic.
 
         Args:
             origin: Origin airport IATA code (e.g., 'MUC')
@@ -151,7 +153,7 @@ class WizzAirScraper:
         Raises:
             WizzAirAPIError: If API returns an error
             WizzAirRateLimitError: If rate limit is exceeded
-            httpx.HTTPError: If network error occurs
+            httpx.HTTPError: If network error occurs after retries
         """
         payload = self._build_payload(
             origin=origin,
