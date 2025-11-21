@@ -31,6 +31,7 @@ from app.database import get_async_session_context
 from app.models.airport import Airport
 from app.models.flight import Flight
 from app.models.scraping_job import ScrapingJob
+from app.monitoring.metrics import track_flights_discovered, track_scraper_performance
 from app.scrapers.kiwi_scraper import KiwiClient
 from app.scrapers.ryanair_scraper import RyanairScraper
 from app.scrapers.skyscanner_scraper import SkyscannerScraper
@@ -185,9 +186,10 @@ class FlightOrchestrator:
         successful_scrapers = 0
         failed_scrapers = 0
         scraper_stats = defaultdict(lambda: {"success": 0, "failed": 0, "flights": 0})
+        flights_by_source = defaultdict(int)  # Track flights per source for metrics
 
         for idx, result in enumerate(results):
-            scraper_name = task_metadata[idx].split(":")[0]
+            scraper_name = task_metadata[idx].split(":")[0].lower()
 
             if isinstance(result, Exception):
                 logger.error(f"Scraper failed ({task_metadata[idx]}): {result}")
@@ -197,7 +199,12 @@ class FlightOrchestrator:
                 successful_scrapers += 1
                 scraper_stats[scraper_name]["success"] += 1
                 scraper_stats[scraper_name]["flights"] += len(result)
+                flights_by_source[scraper_name] += len(result)
                 all_flights.extend(result)
+
+        # Update Prometheus metrics for flights discovered by source
+        for source, count in flights_by_source.items():
+            track_flights_discovered(source, count)
 
         # Log statistics
         elapsed_time = (datetime.now() - start_time).total_seconds()
@@ -248,6 +255,7 @@ class FlightOrchestrator:
         console.print(table)
         console.print(f"\n[dim]Time elapsed: {elapsed_time:.2f}s[/dim]\n")
 
+    @track_scraper_performance("flight_scraper")
     async def scrape_source(
         self,
         scraper,

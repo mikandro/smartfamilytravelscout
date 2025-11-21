@@ -6,16 +6,18 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import redis.asyncio as aioredis
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app import __version__, __app_name__
 from app.config import settings
 from app.database import check_db_connection, close_db_connections
+from app.monitoring import app_info
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,15 @@ async def lifespan(app: FastAPI):
         logger.info("Database connection established")
     else:
         logger.error("Database connection failed")
+
+    # Set application info for Prometheus
+    app_info.info(
+        {
+            "version": __version__,
+            "name": __app_name__,
+            "environment": settings.environment,
+        }
+    )
 
     logger.info("Application startup complete")
 
@@ -147,6 +158,22 @@ async def health_check() -> Dict[str, Any]:
     }
 
     return JSONResponse(content=response, status_code=status_code)
+
+
+# Prometheus metrics endpoint
+@app.get("/metrics", tags=["Monitoring"], include_in_schema=False)
+async def metrics() -> Response:
+    """
+    Prometheus metrics endpoint.
+
+    Exposes application metrics in Prometheus format for scraping.
+    This endpoint returns metrics about scraper performance, API usage,
+    and data collection statistics.
+
+    Returns:
+        Response with Prometheus metrics in text format
+    """
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # API root endpoint (moved to /api)

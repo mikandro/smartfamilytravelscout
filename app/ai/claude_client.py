@@ -22,6 +22,7 @@ from tenacity import (
 )
 
 from app.models.api_cost import ApiCost
+from app.monitoring.metrics import track_api_call, track_api_cost
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +346,10 @@ class ClaudeClient:
             f"{input_tokens + output_tokens} tokens)"
         )
 
+        # Track metrics for Prometheus
+        track_api_call(service="claude", model=self.model, count=1)
+        track_api_cost(service="claude", model=self.model, cost_usd=total_cost)
+
         # Log to database if session available
         if self.db_session:
             try:
@@ -373,6 +378,10 @@ class ClaudeClient:
         self, prompt_hash: str, operation: Optional[str] = None
     ) -> None:
         """Track a cache hit in the database (no tokens consumed)."""
+        # Track cache hit as API call with 0 cost for Prometheus
+        track_api_call(service="claude", model=self.model, count=1)
+        track_api_cost(service="claude", model=self.model, cost_usd=0.0)
+
         if self.db_session:
             try:
                 api_cost = ApiCost(

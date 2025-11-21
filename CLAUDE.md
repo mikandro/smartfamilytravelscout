@@ -185,12 +185,20 @@ poetry run mypy app/
 - `email_preview.py`: Preview emails locally
 - `smtp_config.py`: SMTP configuration
 
+**Monitoring** (`app/monitoring/`): Prometheus metrics for observability (NEW!)
+- `metrics.py`: Prometheus metrics definitions and helper functions
+- Metrics exposed at `/metrics` endpoint for Prometheus scraping
+- Tracks scraper performance (requests, duration, discoveries)
+- Tracks API consumption (Claude API calls and costs)
+- Decorator `@track_scraper_performance` for automatic scraper instrumentation
+
 ### Data Flow
 
-1. **Scraping**: Celery beat triggers scheduled tasks → Orchestrators run scrapers in parallel → Raw data saved to database
+1. **Scraping**: Celery beat triggers scheduled tasks → Orchestrators run scrapers in parallel → Raw data saved to database → Metrics tracked
 2. **Package Generation**: `AccommodationMatcher` combines flights + accommodations → `EventMatcher` adds local events → Trip packages created
-3. **AI Scoring**: `DealScorer` evaluates each package using Claude API → Scores and reasoning saved to database
+3. **AI Scoring**: `DealScorer` evaluates each package using Claude API → Scores and reasoning saved to database → API metrics tracked
 4. **Notifications**: High-scoring packages trigger email notifications to users
+5. **Monitoring**: Prometheus scrapes `/metrics` endpoint → Metrics visualized in Grafana (optional)
 
 ### Database Architecture
 
@@ -355,6 +363,35 @@ Copy `.env.example` to `.env` and configure:
 - SMTP settings: For email notifications
 
 ### Monitoring
+
+**Prometheus Metrics** (NEW!)
+
+The application now exposes Prometheus metrics for comprehensive monitoring:
+
+- **Metrics endpoint**: `http://localhost:8000/metrics`
+- **Scraper metrics**: Request counts, duration histograms, and success/failure rates
+- **Data discovery metrics**: Gauges for flights, accommodations, and events discovered by source
+- **API metrics**: Claude API call counts and cumulative costs
+
+Available metrics:
+- `scraper_requests_total{scraper_name, status}` - Counter for scraper requests
+- `scraper_duration_seconds{scraper_name}` - Histogram of scraper execution times
+- `flights_discovered_total{source}` - Gauge of total flights by source (kiwi, skyscanner, ryanair, wizzair)
+- `accommodations_discovered_total{source}` - Gauge of accommodations by source
+- `events_discovered_total{source}` - Gauge of events by source
+- `api_calls_total{service, model}` - Counter for API calls (e.g., Claude)
+- `api_cost_usd_total{service, model}` - Counter for cumulative API costs
+
+**Configure Prometheus** to scrape the `/metrics` endpoint:
+
+```yaml
+scrape_configs:
+  - job_name: 'smartfamilytravelscout'
+    static_configs:
+      - targets: ['localhost:8000']
+```
+
+**Other Monitoring Tools**:
 
 - View logs: `docker-compose logs -f app`
 - Check health: `curl http://localhost:8000/health`
