@@ -104,7 +104,12 @@ poetry run alembic history
 
 # Reset database (WARNING: deletes all data)
 poetry run scout db reset
+
+# Backup and restore - see docs/DATABASE_BACKUP.md for detailed guide
+docker exec travelscout-postgres pg_dump -U travelscout travelscout > backup.sql
 ```
+
+**Note**: For comprehensive backup and restore procedures, see [docs/DATABASE_BACKUP.md](docs/DATABASE_BACKUP.md)
 
 ### Celery Workers
 

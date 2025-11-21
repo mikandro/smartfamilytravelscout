@@ -229,6 +229,8 @@ poetry run alembic downgrade -1
 poetry run alembic history
 ```
 
+**Database Backups**: For backup and restore procedures, see [docs/DATABASE_BACKUP.md](docs/DATABASE_BACKUP.md)
+
 ## Testing
 
 ```bash
