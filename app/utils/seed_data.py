@@ -279,9 +279,11 @@ def seed_all(db: Session) -> None:
 if __name__ == "__main__":
     """Run seeding when script is executed directly."""
     import sys
+    from pathlib import Path
 
-    # Add parent directory to path for imports
-    sys.path.insert(0, "/home/user/smartfamilytravelscout")
+    # Add project root to path for imports (dynamically determined)
+    project_root = Path(__file__).parent.parent.parent.resolve()
+    sys.path.insert(0, str(project_root))
 
     from app.database import get_sync_session
 
