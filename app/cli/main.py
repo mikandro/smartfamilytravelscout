@@ -1357,12 +1357,15 @@ def kiwi_status():
     """
     Check Kiwi.com API rate limit status.
     """
+    import asyncio
+
     console.print("\n[bold]Kiwi.com API Status[/bold]\n", style="blue")
 
     from app.scrapers.kiwi_scraper import RateLimiter
 
     rate_limiter = RateLimiter()
-    remaining = rate_limiter.get_remaining_calls()
+    # Use asyncio.run() to call async method from sync context
+    remaining = asyncio.run(rate_limiter.get_remaining_calls())
     used = 100 - remaining
 
     # Create table

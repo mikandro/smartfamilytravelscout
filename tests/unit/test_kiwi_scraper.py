@@ -55,42 +55,47 @@ class TestRateLimiter:
         assert rate_limiter.limit_per_month == 100
         assert rate_limiter.storage_file is not None
 
-    def test_check_limit_empty(self, rate_limiter):
+    @pytest.mark.asyncio
+    async def test_check_limit_empty(self, rate_limiter):
         """Test rate limit check with no previous calls."""
-        assert rate_limiter.check_limit() is True
-        assert rate_limiter.get_remaining_calls() == 100
+        assert await rate_limiter.check_limit() is True
+        assert await rate_limiter.get_remaining_calls() == 100
 
-    def test_record_call(self, rate_limiter):
+    @pytest.mark.asyncio
+    async def test_record_call(self, rate_limiter):
         """Test recording API calls."""
-        rate_limiter.record_call()
-        assert rate_limiter.get_remaining_calls() == 99
+        await rate_limiter.record_call()
+        assert await rate_limiter.get_remaining_calls() == 99
 
-        rate_limiter.record_call()
-        rate_limiter.record_call()
-        assert rate_limiter.get_remaining_calls() == 97
+        await rate_limiter.record_call()
+        await rate_limiter.record_call()
+        assert await rate_limiter.get_remaining_calls() == 97
 
-    def test_check_limit_exceeded(self, rate_limiter):
+    @pytest.mark.asyncio
+    async def test_check_limit_exceeded(self, rate_limiter):
         """Test rate limit exceeded scenario."""
         # Record 100 calls
         for _ in range(100):
-            rate_limiter.record_call()
+            await rate_limiter.record_call()
 
-        assert rate_limiter.check_limit() is False
-        assert rate_limiter.get_remaining_calls() == 0
+        assert await rate_limiter.check_limit() is False
+        assert await rate_limiter.get_remaining_calls() == 0
 
-    def test_reset(self, rate_limiter):
+    @pytest.mark.asyncio
+    async def test_reset(self, rate_limiter):
         """Test resetting rate limiter."""
         # Record some calls
         for _ in range(10):
-            rate_limiter.record_call()
+            await rate_limiter.record_call()
 
-        assert rate_limiter.get_remaining_calls() == 90
+        assert await rate_limiter.get_remaining_calls() == 90
 
         # Reset
-        rate_limiter.reset()
-        assert rate_limiter.get_remaining_calls() == 100
+        await rate_limiter.reset()
+        assert await rate_limiter.get_remaining_calls() == 100
 
-    def test_filter_old_calls(self, rate_limiter):
+    @pytest.mark.asyncio
+    async def test_filter_old_calls(self, rate_limiter):
         """Test that old calls from previous months are filtered out."""
         # Manually write old timestamps
         old_timestamp = datetime(2023, 1, 1, 12, 0, 0)
@@ -101,7 +106,7 @@ class TestRateLimiter:
             f.write(f"{recent_timestamp.isoformat()}\n")
 
         # Should only count recent call
-        assert rate_limiter.get_remaining_calls() == 99
+        assert await rate_limiter.get_remaining_calls() == 99
 
 
 class TestKiwiClient:
@@ -109,10 +114,11 @@ class TestKiwiClient:
 
     @pytest.fixture
     def mock_rate_limiter(self):
-        """Create mock rate limiter that always allows calls."""
-        limiter = Mock(spec=RateLimiter)
+        """Create mock rate limiter that always allows calls (async methods)."""
+        limiter = AsyncMock(spec=RateLimiter)
         limiter.check_limit.return_value = True
         limiter.record_call.return_value = None
+        limiter.get_remaining_calls.return_value = 100
         return limiter
 
     @pytest.fixture
@@ -571,7 +577,7 @@ class TestIntegrationScenarios:
 
                 # Verify rate limiter did NOT track the call (we mocked _make_request directly)
                 # The actual rate limiting happens inside _make_request which we bypassed
-                assert rate_limiter.get_remaining_calls() == 100
+                assert await rate_limiter.get_remaining_calls() == 100
 
         finally:
             # Cleanup

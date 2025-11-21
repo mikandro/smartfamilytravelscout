@@ -178,19 +178,26 @@ class RyanairScraper:
 
     async def _check_rate_limit(self) -> None:
         """
-        Check if rate limit has been exceeded.
+        Check if rate limit has been exceeded (async to avoid blocking).
 
         Raises:
             RateLimitExceeded: If daily limit is exceeded
         """
         rate_file = Path(self.RATE_LIMIT_FILE)
 
-        # Load existing rate limit data
-        if rate_file.exists():
-            with open(rate_file, "r") as f:
-                data = json.load(f)
-        else:
-            data = {"date": None, "count": 0}
+        # Define synchronous file operations to run in thread pool
+        def _load_rate_data():
+            if rate_file.exists():
+                with open(rate_file, "r") as f:
+                    return json.load(f)
+            return {"date": None, "count": 0}
+
+        def _save_rate_data(data):
+            with open(rate_file, "w") as f:
+                json.dump(data, f)
+
+        # Load existing rate limit data (async to avoid blocking event loop)
+        data = await asyncio.to_thread(_load_rate_data)
 
         today = str(date.today())
 
@@ -209,9 +216,8 @@ class RyanairScraper:
         # Increment counter
         data["count"] += 1
 
-        # Save
-        with open(rate_file, "w") as f:
-            json.dump(data, f)
+        # Save (async to avoid blocking event loop)
+        await asyncio.to_thread(_save_rate_data, data)
 
         logger.info(f"Rate limit check: {data['count']}/{self.MAX_DAILY_SEARCHES} searches today")
 

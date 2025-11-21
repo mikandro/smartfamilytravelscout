@@ -59,30 +59,38 @@ class RateLimiter:
         self.storage_file = storage_file
         self.logger = logging.getLogger(f"{__name__}.RateLimiter")
 
-    def _read_calls(self) -> List[datetime]:
-        """Read API call timestamps from storage file."""
-        try:
-            with open(self.storage_file, "r") as f:
-                timestamps = [
-                    datetime.fromisoformat(line.strip())
-                    for line in f
-                    if line.strip()
-                ]
-                return timestamps
-        except FileNotFoundError:
-            return []
-        except Exception as e:
-            self.logger.warning(f"Error reading rate limit file: {e}")
-            return []
+    async def _read_calls(self) -> List[datetime]:
+        """Read API call timestamps from storage file (async to avoid blocking)."""
+        def _sync_read():
+            try:
+                with open(self.storage_file, "r") as f:
+                    timestamps = [
+                        datetime.fromisoformat(line.strip())
+                        for line in f
+                        if line.strip()
+                    ]
+                    return timestamps
+            except FileNotFoundError:
+                return []
+            except Exception as e:
+                self.logger.warning(f"Error reading rate limit file: {e}")
+                return []
 
-    def _write_calls(self, timestamps: List[datetime]) -> None:
-        """Write API call timestamps to storage file."""
-        try:
-            with open(self.storage_file, "w") as f:
-                for ts in timestamps:
-                    f.write(f"{ts.isoformat()}\n")
-        except Exception as e:
-            self.logger.error(f"Error writing rate limit file: {e}")
+        # Run synchronous file I/O in thread pool to avoid blocking event loop
+        return await asyncio.to_thread(_sync_read)
+
+    async def _write_calls(self, timestamps: List[datetime]) -> None:
+        """Write API call timestamps to storage file (async to avoid blocking)."""
+        def _sync_write():
+            try:
+                with open(self.storage_file, "w") as f:
+                    for ts in timestamps:
+                        f.write(f"{ts.isoformat()}\n")
+            except Exception as e:
+                self.logger.error(f"Error writing rate limit file: {e}")
+
+        # Run synchronous file I/O in thread pool to avoid blocking event loop
+        await asyncio.to_thread(_sync_write)
 
     def _filter_recent_calls(self, timestamps: List[datetime]) -> List[datetime]:
         """Filter timestamps to only include calls from current month."""
@@ -91,14 +99,14 @@ class RateLimiter:
         month_start = datetime(now.year, now.month, 1)
         return [ts for ts in timestamps if ts >= month_start]
 
-    def check_limit(self) -> bool:
+    async def check_limit(self) -> bool:
         """
-        Check if we're within rate limit.
+        Check if we're within rate limit (async to avoid blocking).
 
         Returns:
             bool: True if within limit, False otherwise
         """
-        timestamps = self._read_calls()
+        timestamps = await self._read_calls()
         recent_calls = self._filter_recent_calls(timestamps)
 
         if len(recent_calls) >= self.limit_per_month:
@@ -109,32 +117,32 @@ class RateLimiter:
 
         return True
 
-    def record_call(self) -> None:
-        """Record a new API call."""
-        timestamps = self._read_calls()
+    async def record_call(self) -> None:
+        """Record a new API call (async to avoid blocking)."""
+        timestamps = await self._read_calls()
         recent_calls = self._filter_recent_calls(timestamps)
         recent_calls.append(datetime.now())
-        self._write_calls(recent_calls)
+        await self._write_calls(recent_calls)
 
         self.logger.info(
             f"API call recorded: {len(recent_calls)}/{self.limit_per_month} calls this month"
         )
 
-    def get_remaining_calls(self) -> int:
+    async def get_remaining_calls(self) -> int:
         """
-        Get number of remaining API calls for this month.
+        Get number of remaining API calls for this month (async to avoid blocking).
 
         Returns:
             int: Number of calls remaining
         """
-        timestamps = self._read_calls()
+        timestamps = await self._read_calls()
         recent_calls = self._filter_recent_calls(timestamps)
         remaining = max(0, self.limit_per_month - len(recent_calls))
         return remaining
 
-    def reset(self) -> None:
-        """Reset all API call tracking (useful for testing)."""
-        self._write_calls([])
+    async def reset(self) -> None:
+        """Reset all API call tracking (useful for testing, async to avoid blocking)."""
+        await self._write_calls([])
         self.logger.info("Rate limiter reset")
 
 
@@ -197,9 +205,9 @@ class KiwiClient:
             KiwiAPIError: If API returns an error
             aiohttp.ClientError: If network request fails after retries
         """
-        # Check rate limit
-        if not self.rate_limiter.check_limit():
-            remaining = self.rate_limiter.get_remaining_calls()
+        # Check rate limit (now async to avoid blocking)
+        if not await self.rate_limiter.check_limit():
+            remaining = await self.rate_limiter.get_remaining_calls()
             raise RateLimitExceededError(
                 f"Monthly rate limit exceeded. {remaining} calls remaining this month."
             )
@@ -217,8 +225,8 @@ class KiwiClient:
                         headers=headers,
                         timeout=aiohttp.ClientTimeout(total=self.timeout),
                     ) as response:
-                        # Record successful API call
-                        self.rate_limiter.record_call()
+                        # Record successful API call (now async to avoid blocking)
+                        await self.rate_limiter.record_call()
 
                         # Log request details
                         query_string = urlencode(params)
