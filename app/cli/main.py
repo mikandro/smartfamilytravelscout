@@ -31,6 +31,11 @@ from sqlalchemy import select, func, and_, desc
 from app import __version__, __app_name__
 from app.config import settings
 from app.database import check_db_connection, get_async_session_context, get_sync_session
+from app.cli.validators import (
+    airport_code_callback,
+    date_callback,
+    airport_codes_list_callback,
+)
 
 # Create Typer app
 app = typer.Typer(
@@ -117,18 +122,22 @@ def scrape(
     origin: str = typer.Option(
         ...,
         help="Origin airport IATA code (e.g., MUC, VIE)",
+        callback=airport_code_callback,
     ),
     destination: str = typer.Option(
         ...,
         help="Destination airport IATA code (e.g., LIS, BCN)",
+        callback=airport_code_callback,
     ),
     departure_date: Optional[str] = typer.Option(
         None,
         help="Departure date (YYYY-MM-DD). Default: 60 days from today",
+        callback=date_callback,
     ),
     return_date: Optional[str] = typer.Option(
         None,
         help="Return date (YYYY-MM-DD). Default: 7 days after departure",
+        callback=date_callback,
     ),
     scraper: Optional[str] = typer.Option(
         None,
@@ -379,6 +388,7 @@ def pipeline(
     destinations: str = typer.Option(
         "all",
         help="Destinations to search (comma-separated IATA codes or 'all')",
+        callback=airport_codes_list_callback,
     ),
     dates: str = typer.Option(
         "next-3-months",
@@ -1166,10 +1176,12 @@ def test_scraper(
     origin: str = typer.Option(
         "MUC",
         help="Origin airport IATA code (for flight scrapers)",
+        callback=airport_code_callback,
     ),
     dest: str = typer.Option(
         "LIS",
         help="Destination airport IATA code or city name",
+        callback=airport_code_callback,
     ),
     save: bool = typer.Option(
         False,
@@ -1963,10 +1975,10 @@ def health():
 
 @app.command(name="kiwi-search")
 def kiwi_search(
-    origin: str = typer.Option(..., help="Origin airport IATA code (e.g., MUC)"),
-    destination: Optional[str] = typer.Option(None, help="Destination airport IATA code (e.g., LIS). Omit for 'anywhere' search."),
-    departure_date: Optional[str] = typer.Option(None, help="Departure date (YYYY-MM-DD). Default: 60 days from today"),
-    return_date: Optional[str] = typer.Option(None, help="Return date (YYYY-MM-DD). Default: 7 days after departure"),
+    origin: str = typer.Option(..., help="Origin airport IATA code (e.g., MUC)", callback=airport_code_callback),
+    destination: Optional[str] = typer.Option(None, help="Destination airport IATA code (e.g., LIS). Omit for 'anywhere' search.", callback=airport_code_callback),
+    departure_date: Optional[str] = typer.Option(None, help="Departure date (YYYY-MM-DD). Default: 60 days from today", callback=date_callback),
+    return_date: Optional[str] = typer.Option(None, help="Return date (YYYY-MM-DD). Default: 7 days after departure", callback=date_callback),
     adults: int = typer.Option(2, help="Number of adults"),
     children: int = typer.Option(2, help="Number of children"),
     save: bool = typer.Option(True, help="Save results to database"),
