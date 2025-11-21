@@ -394,12 +394,47 @@ For issues and questions:
 
 ## Roadmap
 
-- [ ] Mobile app integration
-- [ ] Multi-currency support
-- [ ] ML-based price prediction
-- [ ] Social sharing features
-- [ ] Travel itinerary builder
-- [ ] Budget optimization
+### ✅ Completed Features
+
+- **CLI Interface**: Full-featured command-line tool (`scout`) for scraping, testing, and managing the system
+- **Docker Deployment**: Complete Docker Compose setup with PostgreSQL, Redis, Celery workers, and beat scheduler
+- **Multiple Scrapers**: Default free scrapers (Skyscanner, Ryanair, WizzAir) plus API-based scrapers (Kiwi, Eventbrite)
+- **AI Scoring**: Claude AI integration for scoring deals, events, and generating itineraries
+- **Database & Migrations**: PostgreSQL with async SQLAlchemy and Alembic migrations
+- **Task Queue**: Celery with Beat for scheduled scraping and price monitoring
+- **Orchestration**: Flight, accommodation, and event matching with package generation
+- **Email Notifications**: SMTP-based email alerts for high-scoring deals
+- **Price Tracking**: Historical price monitoring and trend analysis
+
+### 🎯 Next Release (v0.2.0)
+
+- [ ] **Improved Test Coverage**: Expand unit and integration tests (current coverage is partial)
+- [ ] **Rate Limiting**: Implement intelligent rate limiting for scrapers to avoid blocking
+- [ ] **Error Recovery**: Better error handling and retry logic for failed scraping jobs
+- [ ] **Performance Optimization**: Optimize database queries and reduce scraping time
+- [ ] **Documentation**: Add API documentation and improve developer guides
+- [ ] **Docker Improvements**: Fix container health checks and optimize build times
+
+### 🚀 Future Releases
+
+#### Web Dashboard (v0.3.0)
+- [ ] Interactive web UI for browsing deals and packages
+- [ ] Real-time deal updates via WebSockets
+- [ ] User preferences and saved searches
+- [ ] Visual trip package comparison
+
+#### Multi-Region Support (v0.4.0)
+- [ ] Support for multiple countries and school holiday calendars
+- [ ] Multi-currency support with real-time conversion
+- [ ] Localization (i18n) for different languages
+
+#### Advanced Features (v0.5.0+)
+- [ ] ML-based price prediction and deal forecasting
+- [ ] Mobile app (iOS/Android) integration
+- [ ] Social sharing and collaborative trip planning
+- [ ] Advanced budget optimization algorithms
+- [ ] Travel insurance and visa requirement integration
+- [ ] Carbon footprint tracking for eco-conscious families
 
 ## Acknowledgments
 
