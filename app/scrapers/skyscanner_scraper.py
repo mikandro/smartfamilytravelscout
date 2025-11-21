@@ -793,6 +793,27 @@ class SkyscannerScraper:
 
         return None
 
+    async def scrape_flights(
+        self,
+        origin: str,
+        destination: str,
+        departure_date: date,
+        return_date: Optional[date] = None,
+    ) -> List[Dict]:
+        """
+        Alias for scrape_route() to maintain consistent interface with other scrapers.
+
+        Args:
+            origin: Origin airport IATA code (e.g., "MUC")
+            destination: Destination airport IATA code (e.g., "LIS")
+            departure_date: Departure date
+            return_date: Return date (optional, for round-trip)
+
+        Returns:
+            List of flight dictionaries with standardized format
+        """
+        return await self.scrape_route(origin, destination, departure_date, return_date)
+
     async def save_to_database(
         self,
         flights: List[Dict],
