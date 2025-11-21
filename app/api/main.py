@@ -4,6 +4,7 @@ FastAPI application entry point.
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import FastAPI, Request, status
@@ -93,6 +94,14 @@ app.add_middleware(
 
 # Add GZip middleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Ensure static directory exists before mounting
+static_dir = Path("static")
+if not static_dir.exists():
+    logger.info(f"Static directory not found, creating: {static_dir.absolute()}")
+    static_dir.mkdir(parents=True, exist_ok=True)
+else:
+    logger.debug(f"Static directory found: {static_dir.absolute()}")
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
