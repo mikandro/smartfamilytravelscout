@@ -355,9 +355,9 @@ class TestClaudeClient:
         assert stats["cache_ttl"] == claude_client.cache_ttl
 
     def test_pricing_constants(self):
-        """Test that pricing constants are set correctly."""
-        assert ClaudeClient.INPUT_COST_PER_MILLION == 3.0
-        assert ClaudeClient.OUTPUT_COST_PER_MILLION == 15.0
+        """Test that default pricing constants are set correctly."""
+        assert ClaudeClient.DEFAULT_INPUT_COST_PER_MILLION == 3.0
+        assert ClaudeClient.DEFAULT_OUTPUT_COST_PER_MILLION == 15.0
 
     async def test_analyze_with_formatting(self, claude_client, mock_api_response):
         """Test analyze with prompt formatting."""
@@ -373,3 +373,79 @@ class TestClaudeClient:
         formatted_prompt = call_args[0]
         assert "Paris" in formatted_prompt
         assert "4" in formatted_prompt
+
+    async def test_load_pricing_from_database(self, claude_client, mock_db_session):
+        """Test loading pricing from database."""
+        from app.models.model_pricing import ModelPricing
+
+        # Create mock pricing object
+        mock_pricing = Mock(spec=ModelPricing)
+        mock_pricing.input_cost_per_million = 5.0
+        mock_pricing.output_cost_per_million = 20.0
+        mock_pricing.effective_date = datetime(2025, 11, 1)
+
+        # Mock the database query
+        mock_result = Mock()
+        mock_result.scalar_one_or_none = Mock(return_value=mock_pricing)
+        mock_db_session.execute = AsyncMock(return_value=mock_result)
+
+        await claude_client._load_pricing()
+
+        assert claude_client.input_cost_per_million == 5.0
+        assert claude_client.output_cost_per_million == 20.0
+        assert claude_client._pricing_loaded is True
+
+    async def test_load_pricing_fallback_to_defaults(self, claude_client, mock_db_session):
+        """Test fallback to default pricing when no database pricing found."""
+        # Mock database to return None (no pricing found)
+        mock_result = Mock()
+        mock_result.scalar_one_or_none = Mock(return_value=None)
+        mock_db_session.execute = AsyncMock(return_value=mock_result)
+
+        await claude_client._load_pricing()
+
+        # Should fall back to defaults
+        assert claude_client.input_cost_per_million == ClaudeClient.DEFAULT_INPUT_COST_PER_MILLION
+        assert claude_client.output_cost_per_million == ClaudeClient.DEFAULT_OUTPUT_COST_PER_MILLION
+        assert claude_client._pricing_loaded is True
+
+    async def test_load_pricing_without_db_session(self, mock_redis):
+        """Test loading pricing without database session uses defaults."""
+        with patch("app.ai.claude_client.Anthropic"):
+            client = ClaudeClient(
+                api_key="test-api-key",
+                redis_client=mock_redis,
+                db_session=None,
+            )
+
+        await client._load_pricing()
+
+        assert client.input_cost_per_million == ClaudeClient.DEFAULT_INPUT_COST_PER_MILLION
+        assert client.output_cost_per_million == ClaudeClient.DEFAULT_OUTPUT_COST_PER_MILLION
+        assert client._pricing_loaded is True
+
+    async def test_track_cost_uses_loaded_pricing(self, claude_client, mock_db_session):
+        """Test that track_cost uses pricing loaded from database."""
+        from app.models.model_pricing import ModelPricing
+
+        # Create mock pricing with custom values
+        mock_pricing = Mock(spec=ModelPricing)
+        mock_pricing.input_cost_per_million = 10.0  # Different from defaults
+        mock_pricing.output_cost_per_million = 50.0  # Different from defaults
+        mock_pricing.effective_date = datetime(2025, 11, 1)
+
+        mock_result = Mock()
+        mock_result.scalar_one_or_none = Mock(return_value=mock_pricing)
+        mock_db_session.execute = AsyncMock(return_value=mock_result)
+
+        # Track cost should load pricing and use it
+        cost = await claude_client.track_cost(
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            operation="test",
+        )
+
+        # Cost should be calculated with custom pricing: (1M * $10 + 1M * $50) / 1M = $60
+        assert cost == 60.0
+        assert claude_client.input_cost_per_million == 10.0
+        assert claude_client.output_cost_per_million == 50.0
