@@ -76,7 +76,9 @@ class EventBriteClient:
         self.api_key = api_key or settings.eventbrite_api_key
         if not self.api_key:
             raise ValueError(
-                "EventBrite API key is required. Set EVENTBRITE_API_KEY in environment."
+                "Eventbrite API key is required but not configured.\n"
+                "Get a free API key (1,000 requests/day) at: https://www.eventbrite.com/platform/api\n"
+                "Then set it in your .env file: EVENTBRITE_API_KEY=your_api_key_here"
             )
 
         self.session: Optional[httpx.AsyncClient] = None

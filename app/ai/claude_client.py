@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from anthropic import Anthropic, APIError, RateLimitError, APIConnectionError
+from anthropic import AsyncAnthropic, APIError, RateLimitError, APIConnectionError
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenacity import (
@@ -75,7 +75,7 @@ class ClaudeClient:
             cache_ttl: Cache TTL in seconds (default: 86400 = 24 hours)
             db_session: Optional database session for cost tracking
         """
-        self.client = Anthropic(api_key=api_key)
+        self.client = AsyncAnthropic(api_key=api_key)
         self.redis = redis_client
         self.model = model
         self.cache_ttl = cache_ttl
@@ -257,7 +257,7 @@ class ClaudeClient:
             APIConnectionError: If connection fails after retries
             APIError: For other API errors
         """
-        return self.client.messages.create(
+        return await self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             temperature=temperature,

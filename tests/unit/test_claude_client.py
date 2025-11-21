@@ -39,7 +39,7 @@ class TestClaudeClient:
     @pytest.fixture
     def claude_client(self, mock_redis, mock_db_session):
         """Create ClaudeClient instance with mocked dependencies."""
-        with patch("app.ai.claude_client.Anthropic"):
+        with patch("app.ai.claude_client.AsyncAnthropic"):
             return ClaudeClient(
                 api_key="test-api-key",
                 redis_client=mock_redis,
@@ -304,15 +304,21 @@ class TestClaudeClient:
 
     async def test_analyze_api_error(self, claude_client):
         """Test analyze handling API errors."""
-        # Mock API to raise a generic exception
+        from anthropic import APIError
+        from httpx import Request
+
+        # Create a mock request for APIError
+        mock_request = Request("POST", "https://api.anthropic.com/v1/messages")
+
+        # Mock API to raise error
         claude_client._call_api_with_retry = AsyncMock(
-            side_effect=Exception("API Error")
+            side_effect=APIError("API Error", request=mock_request, body=None)
         )
 
         with pytest.raises(ClaudeAPIError) as exc_info:
             await claude_client.analyze(prompt="Test", data={})
 
-        assert "Unexpected error" in str(exc_info.value)
+        assert "Claude API call failed" in str(exc_info.value)
 
     async def test_clear_cache(self, claude_client, mock_redis):
         """Test clearing cached responses."""
@@ -327,7 +333,6 @@ class TestClaudeClient:
             for key in mock_keys:
                 yield key
 
-        # scan_iter is called as a method, so it should return the generator
         mock_redis.scan_iter = MagicMock(return_value=async_gen())
         mock_redis.delete.return_value = len(mock_keys)
 
@@ -343,7 +348,6 @@ class TestClaudeClient:
             for _ in range(5):
                 yield b"claude:response:key"
 
-        # scan_iter is called as a method, so it should return the generator
         mock_redis.scan_iter = MagicMock(return_value=async_gen())
 
         stats = await claude_client.get_cache_stats()

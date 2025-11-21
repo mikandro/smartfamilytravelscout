@@ -156,7 +156,9 @@ poetry run mypy app/
 - Tourism scrapers: Barcelona, Prague, Lisbon city events
 
 **Orchestration** (`app/orchestration/`): Coordinates multiple scrapers and data sources
-- `flight_orchestrator.py`: Runs all flight scrapers in parallel, deduplicates results
+- `flight_orchestrator.py`: Runs all flight scrapers in parallel, deduplicates results, tracks failures
+  - **Failure Threshold**: Raises `ScraperFailureThresholdExceeded` if >50% (configurable) of scrapers fail
+  - Prevents silent failures that mask critical system issues
 - `accommodation_matcher.py`: Matches accommodations to flights, generates trip packages
 - `event_matcher.py`: Matches local events to trip packages
 
@@ -222,6 +224,9 @@ Use `PromptLoader` to load templates: `load_prompt("deal_analysis")`
 All settings use Pydantic Settings in `app/config.py`:
 - Required: `DATABASE_URL`, `REDIS_URL`, `ANTHROPIC_API_KEY`, `SECRET_KEY`
 - Optional: `KIWI_API_KEY`, `EVENTBRITE_API_KEY`, SMTP config, feature flags
+- Scraper settings:
+  - `SCRAPER_FAILURE_THRESHOLD` (default: 0.5 = 50%): Maximum allowed scraper failure rate before aborting
+  - Set to 0.0 to abort on any failure, 1.0 to never abort
 - Access via: `from app.config import settings`
 
 ## Important Implementation Details
@@ -256,8 +261,19 @@ All scrapers follow this pattern:
 1. Inherit from base or implement `scrape_flights()` / `scrape_accommodations()`
 2. Return list of dicts with standardized fields
 3. Handle retries with `@retry` decorator from `app.utils.retry`
-4. Log all errors but don't raise (fail gracefully)
+4. **Exception Handling**: Log errors and re-raise exceptions (orchestrator handles failure tracking)
+   - The `FlightOrchestrator` tracks failures via `asyncio.gather(..., return_exceptions=True)`
+   - Raises `ScraperFailureThresholdExceeded` if failure rate exceeds configured threshold
 5. Track scraping job status in `scraping_jobs` table
+
+### Exception Handling
+
+**Custom Exceptions** (`app/exceptions.py`):
+- `ScraperFailureThresholdExceeded`: Raised when too many scrapers fail during orchestration
+  - Contains failure statistics: `total_scrapers`, `failed_scrapers`, `failure_rate`, `threshold`
+  - Signals critical system issues requiring immediate attention
+- `ScraperException`: Base exception for scraper-related errors
+- Other domain-specific exceptions: `ConfigurationException`, `DatabaseException`, `AIServiceException`
 
 ### Cost Tracking
 

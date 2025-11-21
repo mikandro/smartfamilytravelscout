@@ -12,6 +12,13 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import redis.asyncio as aioredis
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
 
 from app import __version__, __app_name__
 from app.config import settings
@@ -23,37 +30,109 @@ logger = logging.getLogger(__name__)
 redis_client = None
 
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(Exception),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+async def connect_to_redis() -> aioredis.Redis:
+    """
+    Connect to Redis with retry logic.
+
+    Retries up to 5 times with exponential backoff (2-10 seconds).
+    This helps handle race conditions during container startup when
+    Redis might not be ready yet.
+
+    Returns:
+        Redis client instance
+
+    Raises:
+        Exception: If all retry attempts fail
+    """
+    try:
+        client = await aioredis.from_url(
+            str(settings.redis_url),
+            encoding="utf-8",
+            decode_responses=True,
+        )
+        await client.ping()
+        logger.info("Redis connection established")
+        return client
+    except Exception as e:
+        logger.error(f"Redis connection failed: {e}")
+        raise  # Re-raise to trigger retry
+
+
+def validate_startup_config() -> None:
+    """
+    Validate configuration and warn about missing optional features.
+
+    Note: Required settings (DATABASE_URL, REDIS_URL, ANTHROPIC_API_KEY, SECRET_KEY)
+    are enforced by Pydantic and will cause import errors if missing.
+    """
+    warnings = []
+
+    # Warn about optional API keys
+    if not settings.kiwi_api_key and settings.use_kiwi_scraper:
+        warnings.append("KIWI_API_KEY not set - Kiwi.com scraper will be disabled")
+
+    if not settings.eventbrite_api_key:
+        warnings.append("EVENTBRITE_API_KEY not set - Event scraping will be limited")
+
+    # Check if at least one scraper is available
+    available_scrapers = settings.get_available_scrapers()
+    if not available_scrapers:
+        warnings.append("No flight scrapers are enabled - enable at least one scraper")
+
+    # Warn about SMTP configuration for notifications
+    if settings.enable_notifications and (not settings.smtp_user or not settings.smtp_password):
+        warnings.append("SMTP credentials not configured - email notifications will fail")
+
+    # Log warnings
+    if warnings:
+        logger.warning("Startup configuration warnings:")
+        for warning in warnings:
+            logger.warning(f"  - {warning}")
+    else:
+        logger.info("Startup configuration validated successfully")
+
+    # Log available scrapers
+    if available_scrapers:
+        logger.info(f"Available scrapers: {', '.join(available_scrapers)}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Application lifespan manager.
-    Handles startup and shutdown events.
+    Handles startup and shutdown events with proper validation and retry logic.
     """
     # Startup
     logger.info(f"Starting {__app_name__} v{__version__}")
     logger.info(f"Environment: {settings.environment}")
 
-    # Initialize Redis connection
+    # Validate configuration
+    validate_startup_config()
+
+    # Initialize Redis connection with retry
     global redis_client
     try:
-        redis_client = await aioredis.from_url(
-            str(settings.redis_url),
-            encoding="utf-8",
-            decode_responses=True,
-        )
-        await redis_client.ping()
-        logger.info("Redis connection established")
+        redis_client = await connect_to_redis()
     except Exception as e:
-        logger.error(f"Failed to connect to Redis: {e}")
-        redis_client = None
+        logger.error(f"Failed to connect to Redis after retries: {e}")
+        raise RuntimeError(f"Redis connection failed: {e}")
 
-    # Check database connection
-    if await check_db_connection():
+    # Check database connection with retry
+    try:
+        await check_db_connection()
         logger.info("Database connection established")
-    else:
-        logger.error("Database connection failed")
+    except Exception as e:
+        logger.error(f"Failed to connect to database after retries: {e}")
+        raise RuntimeError(f"Database connection failed: {e}")
 
-    logger.info("Application startup complete")
+    logger.info("Application startup complete - all dependencies healthy")
 
     yield
 
@@ -163,16 +242,17 @@ async def api_root() -> Dict[str, str]:
 
 # Import and include routers
 from app.api.routes import web
+from app.api.routes import api_deals, api_flights, api_packages, api_search, api_stats
 
 # Include web dashboard routes (handles /, /deals, /preferences, /stats)
 app.include_router(web.router, tags=["Web Dashboard"])
 
-# API routes (to be implemented)
-# from app.api.routes import flights, accommodations, events, search
-# app.include_router(flights.router, prefix="/api/v1/flights", tags=["Flights"])
-# app.include_router(accommodations.router, prefix="/api/v1/accommodations", tags=["Accommodations"])
-# app.include_router(events.router, prefix="/api/v1/events", tags=["Events"])
-# app.include_router(search.router, prefix="/api/v1/search", tags=["Search"])
+# API routes for programmatic access
+app.include_router(api_deals.router, prefix="/api/v1", tags=["API - Deals"])
+app.include_router(api_flights.router, prefix="/api/v1", tags=["API - Flights"])
+app.include_router(api_packages.router, prefix="/api/v1", tags=["API - Packages"])
+app.include_router(api_search.router, prefix="/api/v1", tags=["API - Search"])
+app.include_router(api_stats.router, prefix="/api/v1", tags=["API - Statistics"])
 
 
 if __name__ == "__main__":

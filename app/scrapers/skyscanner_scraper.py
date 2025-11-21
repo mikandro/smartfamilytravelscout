@@ -29,17 +29,17 @@ from app.config import settings
 from app.database import get_async_session_context
 from app.models.airport import Airport
 from app.models.flight import Flight
+from app.utils.rate_limiter import (
+    RedisRateLimiter,
+    RateLimitExceededError,
+    get_skyscanner_rate_limiter,
+)
 from app.utils.retry import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
-# Rate limiting: Track last request time
+# Track last request time for respectful delays (separate from rate limiting)
 _last_request_time: float = 0
-_request_count: int = 0
-_hour_start_time: float = time.time()
-
-# Maximum requests per hour (respectful scraping)
-MAX_REQUESTS_PER_HOUR = 10
 
 # User agents for rotation (real browser UAs)
 USER_AGENTS = [
@@ -50,12 +50,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
 ]
-
-
-class RateLimitExceededError(Exception):
-    """Raised when rate limit is exceeded."""
-
-    pass
 
 
 class CaptchaDetectedError(Exception):
@@ -77,13 +71,19 @@ class SkyscannerScraper:
     - Stealth mode to avoid bot detection
     """
 
-    def __init__(self, headless: bool = True, slow_mo: int = 0):
+    def __init__(
+        self,
+        headless: bool = True,
+        slow_mo: int = 0,
+        rate_limiter: Optional[RedisRateLimiter] = None,
+    ):
         """
         Initialize Skyscanner scraper.
 
         Args:
             headless: Run browser in headless mode (default: True)
             slow_mo: Slow down operations by specified ms (useful for debugging)
+            rate_limiter: Custom rate limiter instance (optional)
         """
         self.headless = headless
         self.slow_mo = slow_mo
@@ -91,6 +91,7 @@ class SkyscannerScraper:
         self.context: Optional[BrowserContext] = None
         self.playwright = None
         self.stealth = Stealth()  # Initialize stealth mode
+        self.rate_limiter = rate_limiter or get_skyscanner_rate_limiter()
 
         # Create logs directory for screenshots
         self.logs_dir = Path("logs")
@@ -171,32 +172,22 @@ class SkyscannerScraper:
         """
         Check if rate limit is exceeded.
 
-        Limits to MAX_REQUESTS_PER_HOUR searches per hour.
-
         Raises:
             RateLimitExceededError: If rate limit is exceeded
         """
-        global _request_count, _hour_start_time
-
-        current_time = time.time()
-        hour_elapsed = current_time - _hour_start_time
-
-        # Reset counter if hour has passed
-        if hour_elapsed >= 3600:
-            _request_count = 0
-            _hour_start_time = current_time
-            logger.info("Rate limit counter reset")
-
-        # Check limit
-        if _request_count >= MAX_REQUESTS_PER_HOUR:
-            wait_time = 3600 - hour_elapsed
+        if not self.rate_limiter.is_allowed():
+            status = self.rate_limiter.get_status()
             raise RateLimitExceededError(
-                f"Rate limit exceeded. {_request_count} requests in last hour. "
-                f"Wait {wait_time:.0f} seconds before next request."
+                f"Rate limit exceeded. {status['current_count']} requests in last hour. "
+                f"{status['remaining']} requests remaining."
             )
 
-        _request_count += 1
-        logger.debug(f"Rate limit check: {_request_count}/{MAX_REQUESTS_PER_HOUR}")
+        # Record the request
+        self.rate_limiter.record_request()
+        status = self.rate_limiter.get_status()
+        logger.debug(
+            f"Rate limit check: {status['current_count']}/{status['max_requests']}"
+        )
 
     async def _respectful_delay(self):
         """
@@ -792,6 +783,27 @@ class SkyscannerScraper:
             pass
 
         return None
+
+    async def scrape_flights(
+        self,
+        origin: str,
+        destination: str,
+        departure_date: date,
+        return_date: Optional[date] = None,
+    ) -> List[Dict]:
+        """
+        Alias for scrape_route() to maintain consistent interface with other scrapers.
+
+        Args:
+            origin: Origin airport IATA code (e.g., "MUC")
+            destination: Destination airport IATA code (e.g., "LIS")
+            departure_date: Departure date
+            return_date: Return date (optional, for round-trip)
+
+        Returns:
+            List of flight dictionaries with standardized format
+        """
+        return await self.scrape_route(origin, destination, departure_date, return_date)
 
     async def save_to_database(
         self,
