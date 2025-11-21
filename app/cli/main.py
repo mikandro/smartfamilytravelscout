@@ -1385,6 +1385,160 @@ def kiwi_status():
         console.print("[red]✗ Monthly rate limit exceeded![/red]\n")
 
 
+# ============================================================================
+# Model Pricing Management Commands
+# ============================================================================
+
+@db_app.command("pricing-list")
+def db_pricing_list(
+    service: Optional[str] = typer.Option(None, help="Filter by service (e.g., 'claude')"),
+    model: Optional[str] = typer.Option(None, help="Filter by model name"),
+):
+    """
+    List model pricing configurations from the database.
+    """
+    console.print("\n")
+    console.print(Panel(
+        "[bold]Model Pricing Configuration[/bold]\n\n"
+        "Current pricing for AI models",
+        border_style="blue",
+    ))
+
+    try:
+        from app.models import ModelPricing
+        from sqlalchemy import and_
+
+        db = get_sync_session()
+
+        # Build query with optional filters
+        filters = []
+        if service:
+            filters.append(ModelPricing.service == service)
+        if model:
+            filters.append(ModelPricing.model == model)
+
+        if filters:
+            query = db.query(ModelPricing).filter(and_(*filters)).order_by(
+                ModelPricing.service, ModelPricing.model, ModelPricing.effective_date.desc()
+            )
+        else:
+            query = db.query(ModelPricing).order_by(
+                ModelPricing.service, ModelPricing.model, ModelPricing.effective_date.desc()
+            )
+
+        pricing_list = query.all()
+
+        if not pricing_list:
+            warning("No pricing configurations found")
+            return
+
+        # Create table
+        table = Table(title="Model Pricing", show_header=True, header_style="bold magenta")
+        table.add_column("Service", style="cyan")
+        table.add_column("Model", style="blue")
+        table.add_column("Input ($/M)", style="green", justify="right")
+        table.add_column("Output ($/M)", style="green", justify="right")
+        table.add_column("Effective Date", style="yellow")
+        table.add_column("Notes", style="dim")
+
+        for pricing in pricing_list:
+            table.add_row(
+                pricing.service,
+                pricing.model,
+                f"${pricing.input_cost_per_million:.2f}",
+                f"${pricing.output_cost_per_million:.2f}",
+                pricing.effective_date.strftime("%Y-%m-%d"),
+                (pricing.notes[:50] + "...") if pricing.notes and len(pricing.notes) > 50 else (pricing.notes or ""),
+            )
+
+        console.print(table)
+        console.print()
+        success(f"Found {len(pricing_list)} pricing configuration(s)")
+
+    except Exception as e:
+        handle_error(e, "Failed to list pricing configurations")
+
+
+@db_app.command("pricing-add")
+def db_pricing_add(
+    service: str = typer.Option(..., help="Service name (e.g., 'claude')"),
+    model: str = typer.Option(..., help="Model name (e.g., 'claude-sonnet-4-5-20250929')"),
+    input_cost: float = typer.Option(..., help="Input cost per million tokens (USD)"),
+    output_cost: float = typer.Option(..., help="Output cost per million tokens (USD)"),
+    effective_date: str = typer.Option(
+        None,
+        help="Effective date (YYYY-MM-DD format, defaults to today)",
+    ),
+    notes: Optional[str] = typer.Option(None, help="Additional notes"),
+):
+    """
+    Add or update model pricing configuration.
+    """
+    console.print("\n")
+    console.print(Panel(
+        f"[bold]Add Model Pricing[/bold]\n\n"
+        f"Service: {service}\n"
+        f"Model: {model}\n"
+        f"Input: ${input_cost}/M tokens\n"
+        f"Output: ${output_cost}/M tokens",
+        border_style="blue",
+    ))
+
+    try:
+        from app.models import ModelPricing
+
+        # Parse effective date
+        if effective_date:
+            eff_date = datetime.strptime(effective_date, "%Y-%m-%d")
+        else:
+            eff_date = datetime.now()
+
+        db = get_sync_session()
+
+        # Check if pricing already exists for this service/model/date
+        existing = db.query(ModelPricing).filter_by(
+            service=service,
+            model=model,
+            effective_date=eff_date,
+        ).first()
+
+        if existing:
+            console.print(f"\n[yellow]Pricing already exists for {service}/{model} on {eff_date.date()}[/yellow]")
+            update = typer.confirm("Do you want to update it?")
+            if not update:
+                warning("Operation cancelled")
+                return
+
+            existing.input_cost_per_million = input_cost
+            existing.output_cost_per_million = output_cost
+            if notes:
+                existing.notes = notes
+            db.commit()
+            success(f"Updated pricing for {service}/{model}")
+        else:
+            # Create new pricing
+            new_pricing = ModelPricing(
+                service=service,
+                model=model,
+                input_cost_per_million=input_cost,
+                output_cost_per_million=output_cost,
+                effective_date=eff_date,
+                notes=notes,
+            )
+            db.add(new_pricing)
+            db.commit()
+            success(f"Added pricing for {service}/{model}")
+
+        console.print(f"\n[green]✓ Pricing configured:[/green]")
+        console.print(f"  Input: ${input_cost}/M tokens")
+        console.print(f"  Output: ${output_cost}/M tokens")
+        console.print(f"  Effective: {eff_date.date()}")
+        console.print()
+
+    except Exception as e:
+        handle_error(e, "Failed to add pricing configuration")
+
+
 @app.command()
 def worker():
     """
