@@ -28,8 +28,10 @@ class TestFlightOrchestrator:
             # Mock settings to enable all scrapers
             mock_settings.get_available_scrapers.return_value = ["kiwi", "skyscanner", "ryanair", "wizzair"]
             mock_settings.scraper_failure_threshold = 0.5
+            mock_settings.cache_ttl_flights = 3600
 
-            orchestrator = FlightOrchestrator()
+            # Pass None for redis_client to avoid Redis dependency in tests
+            orchestrator = FlightOrchestrator(redis_client=None)
 
             # Ensure all scrapers are properly initialized (not None)
             if orchestrator.kiwi is None:
@@ -92,16 +94,18 @@ class TestFlightOrchestrator:
         assert orchestrator.ryanair is not None
         assert orchestrator.wizzair is not None
 
-    def test_deduplicate_no_duplicates(self, orchestrator, sample_flights):
+    @pytest.mark.asyncio
+    async def test_deduplicate_no_duplicates(self, orchestrator, sample_flights):
         """Test deduplication with no duplicates."""
-        unique = orchestrator.deduplicate(sample_flights)
+        unique = await orchestrator.deduplicate(sample_flights)
 
         # Should return same number of flights since no duplicates
         assert len(unique) == 2
         assert all("booking_urls" in flight for flight in unique)
         assert all("sources" in flight for flight in unique)
 
-    def test_deduplicate_with_duplicates(self, orchestrator):
+    @pytest.mark.asyncio
+    async def test_deduplicate_with_duplicates(self, orchestrator):
         """Test deduplication with actual duplicates."""
         flights = [
             # Same flight from two sources (within 2-hour window)
@@ -147,7 +151,7 @@ class TestFlightOrchestrator:
             },
         ]
 
-        unique = orchestrator.deduplicate(flights)
+        unique = await orchestrator.deduplicate(flights)
 
         # Should have 2 unique flights (first two merged, third separate)
         assert len(unique) == 2
@@ -170,7 +174,8 @@ class TestFlightOrchestrator:
         # Should track duplicate count
         assert merged["duplicate_count"] == 2
 
-    def test_deduplicate_different_airlines(self, orchestrator):
+    @pytest.mark.asyncio
+    async def test_deduplicate_different_airlines(self, orchestrator):
         """Test that different airlines are not considered duplicates."""
         flights = [
             {
@@ -201,12 +206,13 @@ class TestFlightOrchestrator:
             },
         ]
 
-        unique = orchestrator.deduplicate(flights)
+        unique = await orchestrator.deduplicate(flights)
 
         # Should have 2 unique flights (different airlines)
         assert len(unique) == 2
 
-    def test_deduplicate_outside_time_window(self, orchestrator):
+    @pytest.mark.asyncio
+    async def test_deduplicate_outside_time_window(self, orchestrator):
         """Test that flights outside 2-hour window are not duplicates."""
         flights = [
             {
@@ -237,17 +243,19 @@ class TestFlightOrchestrator:
             },
         ]
 
-        unique = orchestrator.deduplicate(flights)
+        unique = await orchestrator.deduplicate(flights)
 
         # Should have 2 unique flights (outside time window)
         assert len(unique) == 2
 
-    def test_deduplicate_empty_list(self, orchestrator):
+    @pytest.mark.asyncio
+    async def test_deduplicate_empty_list(self, orchestrator):
         """Test deduplication with empty input."""
-        unique = orchestrator.deduplicate([])
+        unique = await orchestrator.deduplicate([])
         assert len(unique) == 0
 
-    def test_deduplicate_missing_fields(self, orchestrator):
+    @pytest.mark.asyncio
+    async def test_deduplicate_missing_fields(self, orchestrator):
         """Test deduplication handles missing fields gracefully."""
         flights = [
             {
@@ -270,7 +278,7 @@ class TestFlightOrchestrator:
             },
         ]
 
-        unique = orchestrator.deduplicate(flights)
+        unique = await orchestrator.deduplicate(flights)
 
         # Should handle gracefully (first skipped, second kept)
         assert len(unique) == 1
@@ -418,7 +426,8 @@ class TestFlightOrchestrator:
         # Should return results when failure rate is at threshold (50% = at threshold, only > triggers exception)
         assert len(result) >= 0
 
-    def test_deduplicate_keeps_cheapest(self, orchestrator):
+    @pytest.mark.asyncio
+    async def test_deduplicate_keeps_cheapest(self, orchestrator):
         """Test that deduplication keeps the cheapest flight."""
         flights = [
             {
@@ -462,7 +471,7 @@ class TestFlightOrchestrator:
             },
         ]
 
-        unique = orchestrator.deduplicate(flights)
+        unique = await orchestrator.deduplicate(flights)
 
         # Should have 1 unique flight (all merged)
         assert len(unique) == 1

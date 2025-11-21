@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import typer
+from redis.asyncio import Redis
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -458,12 +459,26 @@ async def _run_pipeline(
         # Step 3: Scrape flights
         task3 = progress.add_task("[yellow]Scraping flights...", total=None)
 
-        orchestrator = FlightOrchestrator()
+        # Initialize Redis client for caching
+        redis_client = None
+        try:
+            redis_client = await Redis.from_url(str(settings.redis_url))
+            await redis_client.ping()
+            logger.info("Redis connection established for flight caching")
+        except Exception as e:
+            logger.warning(f"Redis connection failed, caching will be disabled: {e}")
+            redis_client = None
+
+        orchestrator = FlightOrchestrator(redis_client=redis_client)
         flights = await orchestrator.scrape_all(
             origins=origin_codes,
             destinations=dest_codes,
             date_ranges=date_ranges,
         )
+
+        # Close Redis connection
+        if redis_client:
+            await redis_client.close()
 
         stats["flights"] = len(flights)
         progress.update(task3, completed=1)
