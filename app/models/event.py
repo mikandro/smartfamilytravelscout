@@ -28,6 +28,9 @@ class Event(Base, TimestampMixin):
 
     # Event details
     title: Mapped[str] = mapped_column(String(200), nullable=False)
+    venue: Mapped[Optional[str]] = mapped_column(
+        String(200), nullable=True, comment="Event venue or location name"
+    )
     event_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     end_date: Mapped[Optional[date]] = mapped_column(
         Date, nullable=True, comment="For multi-day events"
@@ -52,6 +55,14 @@ class Event(Base, TimestampMixin):
         String(50), nullable=False, comment="e.g., 'eventbrite', 'tripadvisor', 'manual'"
     )
     url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Deduplication
+    deduplication_hash: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+        comment="Hash for deduplication based on title, venue, and date"
+    )
 
     # AI scoring
     ai_relevance_score: Mapped[Optional[float]] = mapped_column(
