@@ -188,7 +188,13 @@ poetry run mypy app/
 
 **API** (`app/api/`): FastAPI REST endpoints
 - `main.py`: FastAPI app with lifespan management
-- `routes/web.py`: Web dashboard routes
+- `routes/web.py`: Web dashboard routes (HTML/Jinja2)
+- `routes/v1/`: API v1 endpoints (JSON REST API)
+  - `version.py`: API version information
+  - `health.py`: Health check endpoints
+  - `deals.py`: Deal listing and details
+  - `stats.py`: Statistics endpoints
+- **API Versioning**: URL-based versioning (`/api/v1/...`). See `docs/API_VERSIONING.md`
 
 **Notifications** (`app/notifications/`): Email notifications
 - `email_sender.py`: SMTP email sender with HTML templates
