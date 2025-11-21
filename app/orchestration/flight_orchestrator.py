@@ -63,9 +63,19 @@ class FlightOrchestrator:
         wizzair: WizzAir API scraper
     """
 
-    def __init__(self):
-        """Initialize enabled flight scrapers based on configuration."""
-        self.enabled_scrapers = settings.get_available_scrapers()
+    def __init__(self, enabled_scrapers: Optional[List[str]] = None):
+        """
+        Initialize enabled flight scrapers based on configuration.
+
+        Args:
+            enabled_scrapers: Optional list of scrapers to enable (overrides config).
+                            Valid values: 'kiwi', 'skyscanner', 'ryanair', 'wizzair'
+        """
+        # Use provided scrapers or fall back to configuration
+        if enabled_scrapers is not None:
+            self.enabled_scrapers = enabled_scrapers
+        else:
+            self.enabled_scrapers = settings.get_available_scrapers()
 
         # Initialize only enabled scrapers
         self.kiwi = KiwiClient() if "kiwi" in self.enabled_scrapers else None

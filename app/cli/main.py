@@ -133,6 +133,14 @@ def scrape(
         None,
         help="Specific scraper to use: 'skyscanner', 'ryanair', 'wizzair', or 'all' for all free scrapers",
     ),
+    disable_scraper: Optional[List[str]] = typer.Option(
+        None,
+        help="Disable specific scrapers (e.g., --disable-scraper wizzair --disable-scraper ryanair)",
+    ),
+    enable_scraper: Optional[List[str]] = typer.Option(
+        None,
+        help="Enable specific scrapers (overrides config, e.g., --enable-scraper kiwi)",
+    ),
     save: bool = typer.Option(
         True,
         help="Save results to database",
@@ -148,6 +156,8 @@ def scrape(
         scout scrape --origin MUC --destination LIS
         scout scrape --origin VIE --destination BCN --scraper skyscanner
         scout scrape --origin MUC --destination PRG --departure 2025-12-20 --return 2025-12-27
+        scout scrape --origin MUC --destination LIS --disable-scraper wizzair
+        scout scrape --origin MUC --destination LIS --enable-scraper kiwi
     """
     console.print(Panel(
         "[bold]Quick Flight Scrape (No API Key Required)[/bold]",
@@ -155,7 +165,10 @@ def scrape(
     ))
 
     try:
-        asyncio.run(_run_scrape(origin, destination, departure_date, return_date, scraper, save))
+        asyncio.run(_run_scrape(
+            origin, destination, departure_date, return_date,
+            scraper, save, disable_scraper, enable_scraper
+        ))
     except Exception as e:
         handle_error(e, "Scraping failed")
 
@@ -167,6 +180,8 @@ async def _run_scrape(
     return_date_str: Optional[str],
     scraper_name: Optional[str],
     save: bool,
+    disable_scraper: Optional[List[str]] = None,
+    enable_scraper: Optional[List[str]] = None,
 ):
     """Execute quick scrape with default scrapers."""
     from datetime import date, timedelta
@@ -197,9 +212,27 @@ async def _run_scrape(
         scrapers_to_use = [scraper_name.lower()]
         table.add_row("Scraper", scraper_name.title())
     else:
-        # Use all default (free) scrapers
-        scrapers_to_use = ["skyscanner", "ryanair", "wizzair"]
-        table.add_row("Scrapers", "All free scrapers (Skyscanner, Ryanair, WizzAir)")
+        # Start with scrapers enabled in config
+        scrapers_to_use = settings.get_available_scrapers()
+
+        # Apply runtime enable/disable overrides
+        if enable_scraper:
+            for scraper in enable_scraper:
+                scraper = scraper.lower()
+                if scraper not in scrapers_to_use:
+                    scrapers_to_use.append(scraper)
+
+        if disable_scraper:
+            for scraper in disable_scraper:
+                scraper = scraper.lower()
+                if scraper in scrapers_to_use:
+                    scrapers_to_use.remove(scraper)
+
+        if not scrapers_to_use:
+            console.print("[red]Error: All scrapers have been disabled![/red]")
+            raise typer.Exit(code=1)
+
+        table.add_row("Scrapers", ", ".join([s.title() for s in scrapers_to_use]))
 
     table.add_row("Save to DB", "Yes" if save else "No")
 
@@ -340,6 +373,14 @@ def run(
         None,
         help="Maximum price per person in EUR",
     ),
+    disable_scraper: Optional[List[str]] = typer.Option(
+        None,
+        help="Disable specific scrapers (e.g., --disable-scraper wizzair --disable-scraper ryanair)",
+    ),
+    enable_scraper: Optional[List[str]] = typer.Option(
+        None,
+        help="Enable specific scrapers (overrides config, e.g., --enable-scraper kiwi)",
+    ),
 ):
     """
     Run the full SmartFamilyTravelScout pipeline.
@@ -356,6 +397,7 @@ def run(
         scout run
         scout run --destinations LIS,BCN,PRG --dates next-3-months
         scout run --max-price 150 --no-analyze
+        scout run --disable-scraper wizzair --disable-scraper ryanair
     """
     console.print(Panel(
         "[bold]Starting SmartFamilyTravelScout Pipeline[/bold]",
@@ -363,7 +405,10 @@ def run(
     ))
 
     try:
-        asyncio.run(_run_pipeline(destinations, dates, analyze, max_price))
+        asyncio.run(_run_pipeline(
+            destinations, dates, analyze, max_price,
+            disable_scraper, enable_scraper
+        ))
     except Exception as e:
         handle_error(e, "Pipeline execution failed")
 
@@ -373,6 +418,8 @@ async def _run_pipeline(
     dates: str,
     analyze: bool,
     max_price: Optional[float],
+    disable_scraper: Optional[List[str]] = None,
+    enable_scraper: Optional[List[str]] = None,
 ):
     """Execute the main pipeline."""
     from app.orchestration.flight_orchestrator import FlightOrchestrator
@@ -380,6 +427,30 @@ async def _run_pipeline(
     from app.orchestration.event_matcher import EventMatcher
     from app.models.airport import Airport
     from app.utils.date_utils import get_school_holiday_periods
+
+    # Apply scraper configuration overrides temporarily
+    original_scrapers = settings.get_available_scrapers()
+    scrapers_to_use = original_scrapers.copy()
+
+    # Apply runtime enable/disable overrides
+    if enable_scraper:
+        for scraper in enable_scraper:
+            scraper = scraper.lower()
+            if scraper not in scrapers_to_use:
+                scrapers_to_use.append(scraper)
+
+    if disable_scraper:
+        for scraper in disable_scraper:
+            scraper = scraper.lower()
+            if scraper in scrapers_to_use:
+                scrapers_to_use.remove(scraper)
+
+    if not scrapers_to_use:
+        console.print("[red]Error: All scrapers have been disabled![/red]")
+        raise typer.Exit(code=1)
+
+    if scrapers_to_use != original_scrapers:
+        info(f"Using scrapers: {', '.join([s.title() for s in scrapers_to_use])}")
 
     stats = {
         "flights": 0,
@@ -440,7 +511,7 @@ async def _run_pipeline(
         # Step 3: Scrape flights
         task3 = progress.add_task("[yellow]Scraping flights...", total=None)
 
-        orchestrator = FlightOrchestrator()
+        orchestrator = FlightOrchestrator(enabled_scrapers=scrapers_to_use)
         flights = await orchestrator.scrape_all(
             origins=origin_codes,
             destinations=dest_codes,
@@ -703,6 +774,17 @@ def config_show():
     table.add_row("Enable AI Scoring", "✓" if settings.enable_ai_scoring else "✗")
     table.add_row("Enable Notifications", "✓" if settings.enable_notifications else "✗")
     table.add_row("Enable Metrics", "✓" if settings.enable_metrics else "✗")
+
+    # Scraper flags
+    table.add_row("", "")  # Separator
+    table.add_row("[bold]Enabled Scrapers[/bold]", "")
+    table.add_row("Kiwi.com", "✓" if settings.use_kiwi_scraper else "✗")
+    table.add_row("Skyscanner", "✓" if settings.use_skyscanner_scraper else "✗")
+    table.add_row("Ryanair", "✓" if settings.use_ryanair_scraper else "✗")
+    table.add_row("WizzAir", "✓" if settings.use_wizzair_scraper else "✗")
+
+    available_scrapers = settings.get_available_scrapers()
+    table.add_row("Available (with API keys)", ", ".join([s.title() for s in available_scrapers]) if available_scrapers else "None")
 
     console.print(table)
     console.print("\n")
