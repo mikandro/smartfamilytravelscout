@@ -224,6 +224,29 @@ All settings use Pydantic Settings in `app/config.py`:
 - Optional: `KIWI_API_KEY`, `EVENTBRITE_API_KEY`, SMTP config, feature flags
 - Access via: `from app.config import settings`
 
+### Logging and Log Rotation
+
+The application uses Python's logging with automatic log rotation to prevent disk space exhaustion.
+
+**Configuration Options**:
+- `LOG_LEVEL`: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- `LOG_MAX_BYTES`: Maximum log file size before rotation (default: 10MB)
+- `LOG_BACKUP_COUNT`: Number of backup log files to keep (default: 5)
+
+**Two Rotation Strategies**:
+
+1. **Application-level** (default): Python `RotatingFileHandler`
+   - Automatic size-based rotation
+   - Works on all platforms
+   - No system dependencies
+
+2. **System-level** (Linux): `logrotate` utility
+   - Time-based rotation (daily, weekly)
+   - Compression support
+   - See `deployment/logrotate.conf`
+
+For detailed documentation, see [`docs/logging.md`](docs/logging.md).
+
 ## Important Implementation Details
 
 ### Async/Sync Pattern

@@ -27,6 +27,16 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="Logging level")
     environment: str = Field(default="development", description="Environment name")
 
+    # Logging Rotation
+    log_max_bytes: int = Field(
+        default=10485760,  # 10MB
+        description="Maximum size of log file in bytes before rotation"
+    )
+    log_backup_count: int = Field(
+        default=5,
+        description="Number of backup log files to keep"
+    )
+
     # Database
     database_url: PostgresDsn = Field(
         ...,

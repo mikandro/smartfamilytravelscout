@@ -7,6 +7,7 @@ human-readable format for development.
 
 import json
 import logging
+import logging.handlers
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -128,6 +129,8 @@ def setup_logging(
     json_format: bool = False,
     log_file: str | None = None,
     console_output: bool = True,
+    max_bytes: int = 10485760,  # 10MB
+    backup_count: int = 5,
 ) -> None:
     """
     Configure structured logging for the application.
@@ -137,6 +140,8 @@ def setup_logging(
         json_format: Use JSON format for logs (recommended for production)
         log_file: Optional path to log file. If None, no file logging.
         console_output: Enable console output (default: True)
+        max_bytes: Maximum size of log file in bytes before rotation (default: 10MB)
+        backup_count: Number of backup log files to keep (default: 5)
 
     Examples:
         >>> # Development setup with colored console output
@@ -147,6 +152,9 @@ def setup_logging(
 
         >>> # Disable console output (file only)
         >>> setup_logging(level="INFO", log_file="logs/app.log", console_output=False)
+
+        >>> # Custom rotation settings (50MB files, 10 backups)
+        >>> setup_logging(level="INFO", log_file="logs/app.log", max_bytes=52428800, backup_count=10)
     """
     # Validate log level
     valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -177,13 +185,19 @@ def setup_logging(
         console_handler.setFormatter(formatter)
         root_logger.addHandler(console_handler)
 
-    # File handler
+    # File handler with rotation
     if log_file:
         # Create log directory if it doesn't exist
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        # Use RotatingFileHandler to prevent log files from growing indefinitely
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
         file_handler.setLevel(getattr(logging, level.upper()))
 
         # Always use JSON format for file logging
@@ -197,7 +211,8 @@ def setup_logging(
     # Log initial message
     logging.info(
         f"Logging configured: level={level}, json_format={json_format}, "
-        f"log_file={log_file}, console_output={console_output}"
+        f"log_file={log_file}, console_output={console_output}, "
+        f"max_bytes={max_bytes}, backup_count={backup_count}"
     )
 
 

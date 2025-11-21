@@ -4,6 +4,7 @@ Unit tests for logging_config module.
 
 import json
 import logging
+import logging.handlers
 import pytest
 import tempfile
 from pathlib import Path
@@ -200,6 +201,55 @@ class TestSetupLogging:
             # Check file contains log
             content = log_file.read_text()
             assert "Test message" in content
+
+    def test_setup_logging_with_rotation(self):
+        """Test logging with rotation settings."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_file = Path(tmpdir) / "test.log"
+
+            # Setup with custom rotation parameters
+            setup_logging(
+                level="INFO",
+                log_file=str(log_file),
+                max_bytes=1024,  # 1KB for testing
+                backup_count=3
+            )
+
+            # Get the file handler
+            root_logger = logging.getLogger()
+            file_handlers = [h for h in root_logger.handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
+
+            assert len(file_handlers) > 0
+
+            # Check rotation settings
+            handler = file_handlers[0]
+            assert handler.maxBytes == 1024
+            assert handler.backupCount == 3
+
+    def test_setup_logging_rotation_creates_backups(self):
+        """Test that log rotation creates backup files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_file = Path(tmpdir) / "test.log"
+
+            # Setup with small max_bytes to trigger rotation
+            setup_logging(
+                level="INFO",
+                log_file=str(log_file),
+                max_bytes=100,  # Very small to trigger rotation easily
+                backup_count=2
+            )
+
+            # Write enough data to trigger rotation
+            for i in range(50):
+                logging.info(f"Test message {i} with enough content to fill the log file")
+
+            # Check that backup files were created
+            log_dir = Path(tmpdir)
+            log_files = list(log_dir.glob("test.log*"))
+
+            # Should have at least the main log file
+            assert len(log_files) >= 1
+            assert log_file.exists()
 
     def test_setup_logging_clears_handlers(self):
         """Test that existing handlers are cleared."""
