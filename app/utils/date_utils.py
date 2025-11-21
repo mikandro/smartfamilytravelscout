@@ -141,13 +141,18 @@ BAVARIA_PUBLIC_HOLIDAYS_2025_2026: List[date] = [
 ]
 
 
-def is_school_holiday(check_date: date, holidays: List[Holiday] | None = None) -> bool:
+def is_school_holiday(
+    check_date: date,
+    holidays: List[Holiday] | None = None,
+    region: str = "Bavaria"
+) -> bool:
     """
     Check if a date falls within school holidays.
 
     Args:
         check_date: The date to check
-        holidays: List of Holiday objects. If None, uses Bavaria 2025-2026 holidays.
+        holidays: List of Holiday objects. If None, loads holidays for specified region.
+        region: German state name (e.g., "Bavaria", "Berlin"). Default: "Bavaria"
 
     Returns:
         True if the date is within a school holiday period, False otherwise
@@ -159,23 +164,31 @@ def is_school_holiday(check_date: date, holidays: List[Holiday] | None = None) -
         False
         >>> is_school_holiday(date(2025, 12, 25))  # Christmas break
         True
+        >>> is_school_holiday(date(2025, 8, 15), region="Berlin")
+        True
     """
     if check_date is None:
         return False
 
     if holidays is None:
-        holidays = BAVARIA_HOLIDAYS_2025_2026
+        from app.utils.german_school_holidays import get_holidays_for_region
+        holidays = get_holidays_for_region(region)
 
     return any(holiday.contains_date(check_date) for holiday in holidays)
 
 
-def get_upcoming_holidays(months: int = 3, from_date: date | None = None) -> List[Holiday]:
+def get_upcoming_holidays(
+    months: int = 3,
+    from_date: date | None = None,
+    region: str = "Bavaria"
+) -> List[Holiday]:
     """
     Get school holidays in the next N months.
 
     Args:
         months: Number of months to look ahead (default: 3)
         from_date: Starting date for the search. If None, uses today.
+        region: German state name (e.g., "Bavaria", "Berlin"). Default: "Bavaria"
 
     Returns:
         List of Holiday objects within the specified period
@@ -187,6 +200,9 @@ def get_upcoming_holidays(months: int = 3, from_date: date | None = None) -> Lis
         >>> holidays = get_upcoming_holidays(months=1, from_date=date(2025, 7, 1))
         >>> any('Summer' in h.name for h in holidays)
         True
+        >>> holidays = get_upcoming_holidays(months=6, region="Berlin")
+        >>> len(holidays) >= 1
+        True
     """
     if from_date is None:
         from_date = date.today()
@@ -196,9 +212,12 @@ def get_upcoming_holidays(months: int = 3, from_date: date | None = None) -> Lis
 
     end_date = from_date + timedelta(days=months * 30)  # Approximate
 
+    from app.utils.german_school_holidays import get_holidays_for_region
+    all_holidays = get_holidays_for_region(region)
+
     upcoming = [
         holiday
-        for holiday in BAVARIA_HOLIDAYS_2025_2026
+        for holiday in all_holidays
         if holiday.start_date >= from_date and holiday.start_date <= end_date
     ]
 
@@ -439,6 +458,7 @@ def get_school_holiday_periods(
     start_date: date | None = None,
     end_date: date | None = None,
     holidays: List[Holiday] | None = None,
+    region: str = "Bavaria",
 ) -> List[Tuple[date, date]]:
     """
     Get school holiday periods within a date range.
@@ -446,7 +466,8 @@ def get_school_holiday_periods(
     Args:
         start_date: Start of the search range. If None, uses today.
         end_date: End of the search range. If None, uses 6 months from start.
-        holidays: List of Holiday objects. If None, uses Bavaria 2025-2026 holidays.
+        holidays: List of Holiday objects. If None, loads holidays for specified region.
+        region: German state name (e.g., "Bavaria", "Berlin"). Default: "Bavaria"
 
     Returns:
         List of tuples (start_date, end_date) for holidays in the range
@@ -454,6 +475,9 @@ def get_school_holiday_periods(
     Examples:
         >>> periods = get_school_holiday_periods(date(2025, 7, 1), date(2025, 9, 1))
         >>> len(periods) >= 1  # Should include summer holidays
+        True
+        >>> periods = get_school_holiday_periods(date(2025, 7, 1), date(2025, 9, 1), region="Berlin")
+        >>> len(periods) >= 1
         True
     """
     if start_date is None:
@@ -463,7 +487,8 @@ def get_school_holiday_periods(
         end_date = start_date + timedelta(days=180)  # 6 months
 
     if holidays is None:
-        holidays = BAVARIA_HOLIDAYS_2025_2026
+        from app.utils.german_school_holidays import get_holidays_for_region
+        holidays = get_holidays_for_region(region)
 
     # Filter holidays that overlap with the date range
     matching_holidays = [

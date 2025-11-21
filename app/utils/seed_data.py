@@ -126,100 +126,79 @@ def seed_airports(db: Session) -> None:
     logger.info("Airport seeding completed")
 
 
-def seed_school_holidays(db: Session) -> None:
+def seed_school_holidays(db: Session, regions: list[str] | None = None) -> None:
     """
-    Seed Bavaria school holidays for 2025-2026.
-    Includes major holidays and long weekends.
-    """
-    holidays_data = [
-        # 2025 holidays
-        {
-            "name": "Easter Break 2025",
-            "start_date": date(2025, 4, 14),
-            "end_date": date(2025, 4, 25),
-            "year": 2025,
-            "holiday_type": "major",
-            "region": "Bavaria",
-        },
-        {
-            "name": "Whitsun Break 2025",
-            "start_date": date(2025, 6, 10),
-            "end_date": date(2025, 6, 20),
-            "year": 2025,
-            "holiday_type": "major",
-            "region": "Bavaria",
-        },
-        {
-            "name": "Summer Holiday 2025",
-            "start_date": date(2025, 8, 1),
-            "end_date": date(2025, 9, 15),
-            "year": 2025,
-            "holiday_type": "major",
-            "region": "Bavaria",
-        },
-        {
-            "name": "Autumn Break 2025",
-            "start_date": date(2025, 10, 27),
-            "end_date": date(2025, 11, 7),
-            "year": 2025,
-            "holiday_type": "major",
-            "region": "Bavaria",
-        },
-        {
-            "name": "Christmas Break 2025/2026",
-            "start_date": date(2025, 12, 22),
-            "end_date": date(2026, 1, 10),
-            "year": 2025,
-            "holiday_type": "major",
-            "region": "Bavaria",
-        },
-        # 2026 holidays
-        {
-            "name": "Winter Break 2026",
-            "start_date": date(2026, 2, 16),
-            "end_date": date(2026, 2, 20),
-            "year": 2026,
-            "holiday_type": "long_weekend",
-            "region": "Bavaria",
-        },
-        {
-            "name": "Easter Break 2026",
-            "start_date": date(2026, 3, 30),
-            "end_date": date(2026, 4, 10),
-            "year": 2026,
-            "holiday_type": "major",
-            "region": "Bavaria",
-        },
-        {
-            "name": "Whitsun Break 2026",
-            "start_date": date(2026, 5, 26),
-            "end_date": date(2026, 6, 5),
-            "year": 2026,
-            "holiday_type": "major",
-            "region": "Bavaria",
-        },
-    ]
+    Seed school holidays for German states (2025-2026).
 
-    for holiday_data in holidays_data:
-        # Check if holiday already exists
-        existing = (
-            db.query(SchoolHoliday)
-            .filter_by(name=holiday_data["name"], start_date=holiday_data["start_date"])
-            .first()
-        )
-        if existing:
-            logger.info(f"Holiday {holiday_data['name']} already exists, skipping")
+    Args:
+        db: Database session
+        regions: List of specific regions to seed. If None, seeds all 16 German states.
+                 Examples: ["Bavaria"], ["Bavaria", "Berlin"], or None for all.
+
+    Examples:
+        # Seed all regions
+        seed_school_holidays(db)
+
+        # Seed only Bavaria
+        seed_school_holidays(db, regions=["Bavaria"])
+
+        # Seed multiple regions
+        seed_school_holidays(db, regions=["Bavaria", "Berlin", "Hamburg"])
+    """
+    from app.utils.german_school_holidays import GERMAN_HOLIDAYS_2025_2026, get_all_regions
+
+    # If no regions specified, seed all
+    if regions is None:
+        regions = get_all_regions()
+
+    total_added = 0
+    total_skipped = 0
+
+    for region in regions:
+        if region not in GERMAN_HOLIDAYS_2025_2026:
+            logger.warning(f"Region '{region}' not found in holiday data, skipping")
             continue
 
-        holiday = SchoolHoliday(**holiday_data)
-        db.add(holiday)
-        logger.info(
-            f"Created holiday: {holiday_data['name']} "
-            f"({holiday_data['start_date']} to {holiday_data['end_date']})"
-        )
+        logger.info(f"Seeding holidays for {region}...")
+        holidays = GERMAN_HOLIDAYS_2025_2026[region]
+
+        for holiday in holidays:
+            # Check if holiday already exists for this region
+            existing = (
+                db.query(SchoolHoliday)
+                .filter_by(
+                    name=holiday.name,
+                    start_date=holiday.start_date,
+                    region=holiday.region
+                )
+                .first()
+            )
+            if existing:
+                logger.debug(f"Holiday {holiday.name} ({region}) already exists, skipping")
+                total_skipped += 1
+                continue
+
+            # Create holiday record
+            holiday_record = SchoolHoliday(
+                name=holiday.name,
+                start_date=holiday.start_date,
+                end_date=holiday.end_date,
+                year=holiday.start_date.year,
+                holiday_type=holiday.holiday_type,
+                region=holiday.region,
+            )
+            db.add(holiday_record)
+            logger.info(
+                f"Created holiday: {holiday.name} ({region}) "
+                f"({holiday.start_date} to {holiday.end_date})"
+            )
+            total_added += 1
 
     db.commit()
-    logger.info("School holiday seeding completed")
+    logger.info(
+        f"School holiday seeding completed: {total_added} added, "
+        f"{total_skipped} skipped across {len(regions)} region(s)"
+    )
 
 
 def seed_user_preferences(db: Session) -> None:
