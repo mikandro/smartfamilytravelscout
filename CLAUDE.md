@@ -29,6 +29,20 @@ The default scrapers work out of the box - no configuration needed!
 
 ### Setup & Installation
 
+**🚀 Automated Setup (Recommended):**
+
+For new contributors, use the automated setup script that handles all installation steps:
+
+```bash
+./setup.sh
+```
+
+This script automates the entire setup process including dependency installation, Docker services, database migrations, and seeding.
+
+**Manual Setup:**
+
+If you prefer manual installation or are setting up specific components:
+
 ```bash
 # Install dependencies
 poetry install

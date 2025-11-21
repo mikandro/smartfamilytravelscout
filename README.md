@@ -82,12 +82,45 @@ smartfamilytravelscout/
 
 ## Quick Start
 
+### 🚀 Automated Setup (Recommended for New Users)
+
+The easiest way to get started is to use our automated setup script:
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/smartfamilytravelscout.git
+cd smartfamilytravelscout
+
+# Run the automated setup script
+./setup.sh
+```
+
+The setup script will automatically:
+- ✅ Check and install prerequisites (Poetry, Playwright)
+- ✅ Create environment configuration file
+- ✅ Install all Python dependencies
+- ✅ Install browser drivers for web scraping
+- ✅ Start Docker services (PostgreSQL, Redis)
+- ✅ Run database migrations
+- ✅ Seed database with airports and sample data
+- ✅ Verify installation
+
+**No API keys required to start!** You can immediately begin using the default scrapers (Skyscanner, Ryanair, WizzAir).
+
+After setup completes, try:
+```bash
+poetry run scout scrape --origin MUC --destination BCN
+```
+
 ### Prerequisites
 
 - Docker & Docker Compose
 - Git
+- Python 3.11+ (for development setup)
 
-### Installation
+### Manual Installation
+
+If you prefer to set up manually or already have the prerequisites:
 
 1. **Clone the repository**
    ```bash
