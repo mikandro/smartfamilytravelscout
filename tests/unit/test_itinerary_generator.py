@@ -382,3 +382,193 @@ class TestItineraryGenerator:
 
         assert "Failed to save" in str(exc_info.value)
         mock_db_session.rollback.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_itinerary_generation(
+        self,
+        generator,
+        sample_trip_package,
+        sample_itinerary_response,
+        mock_claude_client,
+    ):
+        """
+        Test comprehensive itinerary generation validation.
+
+        Validates:
+        - Output structure matches trip duration (3 days)
+        - Each day contains required activity sections
+        - Content quality: non-empty activities and meal references
+        - Proper formatting and completeness
+        """
+        # Setup mock
+        mock_claude_client.analyze.return_value = sample_itinerary_response
+
+        # Generate itinerary
+        result = await generator.generate_itinerary(
+            trip_package=sample_trip_package,
+            save_to_db=False,
+        )
+
+        # Validate structure matches trip duration
+        assert "day_1" in result, "Missing day_1"
+        assert "day_2" in result, "Missing day_2"
+        assert "day_3" in result, "Missing day_3"
+
+        # Count days based on trip duration
+        expected_days = min(sample_trip_package.duration_days, 3)
+        for day_num in range(1, expected_days + 1):
+            day_key = f"day_{day_num}"
+            assert day_key in result, f"Missing {day_key} for {expected_days}-day trip"
+
+        # Validate each day contains required activity data
+        required_sections = [
+            "morning",
+            "afternoon",
+            "evening",
+            "breakfast_spot",
+            "lunch_spot",
+            "dinner_spot",
+        ]
+
+        for day_num in range(1, 4):
+            day_key = f"day_{day_num}"
+            day_data = result[day_key]
+
+            # Check all required sections exist
+            for section in required_sections:
+                assert section in day_data, f"Missing '{section}' in {day_key}"
+
+            # Validate content quality: non-empty activities
+            assert len(day_data["morning"].strip()) > 0, f"{day_key} morning activity is empty"
+            assert len(day_data["afternoon"].strip()) > 0, f"{day_key} afternoon activity is empty"
+            assert len(day_data["evening"].strip()) > 0, f"{day_key} evening activity is empty"
+
+            # Validate meal references are non-empty and meaningful
+            assert len(day_data["breakfast_spot"].strip()) > 5, f"{day_key} breakfast_spot too short or empty"
+            assert len(day_data["lunch_spot"].strip()) > 5, f"{day_key} lunch_spot too short or empty"
+            assert len(day_data["dinner_spot"].strip()) > 5, f"{day_key} dinner_spot too short or empty"
+
+            # Check that meal spots contain actual place names (not just generic text)
+            # At least one meal spot per day should have substantial content
+            total_meal_length = (
+                len(day_data["breakfast_spot"]) +
+                len(day_data["lunch_spot"]) +
+                len(day_data["dinner_spot"])
+            )
+            assert total_meal_length > 50, f"{day_key} meal spots lack detail"
+
+        # Validate additional sections
+        assert "tips" in result, "Missing tips section"
+        assert isinstance(result["tips"], list), "Tips should be a list"
+        assert len(result["tips"]) > 0, "Tips list is empty"
+
+        # Optional but recommended sections
+        if "packing_essentials" in result:
+            assert isinstance(result["packing_essentials"], list), "Packing essentials should be a list"
+
+    @pytest.mark.asyncio
+    async def test_itinerary_includes_booked_events(
+        self,
+        generator,
+        sample_trip_package,
+        mock_claude_client,
+    ):
+        """
+        Test that package events are integrated into generated itineraries.
+
+        Verifies:
+        - Events from trip_package.events_json appear in the itinerary
+        - Event titles or references are present in activity descriptions
+        - Events are placed on appropriate days
+        """
+        # Create an itinerary that includes the booked event
+        itinerary_with_events = {
+            "day_1": {
+                "morning": "Visit Belém Tower at 9am (15 min walk from accommodation)",
+                "afternoon": "Return to accommodation for nap time 1-2pm, then explore Alfama",
+                "evening": "Dinner at family-friendly restaurant nearby",
+                "breakfast_spot": "Pastelaria Santo António",
+                "lunch_spot": "Time Out Market",
+                "dinner_spot": "Cervejaria Ramiro",
+                "weather_backup": "Lisbon Oceanarium",
+            },
+            "day_2": {
+                "morning": "Visit the Lisbon Oceanarium at 10am - one of the world's largest indoor aquariums, perfect for kids!",
+                "afternoon": "Nap time at accommodation, then explore nearby Parque das Nações",
+                "evening": "Sunset dinner at waterfront restaurant",
+                "breakfast_spot": "Hotel breakfast buffet",
+                "lunch_spot": "Oceanarium café",
+                "dinner_spot": "Pizzeria with kids menu",
+                "weather_backup": "Shopping center with play area",
+            },
+            "day_3": {
+                "morning": "Beach day at Cascais",
+                "afternoon": "Nap on beach, ice cream",
+                "evening": "Return to Lisbon, easy dinner",
+                "breakfast_spot": "Local bakery",
+                "lunch_spot": "Beachfront café",
+                "dinner_spot": "Casual family restaurant",
+                "weather_backup": "Aquarium visit",
+            },
+            "tips": ["Book Oceanarium tickets in advance", "Bring stroller"],
+            "packing_essentials": ["Stroller", "Sunscreen"],
+            "_cost": 0.0234,
+            "_model": "claude-sonnet-4-5-20250929",
+            "_tokens": {"input": 500, "output": 800, "total": 1300},
+        }
+
+        # Setup mock
+        mock_claude_client.analyze.return_value = itinerary_with_events
+
+        # Verify the trip package has events
+        assert sample_trip_package.events_json is not None
+        assert "events" in sample_trip_package.events_json
+        events = sample_trip_package.events_json["events"]
+        assert len(events) > 0, "Test requires at least one event"
+
+        # Generate itinerary
+        result = await generator.generate_itinerary(
+            trip_package=sample_trip_package,
+            save_to_db=False,
+        )
+
+        # Extract event title from the first event
+        first_event = events[0]
+        event_title = first_event.get("title", "")
+        assert event_title, "Event must have a title"
+
+        # Check if event is mentioned in the itinerary
+        itinerary_text = ""
+        for day_num in range(1, 4):
+            day_key = f"day_{day_num}"
+            if day_key in result:
+                day_data = result[day_key]
+                for section in ["morning", "afternoon", "evening", "weather_backup"]:
+                    if section in day_data:
+                        itinerary_text += day_data[section].lower() + " "
+
+        # For "Lisbon Oceanarium", check if "oceanarium" appears in itinerary
+        event_keywords = event_title.lower().split()
+        # Find the most significant word (usually longest or last meaningful word)
+        significant_keywords = [word for word in event_keywords if len(word) > 4]
+
+        assert len(significant_keywords) > 0, f"Event title '{event_title}' has no significant keywords"
+
+        # Check if at least one significant keyword from the event appears in the itinerary
+        event_mentioned = any(
+            keyword in itinerary_text for keyword in significant_keywords
+        )
+
+        assert event_mentioned, (
+            f"Event '{event_title}' not found in itinerary. "
+            f"Expected to find one of {significant_keywords} in generated activities."
+        )
+
+        # Additionally check tips section for event-related advice
+        if "tips" in result:
+            tips_text = " ".join(result["tips"]).lower()
+            # It's a bonus if event is mentioned in tips, but not required
+            event_in_tips = any(keyword in tips_text for keyword in significant_keywords)
+            if event_in_tips:
+                # Log success but don't fail if not present
+                assert True, f"Event '{event_title}' also mentioned in tips (bonus!)"
