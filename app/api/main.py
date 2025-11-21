@@ -11,7 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import Response
 import redis.asyncio as aioredis
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from app import __version__, __app_name__
 from app.config import settings
@@ -147,6 +149,18 @@ async def health_check() -> Dict[str, Any]:
     }
 
     return JSONResponse(content=response, status_code=status_code)
+
+
+# Metrics endpoint for Prometheus
+@app.get("/metrics", tags=["Monitoring"])
+async def metrics() -> Response:
+    """
+    Prometheus metrics endpoint.
+
+    Returns metrics in Prometheus exposition format for scraping by Prometheus server.
+    Includes scraper performance, API usage, error rates, and system health metrics.
+    """
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # API root endpoint (moved to /api)

@@ -8,6 +8,7 @@ featuring Redis-based caching, comprehensive cost tracking, and robust error han
 import hashlib
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -22,6 +23,12 @@ from tenacity import (
 )
 
 from app.models.api_cost import ApiCost
+from app.monitoring.metrics import (
+    claude_api_calls_total,
+    claude_api_tokens_total,
+    claude_api_cost_total,
+    claude_api_duration_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,8 +147,18 @@ class ClaudeClient:
                 f"max_tokens={max_tokens}, operation={operation})"
             )
 
+            # Track API call start time
+            api_start_time = time.time()
+
             response = await self._call_api_with_retry(
                 full_prompt, max_tokens, temperature
+            )
+
+            # Track API call duration
+            api_duration = time.time() - api_start_time
+            analyzer = operation or "unknown"
+            claude_api_duration_seconds.labels(model=self.model, analyzer=analyzer).observe(
+                api_duration
             )
 
             # Parse response
@@ -165,6 +182,16 @@ class ClaudeClient:
                 "output": response.usage.output_tokens,
                 "total": response.usage.input_tokens + response.usage.output_tokens,
             }
+
+            # Track Prometheus metrics
+            claude_api_calls_total.labels(model=self.model, analyzer=analyzer).inc()
+            claude_api_tokens_total.labels(model=self.model, token_type="input").inc(
+                response.usage.input_tokens
+            )
+            claude_api_tokens_total.labels(model=self.model, token_type="output").inc(
+                response.usage.output_tokens
+            )
+            claude_api_cost_total.labels(model=self.model).inc(cost)
 
             # Cache response
             if use_cache:

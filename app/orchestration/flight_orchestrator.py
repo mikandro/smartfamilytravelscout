@@ -31,6 +31,14 @@ from app.database import get_async_session_context
 from app.models.airport import Airport
 from app.models.flight import Flight
 from app.models.scraping_job import ScrapingJob
+from app.monitoring.decorators import track_scraper_metrics
+from app.monitoring.metrics import (
+    scraper_requests_total,
+    scraper_duration_seconds,
+    scraping_errors_total,
+    active_scraping_jobs,
+    flights_discovered_total,
+)
 from app.scrapers.kiwi_scraper import KiwiClient
 from app.scrapers.ryanair_scraper import RyanairScraper
 from app.scrapers.skyscanner_scraper import SkyscannerScraper
@@ -272,12 +280,19 @@ class FlightOrchestrator:
         Returns:
             List of normalized flight dictionaries, or empty list if scraping fails
         """
+        import time
+
         departure_date, return_date = dates
 
         logger.info(
             f"[{scraper_name}] Scraping {origin} → {destination}, "
             f"{departure_date} to {return_date}"
         )
+
+        # Track active jobs
+        active_scraping_jobs.labels(scraper=scraper_name).inc()
+        start_time = time.time()
+        status = "success"
 
         try:
             # Call appropriate scraper method based on type
@@ -381,14 +396,32 @@ class FlightOrchestrator:
                 return []
 
             logger.info(f"[{scraper_name}] Found {len(flights)} flights")
+
+            # Track discovered flights
+            if flights:
+                flights_discovered_total.labels(
+                    scraper=scraper_name, origin=origin, destination=destination
+                ).inc(len(flights))
+
             return flights
 
         except Exception as e:
+            status = "failure"
+            error_type = type(e).__name__
+            scraping_errors_total.labels(scraper=scraper_name, error_type=error_type).inc()
+
             logger.error(
                 f"[{scraper_name}] Scraping failed for {origin}→{destination}: {e}",
                 exc_info=True,
             )
             return []
+
+        finally:
+            # Track metrics
+            duration = time.time() - start_time
+            scraper_duration_seconds.labels(scraper=scraper_name).observe(duration)
+            scraper_requests_total.labels(scraper=scraper_name, status=status).inc()
+            active_scraping_jobs.labels(scraper=scraper_name).dec()
 
     def deduplicate(self, flights: List[Dict]) -> List[Dict]:
         """
