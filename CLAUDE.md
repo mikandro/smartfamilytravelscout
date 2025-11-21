@@ -131,7 +131,28 @@ poetry run ruff check app/
 
 # Type checking
 poetry run mypy app/
+
+# Pre-commit hooks (automated checks before commits)
+# Install pre-commit hooks (one-time setup)
+poetry run pre-commit install
+
+# Run hooks manually on all files
+poetry run pre-commit run --all-files
+
+# Run hooks on staged files only
+poetry run pre-commit run
+
+# Update hooks to latest versions
+poetry run pre-commit autoupdate
 ```
+
+**Pre-commit Hooks**: The project uses pre-commit hooks to automatically enforce code quality standards before each commit. The hooks include:
+- **File checks**: Trailing whitespace, file endings, YAML/TOML/JSON validation, large file detection, merge conflicts, private key detection
+- **Black**: Python code formatter (line-length: 100)
+- **Ruff**: Fast Python linter with auto-fix capabilities
+- **MyPy**: Static type checker with comprehensive type stubs
+
+After cloning the repository, run `poetry run pre-commit install` to set up the hooks locally.
 
 ## Architecture Overview
 

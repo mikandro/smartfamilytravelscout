@@ -1,0 +1,100 @@
+# Pre-commit hooks configuration for SmartFamilyTravelScout
+# See https://pre-commit.com for more information
+
+default_language_version:
+  python: python3.11
+
+repos:
+  # Pre-commit hooks for basic file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      # Prevent large files from being committed
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      # Check for files that would conflict in case-insensitive filesystems
+      - id: check-case-conflict
+      # Check for merge conflicts
+      - id: check-merge-conflict
+      # Check for debugger imports and py37+ breakpoint() calls
+      - id: debug-statements
+      # Check for private keys
+      - id: detect-private-key
+      # Make sure files end in a newline and only a newline
+      - id: end-of-file-fixer
+        exclude: '\.txt$'
+      # Trim trailing whitespace
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      # Check YAML files for parseable syntax
+      - id: check-yaml
+      # Check TOML files for parseable syntax
+      - id: check-toml
+      # Check JSON files for parseable syntax
+      - id: check-json
+      # Sort entries in requirements.txt files
+      - id: requirements-txt-fixer
+      # Check that all Python files are valid syntax
+      - id: check-ast
+      # Check for duplicate keys in Python dictionaries
+      - id: check-builtin-literals
+      # Validate Python docstrings
+      - id: check-docstring-first
+      # Fix UTF-8 byte order marker
+      - id: fix-byte-order-marker
+      # Fix Python encoding pragma
+      - id: fix-encoding-pragma
+        args: [--remove]
+      # Check for mixed line endings
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # Black - Python code formatter
+  - repo: https://github.com/psf/black
+    rev: 24.1.1
+    hooks:
+      - id: black
+        language_version: python3.11
+        args: [--config=pyproject.toml]
+
+  # Ruff - Fast Python linter with auto-fix
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.2.0
+    hooks:
+      # Run the linter
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      # Run the formatter (ruff format is similar to black)
+      - id: ruff-format
+
+  # MyPy - Static type checker
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - types-requests
+          - types-python-dateutil
+          - types-pytz
+          - types-redis
+          - pydantic
+          - sqlalchemy[mypy]
+        args: [--config-file=pyproject.toml, --ignore-missing-imports]
+        exclude: ^(tests/|migrations/|examples/)
+
+# Global excludes
+exclude: |
+  (?x)^(
+      \.git/.*|
+      \.mypy_cache/.*|
+      \.pytest_cache/.*|
+      \.ruff_cache/.*|
+      \.venv/.*|
+      venv/.*|
+      __pycache__/.*|
+      \.eggs/.*|
+      \.tox/.*|
+      build/.*|
+      dist/.*|
+      alembic/versions/.*
+  )$
