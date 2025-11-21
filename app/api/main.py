@@ -163,16 +163,17 @@ async def api_root() -> Dict[str, str]:
 
 # Import and include routers
 from app.api.routes import web
+from app.api.routes import api_deals, api_flights, api_packages, api_search, api_stats
 
 # Include web dashboard routes (handles /, /deals, /preferences, /stats)
 app.include_router(web.router, tags=["Web Dashboard"])
 
-# API routes (to be implemented)
-# from app.api.routes import flights, accommodations, events, search
-# app.include_router(flights.router, prefix="/api/v1/flights", tags=["Flights"])
-# app.include_router(accommodations.router, prefix="/api/v1/accommodations", tags=["Accommodations"])
-# app.include_router(events.router, prefix="/api/v1/events", tags=["Events"])
-# app.include_router(search.router, prefix="/api/v1/search", tags=["Search"])
+# API routes for programmatic access
+app.include_router(api_deals.router, prefix="/api/v1", tags=["API - Deals"])
+app.include_router(api_flights.router, prefix="/api/v1", tags=["API - Flights"])
+app.include_router(api_packages.router, prefix="/api/v1", tags=["API - Packages"])
+app.include_router(api_search.router, prefix="/api/v1", tags=["API - Search"])
+app.include_router(api_stats.router, prefix="/api/v1", tags=["API - Statistics"])
 
 
 if __name__ == "__main__":
