@@ -21,6 +21,7 @@ from app.models.event import Event
 from app.models.flight import Flight
 from app.models.price_history import PriceHistory
 from app.models.trip_package import TripPackage
+from app.models.user_preference import UserPreference
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,154 @@ class DealScorer:
 
         except Exception as e:
             logger.error(f"Error scoring trip {trip_package.id}: {e}", exc_info=True)
+            raise
+
+    async def score_package(
+        self,
+        package: TripPackage,
+        user_prefs: UserPreference,
+        force_analyze: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Score a trip package using Claude AI with user preferences.
+
+        This function incorporates user-specific preferences (budget, interests,
+        preferred/avoided destinations) into the scoring process to provide
+        personalized recommendations.
+
+        Args:
+            package: The TripPackage to analyze
+            user_prefs: User preference settings to consider
+            force_analyze: If True, bypass price threshold check
+
+        Returns:
+            Dictionary with scoring results, or None if filtered out by threshold.
+            Result includes:
+            - score: Overall deal score (0-100), adjusted for preferences
+            - preference_alignment: How well it matches user preferences (0-10)
+            - value_assessment: Text assessment of price value
+            - family_suitability: Rating 0-10
+            - timing_quality: Rating 0-10
+            - recommendation: "book_now", "wait", or "skip"
+            - confidence: Confidence level (0-100)
+            - reasoning: Explanation text including preference matching
+            - highlights: List of key selling points
+            - concerns: List of potential issues
+
+        Raises:
+            ValueError: If trip package data is incomplete
+
+        Example:
+            >>> user_prefs = await db.get(UserPreference, 1)
+            >>> result = await scorer.score_package(package, user_prefs)
+            >>> if result and result['preference_alignment'] >= 8:
+            >>>     print(f"Great match! Score: {result['score']}")
+        """
+        try:
+            # Check price threshold against user preferences
+            if not self.analyze_all and not force_analyze:
+                flight_price_per_person = self._get_flight_price_per_person(package)
+
+                # Use user's max flight price preference
+                max_price = float(user_prefs.max_flight_price_family)
+
+                if flight_price_per_person > max_price:
+                    logger.info(
+                        f"Skipping trip {package.id}: flight price "
+                        f"€{flight_price_per_person}/person exceeds user's max "
+                        f"€{max_price}"
+                    )
+                    return None
+
+                # Also check total budget
+                if float(package.total_price) > float(user_prefs.max_total_budget_family):
+                    logger.info(
+                        f"Skipping trip {package.id}: total price "
+                        f"€{package.total_price} exceeds user's max budget "
+                        f"€{user_prefs.max_total_budget_family}"
+                    )
+                    return None
+
+            # Check if destination is in avoid list
+            if user_prefs.avoid_destinations:
+                destination_lower = package.destination_city.lower()
+                avoid_list_lower = [d.lower() for d in user_prefs.avoid_destinations]
+                if any(avoid in destination_lower for avoid in avoid_list_lower):
+                    logger.info(
+                        f"Skipping trip {package.id}: destination {package.destination_city} "
+                        f"is in user's avoid list"
+                    )
+                    # Return a low score instead of None to show why it was rejected
+                    return {
+                        "score": 10,
+                        "preference_alignment": 0,
+                        "value_assessment": "Destination is in your avoid list",
+                        "family_suitability": 0,
+                        "timing_quality": 0,
+                        "recommendation": "skip",
+                        "confidence": 100,
+                        "reasoning": f"{package.destination_city} is in your avoid destinations list",
+                        "highlights": [],
+                        "concerns": ["Destination is in avoid list"],
+                    }
+
+            # Gather all required data with user preferences
+            prompt_data = await self._build_prompt_data_with_preferences(
+                package, user_prefs
+            )
+
+            # Load preference-aware prompt template
+            prompt = self.prompt_loader.load("deal_analysis_with_preferences")
+
+            # Call Claude API
+            logger.info(
+                f"Analyzing trip package {package.id} with user preferences "
+                f"({package.destination_city}, €{package.total_price})"
+            )
+
+            response = await self.claude.analyze(
+                prompt=prompt,
+                data=prompt_data,
+                response_format="json",
+                use_cache=True,
+                max_tokens=2048,
+                operation="deal_scoring_with_preferences",
+            )
+
+            # Validate response structure
+            required_fields = [
+                "score",
+                "value_assessment",
+                "preference_alignment",
+                "family_suitability",
+                "timing_quality",
+                "recommendation",
+                "confidence",
+                "reasoning",
+            ]
+            for field in required_fields:
+                if field not in response:
+                    logger.warning(
+                        f"Missing field '{field}' in Claude response for trip {package.id}"
+                    )
+                    response[field] = None
+
+            # Update trip package with AI results
+            await self._update_trip_package(package, response)
+
+            logger.info(
+                f"Scored trip {package.id} with preferences: {response['score']}/100 "
+                f"(preference_alignment={response.get('preference_alignment', 'N/A')}, "
+                f"{response['recommendation']}, cost=${response.get('_cost', 0):.4f})"
+            )
+
+            return response
+
+        except Exception as e:
+            logger.error(
+                f"Error scoring trip {package.id} with preferences: {e}",
+                exc_info=True,
+            )
             raise
 
     async def filter_good_deals(
@@ -351,6 +500,51 @@ class DealScorer:
             "price_context": price_context,
             "events_list": events_list,
         }
+
+    async def _build_prompt_data_with_preferences(
+        self, package: TripPackage, user_prefs: UserPreference
+    ) -> Dict[str, Any]:
+        """
+        Build the data dictionary for the preference-aware prompt template.
+
+        Args:
+            package: The trip package to analyze
+            user_prefs: User preference settings
+
+        Returns:
+            Dictionary with all variables needed for the preference-aware prompt template
+        """
+        # Start with base prompt data
+        prompt_data = await self._build_prompt_data(package)
+
+        # Add user preference data
+        prompt_data.update(
+            {
+                "max_flight_price_family": float(user_prefs.max_flight_price_family),
+                "max_total_budget_family": float(user_prefs.max_total_budget_family),
+                "notification_threshold": float(user_prefs.notification_threshold),
+                "preferred_destinations": (
+                    user_prefs.preferred_destinations_str
+                    if user_prefs.preferred_destinations
+                    else "No specific preferences"
+                ),
+                "avoid_destinations": (
+                    ", ".join(user_prefs.avoid_destinations)
+                    if user_prefs.avoid_destinations
+                    else "None"
+                ),
+                "interests": (
+                    user_prefs.interests_str if user_prefs.interests else "Not specified"
+                ),
+                "travel_purpose": (
+                    "Family trip with children"
+                    if package.package_type == "family"
+                    else "Parent escape (adults only)"
+                ),
+            }
+        )
+
+        return prompt_data
 
     async def _get_price_context(self, trip_package: TripPackage) -> str:
         """
