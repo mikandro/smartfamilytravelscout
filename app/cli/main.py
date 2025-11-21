@@ -221,9 +221,18 @@ async def _run_scrape(
         )
 
         # Run each scraper
-        for scraper in scrapers_to_use:
+        for idx, scraper in enumerate(scrapers_to_use):
             try:
-                progress.update(task, description=f"[yellow]Running {scraper}...")
+                progress.update(
+                    task,
+                    description=f"[yellow]Running {scraper.title()} ({idx+1}/{len(scrapers_to_use)})..."
+                )
+
+                # Log start
+                console.print(
+                    f"[dim cyan]⟳ Starting {scraper.title()} scraper for "
+                    f"{origin.upper()}→{destination.upper()}...[/dim cyan]"
+                )
 
                 if scraper == "skyscanner":
                     from app.scrapers.skyscanner_scraper import SkyscannerScraper
@@ -267,12 +276,21 @@ async def _run_scrape(
 
                 else:
                     warning(f"Unknown scraper: {scraper}")
+                    progress.update(task, advance=1)
+                    continue
+
+                # Log completion
+                console.print(
+                    f"[dim green]✓ {scraper.title()} completed: {len(results)} flights found[/dim green]"
+                )
 
                 progress.update(task, advance=1)
 
             except Exception as e:
                 logger.error(f"Scraper {scraper} failed: {e}")
-                warning(f"{scraper.title()} scraper failed: {str(e)}")
+                console.print(
+                    f"[dim red]✗ {scraper.title()} failed: {str(e)}[/dim red]"
+                )
                 progress.update(task, advance=1)
                 continue
 
@@ -488,29 +506,67 @@ async def _run_pipeline(
 
         # Step 7: AI analysis
         if analyze and stats["packages"] > 0:
-            task7 = progress.add_task("[magenta]Running AI analysis...", total=stats["packages"])
-
             from app.ai.deal_scorer import DealScorer
+            from app.models.trip_package import TripPackage
 
-            scorer = DealScorer()
             async with get_async_session_context() as db:
-                from app.models.trip_package import TripPackage
-
                 result = await db.execute(
                     select(TripPackage).where(TripPackage.ai_score.is_(None))
                 )
                 unscored = result.scalars().all()
 
-                for idx, package in enumerate(unscored[:50]):  # Limit to 50 for cost control
+                # Limit to 50 for cost control
+                packages_to_score = unscored[:50]
+
+                task7 = progress.add_task(
+                    "[magenta]Running AI analysis...",
+                    total=len(packages_to_score)
+                )
+
+                scorer = DealScorer()
+
+                for idx, package in enumerate(packages_to_score):
                     try:
+                        # Update progress with current package being analyzed
+                        progress.update(
+                            task7,
+                            description=f"[magenta]Analyzing {package.destination_city} "
+                            f"({idx+1}/{len(packages_to_score)})...",
+                        )
+
+                        # Log start of analysis
+                        console.print(
+                            f"[dim magenta]⟳ Scoring package {package.id}: "
+                            f"{package.destination_city}, €{package.total_price}[/dim magenta]"
+                        )
+
                         score_data = await scorer.score_trip(package)
-                        package.ai_score = score_data["score"]
-                        package.ai_reasoning = score_data["reasoning"]
-                        await db.commit()
-                        stats["analyzed"] += 1
+
+                        if score_data:
+                            package.ai_score = score_data["score"]
+                            package.ai_reasoning = score_data["reasoning"]
+                            await db.commit()
+                            stats["analyzed"] += 1
+
+                            # Log completion with score
+                            console.print(
+                                f"[dim green]✓ Package {package.id}: "
+                                f"Score {score_data['score']}/100 "
+                                f"({score_data.get('recommendation', 'N/A')})[/dim green]"
+                            )
+                        else:
+                            console.print(
+                                f"[dim yellow]⚠ Package {package.id}: Skipped (over price threshold)[/dim yellow]"
+                            )
+
                         progress.update(task7, advance=1)
+
                     except Exception as e:
                         logger.error(f"Failed to score package {package.id}: {e}")
+                        console.print(
+                            f"[dim red]✗ Package {package.id}: Failed - {str(e)}[/dim red]"
+                        )
+                        progress.update(task7, advance=1)
                         continue
 
             success(f"Analyzed {stats['analyzed']} packages")
