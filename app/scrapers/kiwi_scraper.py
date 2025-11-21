@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_async_session_context
+from app.exceptions import APIKeyMissingError
 from app.models.airport import Airport
 from app.models.flight import Flight
 
@@ -171,7 +172,12 @@ class KiwiClient:
         """
         self.api_key = api_key or settings.kiwi_api_key
         if not self.api_key:
-            raise ValueError("Kiwi API key is required. Set KIWI_API_KEY environment variable.")
+            raise APIKeyMissingError(
+                service="Kiwi.com API",
+                env_var="KIWI_API_KEY",
+                optional=True,
+                fallback_info="You can use the default scrapers instead:\n  - Skyscanner (playwright-based, no API key)\n  - Ryanair (playwright-based, no API key)\n  - WizzAir (API-based, no API key)"
+            )
 
         self.rate_limiter = rate_limiter or RateLimiter()
         self.timeout = timeout

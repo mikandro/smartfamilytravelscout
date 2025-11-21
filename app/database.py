@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
+from app.exceptions import DatabaseConnectionError
 
 # Import Base from models to ensure all models are registered
 from app.models.base import Base  # noqa: F401
@@ -214,7 +215,8 @@ async def check_db_connection() -> bool:
         logger.info("Database connection is healthy")
         return True
     except Exception as e:
-        logger.error(f"Database connection failed: {e}")
+        logger.error(f"Database connection check failed: {e}", exc_info=True)
+        logger.error(f"Database URL (masked): {settings.database_url.replace(settings.database_url.password or '', '***')}")
         return False
 
 
@@ -246,7 +248,10 @@ async def lifespan_db():
             logger.info("Database is ready")
         else:
             logger.error("Database connection failed during startup")
-            raise RuntimeError("Database connection failed")
+            raise DatabaseConnectionError(
+                connection_type="async (asyncpg)",
+                error_details="Failed to connect during application startup"
+            )
 
         yield
 

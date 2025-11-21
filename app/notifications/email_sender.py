@@ -14,6 +14,7 @@ from typing import List, Optional
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.config import Settings
+from app.exceptions import SMTPConfigurationError
 from app.models.trip_package import TripPackage
 
 logger = logging.getLogger(__name__)
@@ -247,13 +248,37 @@ class EmailNotifier:
             return True
 
         except smtplib.SMTPAuthenticationError as e:
-            logger.error(f"SMTP authentication failed: {e}")
+            logger.error(
+                f"SMTP authentication failed: {e}\n"
+                f"Server: {self.smtp_host}:{self.smtp_port}\n"
+                f"User: {self.smtp_user}\n"
+                f"To fix:\n"
+                f"  1. Verify SMTP_USER and SMTP_PASSWORD in .env\n"
+                f"  2. For Gmail, use app-specific password (not your regular password)\n"
+                f"  3. Ensure 2FA is enabled for app-specific passwords\n"
+                f"  4. Check if 'Less secure app access' needs to be enabled",
+                exc_info=True
+            )
             return False
         except smtplib.SMTPException as e:
-            logger.error(f"SMTP error while sending email: {e}")
+            logger.error(
+                f"SMTP error while sending email to {to_email}: {e}\n"
+                f"Server: {self.smtp_host}:{self.smtp_port}\n"
+                f"Subject: {subject}\n"
+                f"To fix:\n"
+                f"  1. Verify SMTP server is reachable\n"
+                f"  2. Check firewall settings\n"
+                f"  3. Verify SMTP_HOST and SMTP_PORT in .env",
+                exc_info=True
+            )
             return False
         except Exception as e:
-            logger.error(f"Unexpected error sending email: {e}", exc_info=True)
+            logger.error(
+                f"Unexpected error sending email to {to_email}: {e}\n"
+                f"Subject: {subject}\n"
+                f"Check SMTP configuration in .env file",
+                exc_info=True
+            )
             return False
 
     def preview_daily_digest(self, deals: List[TripPackage]) -> str:

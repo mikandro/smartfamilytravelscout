@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_async_session_context
+from app.exceptions import PlaywrightNotInstalledError
 from app.models.accommodation import Accommodation
 
 logger = logging.getLogger(__name__)
@@ -339,8 +340,7 @@ class AirbnbClient:
         try:
             from playwright.async_api import async_playwright
         except ImportError:
-            logger.error("Playwright not installed. Cannot perform direct scraping.")
-            return []
+            raise PlaywrightNotInstalledError(scraper_name="Airbnb")
 
         logger.info(f"Starting Playwright scraping for {city}")
 
