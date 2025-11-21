@@ -19,6 +19,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import aiofiles
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from playwright_stealth import Stealth
 
@@ -187,8 +188,9 @@ class RyanairScraper:
 
         # Load existing rate limit data
         if rate_file.exists():
-            with open(rate_file, "r") as f:
-                data = json.load(f)
+            async with aiofiles.open(rate_file, "r") as f:
+                content = await f.read()
+                data = json.loads(content)
         else:
             data = {"date": None, "count": 0}
 
@@ -210,8 +212,8 @@ class RyanairScraper:
         data["count"] += 1
 
         # Save
-        with open(rate_file, "w") as f:
-            json.dump(data, f)
+        async with aiofiles.open(rate_file, "w") as f:
+            await f.write(json.dumps(data))
 
         logger.info(f"Rate limit check: {data['count']}/{self.MAX_DAILY_SEARCHES} searches today")
 
