@@ -10,7 +10,10 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict, TypeVar
+
+# Type variable for generic function decorators
+F = TypeVar('F', bound=Callable[..., Any])
 
 
 class JSONFormatter(logging.Formatter):
@@ -161,6 +164,7 @@ def setup_logging(
     root_logger.handlers.clear()
 
     # Create formatter
+    formatter: logging.Formatter
     if json_format:
         formatter = JSONFormatter()
     else:
@@ -201,7 +205,7 @@ def setup_logging(
     )
 
 
-def get_logger(name: str, extra_fields: Dict[str, Any] | None = None) -> logging.LoggerAdapter:
+def get_logger(name: str, extra_fields: Dict[str, Any] | None = None) -> logging.LoggerAdapter[logging.Logger]:
     """
     Get a logger with optional extra fields for context.
 
@@ -248,14 +252,14 @@ class LogContext:
         """
         self.logger = logger
         self.context = context
-        self.original_factory = None
+        self.original_factory: Callable[..., logging.LogRecord] | None = None
 
-    def __enter__(self):
+    def __enter__(self) -> "LogContext":
         """Enter context, adding context fields to logger."""
         self.original_factory = logging.getLogRecordFactory()
 
-        def record_factory(*args, **kwargs):
-            record = self.original_factory(*args, **kwargs)
+        def record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+            record = self.original_factory(*args, **kwargs) if self.original_factory else logging.LogRecord(*args, **kwargs)
             for key, value in self.context.items():
                 setattr(record, key, value)
             return record
@@ -263,13 +267,13 @@ class LogContext:
         logging.setLogRecordFactory(record_factory)
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Exit context, restoring original log record factory."""
         if self.original_factory:
             logging.setLogRecordFactory(self.original_factory)
 
 
-def log_function_call(func):
+def log_function_call(func: F) -> F:
     """
     Decorator to log function calls with arguments and return values.
 
@@ -285,9 +289,10 @@ def log_function_call(func):
         8
     """
     from functools import wraps
+    from typing import cast
 
     @wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         logger = logging.getLogger(func.__module__)
 
         logger.debug(f"Calling {func.__name__} with args={args}, kwargs={kwargs}")
@@ -300,4 +305,4 @@ def log_function_call(func):
             logger.error(f"{func.__name__} raised {type(e).__name__}: {e}", exc_info=True)
             raise
 
-    return wrapper
+    return cast(F, wrapper)

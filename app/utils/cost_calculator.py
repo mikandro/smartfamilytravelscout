@@ -16,7 +16,7 @@ Example:
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -73,7 +73,7 @@ class TrueCostCalculator:
 
         stmt = select(Airport)
         result = self.db_session.execute(stmt)
-        airports = result.scalars().all()
+        airports = result.scalars().all()  # type: ignore[union-attr]
 
         self.airports = {airport.iata_code: airport for airport in airports}
         logger.info(f"Loaded {len(self.airports)} airports from database")
@@ -93,7 +93,7 @@ class TrueCostCalculator:
             )
 
         stmt = select(Airport)
-        result = await self.db_session.execute(stmt)
+        result = await self.db_session.execute(stmt)  # type: ignore[misc]
         airports = result.scalars().all()
 
         self.airports = {airport.iata_code: airport for airport in airports}
@@ -219,7 +219,7 @@ class TrueCostCalculator:
         flight: Flight,
         num_bags: int = 2,
         num_days: Optional[int] = None,
-    ) -> Dict:
+    ) -> Dict[str, Any]:
         """
         Calculate complete true cost breakdown for a flight.
 
@@ -298,7 +298,7 @@ class TrueCostCalculator:
         flights: List[Flight],
         num_bags: int = 2,
         commit: bool = True,
-    ) -> List[Dict]:
+    ) -> List[Dict[str, Any]]:
         """
         Batch calculate true costs for multiple flights (synchronous).
 
@@ -355,7 +355,7 @@ class TrueCostCalculator:
         flights: List[Flight],
         num_bags: int = 2,
         commit: bool = True,
-    ) -> List[Dict]:
+    ) -> List[Dict[str, Any]]:
         """
         Batch calculate true costs for multiple flights (asynchronous).
 
@@ -398,16 +398,16 @@ class TrueCostCalculator:
 
         if commit and updated_count > 0:
             try:
-                await self.db_session.commit()
+                await self.db_session.commit()  # type: ignore[misc]
                 logger.info(f"Updated true costs for {updated_count} flights")
             except Exception as e:
-                await self.db_session.rollback()
+                await self.db_session.rollback()  # type: ignore[misc]
                 logger.error(f"Error committing true cost updates: {e}")
                 raise
 
         return breakdowns
 
-    def print_breakdown(self, breakdown: Dict) -> None:
+    def print_breakdown(self, breakdown: Dict[str, Any]) -> None:
         """
         Pretty print a cost breakdown for debugging/display.
 

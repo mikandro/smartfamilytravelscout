@@ -8,9 +8,12 @@ network requests, and database operations.
 import logging
 import time
 from functools import wraps
-from typing import Callable, Type, Tuple
+from typing import Any, Callable, Type, Tuple, TypeVar, cast
 
 logger = logging.getLogger(__name__)
+
+# Type variable for generic function signatures
+F = TypeVar('F', bound=Callable[..., Any])
 
 # Default exceptions that trigger retries
 RETRIABLE_EXCEPTIONS: Tuple[Type[Exception], ...] = (
@@ -26,7 +29,7 @@ def retry_with_backoff(
     exponential: bool = True,
     exceptions: Tuple[Type[Exception], ...] | None = None,
     on_retry: Callable[[Exception, int, int], None] | None = None,
-):
+) -> Callable[[F], F]:
     """
     Decorator for retrying functions with exponential backoff.
 
@@ -67,10 +70,10 @@ def retry_with_backoff(
     if backoff_seconds < 0:
         backoff_seconds = 0
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: F) -> F:
         @wraps(func)
-        def wrapper(*args, **kwargs):
-            last_exception = None
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            last_exception: Exception | None = None
 
             for attempt in range(1, max_attempts + 1):
                 try:
@@ -113,7 +116,7 @@ def retry_with_backoff(
             if last_exception:
                 raise last_exception
 
-        return wrapper
+        return cast(F, wrapper)
 
     return decorator
 
@@ -122,7 +125,7 @@ def retry_on_exception(
     exception_type: Type[Exception],
     max_attempts: int = 3,
     backoff_seconds: int = 2,
-):
+) -> Callable[[F], F]:
     """
     Simplified retry decorator for a single exception type.
 
@@ -188,16 +191,16 @@ class RetryContext:
         self.exponential = exponential
         self.exceptions = exceptions or RETRIABLE_EXCEPTIONS
         self.current_attempt = 0
-        self.last_exception = None
+        self.last_exception: Exception | None = None
         self._success = False
 
-    def __iter__(self):
+    def __iter__(self) -> "RetryContext":
         """Start iteration over retry attempts."""
         self.current_attempt = 0
         self._success = False
         return self
 
-    def __next__(self):
+    def __next__(self) -> int:
         """Get next retry attempt."""
         if self._success:
             raise StopIteration
@@ -224,11 +227,11 @@ class RetryContext:
 
         return self.current_attempt
 
-    def success(self):
+    def success(self) -> None:
         """Mark the operation as successful."""
         self._success = True
 
-    def failure(self, exception: Exception):
+    def failure(self, exception: Exception) -> None:
         """
         Mark the operation as failed.
 

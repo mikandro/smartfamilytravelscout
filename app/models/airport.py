@@ -2,12 +2,17 @@
 Airport model for storing departure airport information.
 """
 
-from typing import List, Optional
+from __future__ import annotations
+
+from typing import List, Optional, TYPE_CHECKING
 
 from sqlalchemy import ARRAY, Boolean, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from app.models.flight import Flight
 
 
 class Airport(Base, TimestampMixin):

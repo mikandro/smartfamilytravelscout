@@ -2,14 +2,19 @@
 Trip package model for AI-generated complete trip suggestions.
 """
 
+from __future__ import annotations
+
 from datetime import date
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 from sqlalchemy import Boolean, Date, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from app.models.accommodation import Accommodation
 
 
 class TripPackage(Base, TimestampMixin):

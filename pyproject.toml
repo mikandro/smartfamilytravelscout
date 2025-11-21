@@ -51,6 +51,7 @@ mypy = "^1.8.0"
 ipython = "^8.21.0"
 httpx = "^0.26.0"
 playwright-stealth = "^2.0.0"
+types-python-dateutil = "^2.9.0.20251115"
 
 [tool.poetry.scripts]
 scout = "app.cli.main:app"
@@ -89,6 +90,15 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
+
+# Allow third-party libraries without type hints
+[[tool.mypy.overrides]]
+module = [
+    "celery.*",
+    "playwright_stealth.*",
+    "apify_client.*",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

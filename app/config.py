@@ -6,7 +6,7 @@ Loads environment variables with validation and type checking.
 from functools import lru_cache
 from typing import List, Optional
 
-from pydantic import Field, PostgresDsn, RedisDsn, field_validator
+from pydantic import Field, PostgresDsn, RedisDsn, field_validator, ValidationInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -156,7 +156,7 @@ class Settings(BaseSettings):
 
     @field_validator("celery_broker_url", mode="before")
     @classmethod
-    def set_celery_broker_url(cls, v: Optional[str], info) -> str:
+    def set_celery_broker_url(cls, v: Optional[str], info: ValidationInfo) -> str:
         """Set celery_broker_url to redis_url if not provided."""
         if v is None and "redis_url" in info.data:
             return str(info.data["redis_url"])
@@ -164,7 +164,7 @@ class Settings(BaseSettings):
 
     @field_validator("celery_result_backend", mode="before")
     @classmethod
-    def set_celery_result_backend(cls, v: Optional[str], info) -> str:
+    def set_celery_result_backend(cls, v: Optional[str], info: ValidationInfo) -> str:
         """Set celery_result_backend to redis_url if not provided."""
         if v is None and "redis_url" in info.data:
             redis_url = str(info.data["redis_url"])

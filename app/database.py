@@ -5,9 +5,9 @@ Supports async operations with asyncpg driver.
 
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
-from sqlalchemy import create_engine, event, pool
+from sqlalchemy import create_engine, event, pool, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -62,7 +62,7 @@ SessionLocal = sessionmaker(
 
 
 @event.listens_for(pool.Pool, "connect")
-def set_postgres_pragmas(dbapi_connection, connection_record):
+def set_postgres_pragmas(dbapi_connection: Any, connection_record: Any) -> None:
     """Set PostgreSQL connection parameters."""
     cursor = dbapi_connection.cursor()
     cursor.execute("SET timezone='UTC'")
@@ -210,7 +210,7 @@ async def check_db_connection() -> bool:
     """
     try:
         async with async_engine.connect() as conn:
-            await conn.execute("SELECT 1")
+            await conn.execute(text("SELECT 1"))
         logger.info("Database connection is healthy")
         return True
     except Exception as e:
@@ -227,7 +227,7 @@ async def close_db_connections() -> None:
 
 # Context manager for application lifespan
 @asynccontextmanager
-async def lifespan_db():
+async def lifespan_db() -> AsyncGenerator[None, None]:
     """
     Database lifespan context manager for FastAPI.
 
