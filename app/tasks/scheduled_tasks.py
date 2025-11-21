@@ -274,41 +274,56 @@ def search_accommodations(self):
 @celery_app.task(name="app.tasks.scheduled_tasks.cleanup_old_data", base=GracefulTask, bind=True)
 def cleanup_old_data(self):
     """
-    Daily task to clean up old data.
+    Daily task to clean up old data based on retention policies.
 
     Runs every day at 2 AM UTC.
-    Removes expired deals, old price data, etc.
+    Removes old flights, events, packages, accommodations, and scraping jobs
+    according to configured retention periods.
     Uses GracefulTask for proper shutdown handling.
     """
-    logger.info("Starting daily cleanup task")
+    logger.info("Starting daily data retention cleanup task")
 
     try:
-        # Calculate cutoff date (e.g., 30 days old)
-        cutoff_date = datetime.now() - timedelta(days=30)
-        logger.info(f"Cleaning up data older than: {cutoff_date.date()}")
+        from app.database import get_sync_session
+        from app.utils.data_retention import cleanup_all_old_data, get_retention_cutoff_dates
 
-        # Check for shutdown periodically
+        # Log retention cutoff dates
+        cutoff_dates = get_retention_cutoff_dates()
+        logger.info(f"Retention policy cutoff dates: {cutoff_dates}")
+
+        # Check for shutdown before proceeding
         if hasattr(self, 'check_shutdown'):
             self.check_shutdown()
 
-        # TODO(#59): Implement cleanup logic
-        # Example:
-        # delete_old_flights(cutoff_date)
-        # if hasattr(self, 'check_shutdown'):
-        #     self.check_shutdown()
-        # delete_old_price_history(cutoff_date)
-        # if hasattr(self, 'check_shutdown'):
-        #     self.check_shutdown()
-        # delete_expired_deals()
+        # Get database session
+        db = get_sync_session()
 
-        logger.info("Daily cleanup task completed successfully")
-        return {"status": "success", "cutoff_date": cutoff_date.isoformat(), "task_id": self.request.id}
+        try:
+            # Run all cleanup operations
+            stats = cleanup_all_old_data(db)
+
+            logger.info(
+                f"Data retention cleanup completed successfully. "
+                f"Total deleted: {stats.total_deleted} records. "
+                f"Details: Flights={stats.flights_deleted}, Events={stats.events_deleted}, "
+                f"Packages={stats.packages_deleted}, Accommodations={stats.accommodations_deleted}, "
+                f"ScrapingJobs={stats.scraping_jobs_deleted}"
+            )
+
+            return {
+                "status": "success",
+                "task_id": self.request.id,
+                "stats": stats.to_dict(),
+                "cutoff_dates": {k: v.isoformat() for k, v in cutoff_dates.items()},
+            }
+        finally:
+            db.close()
 
     except SystemExit:
         logger.warning(f"Cleanup task {self.request.id} interrupted by shutdown")
         raise
     except Exception as e:
-        logger.error(f"Error in cleanup task: {e}", exc_info=True)
+        logger.error(f"Error in data retention cleanup task: {e}", exc_info=True)
         raise
 
 

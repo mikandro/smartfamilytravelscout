@@ -185,6 +185,11 @@ poetry run alembic history
 
 # Reset database (WARNING: deletes all data)
 poetry run scout db reset
+
+# Clean up old data (data retention policy)
+poetry run scout db cleanup                    # Run cleanup with default settings
+poetry run scout db cleanup --dry-run          # Preview what would be deleted
+poetry run scout db cleanup --no-events        # Skip event cleanup
 ```
 
 ### Celery Workers
@@ -671,6 +676,49 @@ Trip searches prioritize school holiday periods from `school_holidays` table:
 - Bavaria school calendar seeded via `app/utils/seed_data.py`
 - Use `app/utils/date_utils.get_school_holiday_periods()` to get date ranges
 - Flights/packages automatically filtered to holiday windows
+
+### Data Retention Policy
+
+Automatic cleanup prevents indefinite database growth by removing old data:
+
+**Retention Periods (configurable via environment variables)**:
+- Flights: 90 days after departure date (`FLIGHT_RETENTION_DAYS`)
+- Events: 180 days after event date (`EVENT_RETENTION_DAYS`)
+- Trip packages: 60 days after departure date (`PACKAGE_RETENTION_DAYS`)
+- Accommodations: 180 days after scraping (`ACCOMMODATION_RETENTION_DAYS`)
+- Scraping jobs: 30 days after completion (`SCRAPING_JOB_RETENTION_DAYS`)
+
+**Automatic Cleanup**: Celery Beat task runs daily at 2 AM UTC (configured in `app/tasks/celery_app.py`)
+
+**Manual Cleanup**:
+```python
+from app.database import get_sync_session
+from app.utils.data_retention import cleanup_all_old_data
+
+db = get_sync_session()
+try:
+    stats = cleanup_all_old_data(db)
+    print(f"Deleted {stats.total_deleted} records")
+finally:
+    db.close()
+```
+
+**CLI Usage**:
+```bash
+# Run cleanup with default settings
+poetry run scout db cleanup
+
+# Preview what would be deleted (dry run)
+poetry run scout db cleanup --dry-run
+
+# Selective cleanup (skip certain data types)
+poetry run scout db cleanup --no-events --no-packages
+```
+
+**Implementation**:
+- Cleanup logic: `app/utils/data_retention.py`
+- Celery task: `app/tasks/scheduled_tasks.py:cleanup_old_data()`
+- CLI command: `app/cli/main.py:db_cleanup()`
 
 ## Common Development Tasks
 

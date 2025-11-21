@@ -1901,6 +1901,151 @@ def db_seed():
         handle_error(e, "Database seeding failed")
 
 
+@db_app.command("cleanup")
+def db_cleanup(
+    dry_run: bool = typer.Option(
+        False,
+        help="Show what would be deleted without actually deleting",
+    ),
+    flights: bool = typer.Option(
+        True,
+        help="Clean up old flights",
+    ),
+    events: bool = typer.Option(
+        True,
+        help="Clean up old events",
+    ),
+    packages: bool = typer.Option(
+        True,
+        help="Clean up old packages",
+    ),
+    accommodations: bool = typer.Option(
+        True,
+        help="Clean up old accommodations",
+    ),
+    scraping_jobs: bool = typer.Option(
+        True,
+        help="Clean up old scraping jobs",
+    ),
+):
+    """
+    Clean up old data based on retention policies.
+
+    This command removes:
+    - Flights with departure dates older than retention period (default: 90 days)
+    - Events with dates older than retention period (default: 180 days)
+    - Trip packages older than retention period (default: 60 days)
+    - Accommodations scraped older than retention period (default: 180 days)
+    - Completed scraping jobs older than retention period (default: 30 days)
+
+    Examples:
+        scout db cleanup
+        scout db cleanup --dry-run
+        scout db cleanup --no-events --no-packages
+    """
+    console.print("\n")
+    console.print(Panel(
+        "[bold]Data Retention Cleanup[/bold]\n\n"
+        "This will remove old data according to retention policies.",
+        border_style="yellow" if not dry_run else "blue",
+    ))
+
+    try:
+        from app.utils.data_retention import (
+            get_retention_cutoff_dates,
+            cleanup_old_flights,
+            cleanup_old_events,
+            cleanup_old_packages,
+            cleanup_old_accommodations,
+            cleanup_old_scraping_jobs,
+        )
+
+        # Get database session
+        db = get_sync_session()
+
+        try:
+            # Show retention policy cutoff dates
+            cutoff_dates = get_retention_cutoff_dates()
+
+            info_table = Table(show_header=True, header_style="bold magenta")
+            info_table.add_column("Data Type", style="cyan")
+            info_table.add_column("Retention Policy", style="yellow")
+            info_table.add_column("Cutoff Date", style="green")
+
+            info_table.add_row("Flights", f"{settings.flight_retention_days} days", str(cutoff_dates["flights"]))
+            info_table.add_row("Events", f"{settings.event_retention_days} days", str(cutoff_dates["events"]))
+            info_table.add_row("Packages", f"{settings.package_retention_days} days", str(cutoff_dates["packages"]))
+            info_table.add_row("Accommodations", f"{settings.accommodation_retention_days} days", str(cutoff_dates["accommodations"]))
+            info_table.add_row("Scraping Jobs", f"{settings.scraping_job_retention_days} days", str(cutoff_dates["scraping_jobs"]))
+
+            console.print("\n")
+            console.print(info_table)
+            console.print("\n")
+
+            if dry_run:
+                warning("DRY RUN MODE - No data will be deleted")
+                console.print("\n")
+
+            # Run cleanup operations
+            stats_table = Table(show_header=True, header_style="bold magenta")
+            stats_table.add_column("Data Type", style="cyan")
+            stats_table.add_column("Deleted", style="red" if not dry_run else "yellow", justify="right")
+
+            total_deleted = 0
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                task = progress.add_task("[yellow]Cleaning up data...", total=5)
+
+                if flights:
+                    count = 0 if dry_run else cleanup_old_flights(db)
+                    stats_table.add_row("Flights", f"{count:,}")
+                    total_deleted += count
+                    progress.update(task, advance=1)
+
+                if events:
+                    count = 0 if dry_run else cleanup_old_events(db)
+                    stats_table.add_row("Events", f"{count:,}")
+                    total_deleted += count
+                    progress.update(task, advance=1)
+
+                if packages:
+                    count = 0 if dry_run else cleanup_old_packages(db)
+                    stats_table.add_row("Packages", f"{count:,}")
+                    total_deleted += count
+                    progress.update(task, advance=1)
+
+                if accommodations:
+                    count = 0 if dry_run else cleanup_old_accommodations(db)
+                    stats_table.add_row("Accommodations", f"{count:,}")
+                    total_deleted += count
+                    progress.update(task, advance=1)
+
+                if scraping_jobs:
+                    count = 0 if dry_run else cleanup_old_scraping_jobs(db)
+                    stats_table.add_row("Scraping Jobs", f"{count:,}")
+                    total_deleted += count
+                    progress.update(task, advance=1)
+
+            console.print("\n")
+            console.print(stats_table)
+            console.print("\n")
+
+            if dry_run:
+                info("Dry run complete - no data was deleted")
+            else:
+                success(f"Cleanup complete - {total_deleted:,} records deleted")
+
+        finally:
+            db.close()
+
+    except Exception as e:
+        handle_error(e, "Database cleanup failed")
+
+
 @db_app.command("reset")
 def db_reset():
     """
