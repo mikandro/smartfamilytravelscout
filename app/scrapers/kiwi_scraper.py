@@ -23,6 +23,7 @@ from app.config import settings
 from app.database import get_async_session_context
 from app.models.airport import Airport
 from app.models.flight import Flight
+from app.utils.airport_utils import get_or_create_airport
 
 logger = logging.getLogger(__name__)
 
@@ -483,45 +484,6 @@ class KiwiClient:
 
         return flights
 
-    async def _get_or_create_airport(
-        self,
-        db: AsyncSession,
-        iata_code: str,
-        city: str = "",
-    ) -> Airport:
-        """
-        Get airport from database by IATA code, or create if doesn't exist.
-
-        Args:
-            db: Database session
-            iata_code: Airport IATA code
-            city: City name (optional, for creation)
-
-        Returns:
-            Airport: Airport model instance
-        """
-        # Try to find existing airport
-        result = await db.execute(
-            select(Airport).where(Airport.iata_code == iata_code.upper())
-        )
-        airport = result.scalar_one_or_none()
-
-        if airport:
-            return airport
-
-        # Create new airport with minimal info
-        self.logger.info(f"Creating new airport: {iata_code} ({city})")
-        airport = Airport(
-            iata_code=iata_code.upper(),
-            name=f"{city} Airport" if city else f"{iata_code} Airport",
-            city=city or iata_code,
-            distance_from_home=0,  # Unknown, will be updated later
-            driving_time=0,  # Unknown, will be updated later
-        )
-        db.add(airport)
-        await db.flush()  # Get the ID without committing
-        return airport
-
     async def _check_duplicate_flight(
         self,
         db: AsyncSession,
@@ -615,12 +577,12 @@ class KiwiClient:
             for flight_data in flights:
                 try:
                     # Get or create airports
-                    origin_airport = await self._get_or_create_airport(
+                    origin_airport = await get_or_create_airport(
                         db,
                         flight_data["origin_airport"],
                         flight_data["origin_city"],
                     )
-                    destination_airport = await self._get_or_create_airport(
+                    destination_airport = await get_or_create_airport(
                         db,
                         flight_data["destination_airport"],
                         flight_data["destination_city"],

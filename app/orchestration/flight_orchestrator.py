@@ -35,6 +35,7 @@ from app.scrapers.kiwi_scraper import KiwiClient
 from app.scrapers.ryanair_scraper import RyanairScraper
 from app.scrapers.skyscanner_scraper import SkyscannerScraper
 from app.scrapers.wizzair_scraper import WizzAirScraper
+from app.utils.airport_utils import get_or_create_airport
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -603,12 +604,12 @@ class FlightOrchestrator:
                     for flight_data in batch:
                         try:
                             # Get or create airports
-                            origin_airport = await self._get_or_create_airport(
+                            origin_airport = await get_or_create_airport(
                                 db,
                                 flight_data.get("origin_airport", ""),
                                 flight_data.get("origin_city", ""),
                             )
-                            destination_airport = await self._get_or_create_airport(
+                            destination_airport = await get_or_create_airport(
                                 db,
                                 flight_data.get("destination_airport", ""),
                                 flight_data.get("destination_city", ""),
@@ -755,45 +756,6 @@ class FlightOrchestrator:
                 raise
 
         return stats
-
-    async def _get_or_create_airport(
-        self, db: AsyncSession, iata_code: str, city: str = ""
-    ) -> Optional[Airport]:
-        """
-        Get airport from database by IATA code, or create if doesn't exist.
-
-        Args:
-            db: Database session
-            iata_code: Airport IATA code (e.g., 'MUC')
-            city: City name (optional, for creation)
-
-        Returns:
-            Airport model instance or None if code is empty
-        """
-        if not iata_code:
-            return None
-
-        iata_code = iata_code.upper()
-
-        # Try to find existing airport
-        result = await db.execute(select(Airport).where(Airport.iata_code == iata_code))
-        airport = result.scalar_one_or_none()
-
-        if airport:
-            return airport
-
-        # Create new airport with minimal info
-        logger.info(f"Creating new airport: {iata_code} ({city})")
-        airport = Airport(
-            iata_code=iata_code,
-            name=f"{city} Airport" if city else f"{iata_code} Airport",
-            city=city or iata_code,
-            distance_from_home=0,  # Unknown, will be updated later
-            driving_time=0,  # Unknown, will be updated later
-        )
-        db.add(airport)
-        await db.flush()  # Get the ID without committing
-        return airport
 
     async def _check_duplicate_flight(
         self,

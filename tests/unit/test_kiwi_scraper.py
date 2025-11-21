@@ -405,6 +405,7 @@ class TestKiwiClient:
     async def test_get_or_create_airport_existing(self, kiwi_client):
         """Test getting existing airport from database."""
         from app.models.airport import Airport
+        from app.utils.airport_utils import get_or_create_airport
 
         mock_db = AsyncMock()
         mock_result = Mock()
@@ -421,7 +422,7 @@ class TestKiwiClient:
         mock_result.scalar_one_or_none = Mock(return_value=existing_airport)
         mock_db.execute = AsyncMock(return_value=mock_result)
 
-        airport = await kiwi_client._get_or_create_airport(mock_db, "MUC", "Munich")
+        airport = await get_or_create_airport(mock_db, "MUC", "Munich")
 
         assert airport.iata_code == "MUC"
         assert airport.name == "Munich Airport"
@@ -430,6 +431,8 @@ class TestKiwiClient:
     @pytest.mark.asyncio
     async def test_get_or_create_airport_new(self, kiwi_client):
         """Test creating new airport in database."""
+        from app.utils.airport_utils import get_or_create_airport
+
         mock_db = AsyncMock()
         mock_result = Mock()
 
@@ -437,7 +440,7 @@ class TestKiwiClient:
         mock_result.scalar_one_or_none = Mock(return_value=None)
         mock_db.execute = AsyncMock(return_value=mock_result)
 
-        airport = await kiwi_client._get_or_create_airport(mock_db, "LIS", "Lisbon")
+        airport = await get_or_create_airport(mock_db, "LIS", "Lisbon")
 
         assert airport.iata_code == "LIS"
         assert airport.city == "Lisbon"
