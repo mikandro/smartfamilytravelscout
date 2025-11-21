@@ -174,7 +174,11 @@ class KiwiClient:
         """
         self.api_key = api_key or settings.kiwi_api_key
         if not self.api_key:
-            raise ValueError("Kiwi API key is required. Set KIWI_API_KEY environment variable.")
+            raise ValueError(
+                "Kiwi.com API key is required but not configured.\n"
+                "Get a free API key (100 requests/month) at: https://tequila.kiwi.com/portal/login\n"
+                "Then set it in your .env file: KIWI_API_KEY=your_api_key_here"
+            )
 
         self.rate_limiter = rate_limiter or RateLimiter()
         self.timeout = timeout
