@@ -312,7 +312,7 @@ async def _run_scrape(
 
         if save:
             info("Saving results to database...")
-            # TODO: Implement save logic similar to kiwi-search
+            # TODO(#59): Implement save logic similar to kiwi-search
             success("Results saved")
     else:
         warning("No flights found")
@@ -454,7 +454,7 @@ async def _run_pipeline(
         # Step 4: Scrape accommodations
         task4 = progress.add_task("[yellow]Scraping accommodations...", total=len(dest_codes))
 
-        # TODO: Implement accommodation scraping
+        # TODO(#59): Implement accommodation scraping
         # For now, we'll query existing accommodations
         async with get_async_session_context() as db:
             from app.models.accommodation import Accommodation
