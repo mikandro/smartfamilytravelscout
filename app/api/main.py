@@ -82,13 +82,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add CORS middleware
+# Add CORS middleware for frontend cross-origin requests
+# This enables frontend applications (e.g., React, Vue) to make API requests
+# Configuration is controlled via ALLOWED_ORIGINS environment variable
+# Default: http://localhost:3000,http://localhost:8000
+# Production: Set to specific domain(s) for security (never use "*")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.get_allowed_origins_list(),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.get_allowed_origins_list(),  # Configured via env var
+    allow_credentials=True,  # Allow cookies and authentication headers
+    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],  # Allow all headers (Content-Type, Authorization, etc.)
 )
 
 # Add GZip middleware

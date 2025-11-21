@@ -122,6 +122,13 @@ class Settings(BaseSettings):
     # Security
     secret_key: str = Field(..., description="Secret key for signing tokens")
     api_key_header: str = Field(default="X-API-Key", description="API key header name")
+
+    # CORS Configuration
+    # Controls which frontend origins can make API requests
+    # Format: Comma-separated list of allowed origins
+    # Development: http://localhost:3000,http://localhost:8000
+    # Production: https://yourdomain.com,https://app.yourdomain.com
+    # SECURITY: Never use "*" in production - always specify exact domains
     allowed_origins: str = Field(
         default="http://localhost:3000,http://localhost:8000",
         description="Allowed CORS origins (comma-separated)",
