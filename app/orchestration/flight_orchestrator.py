@@ -36,6 +36,7 @@ from app.scrapers.kiwi_scraper import KiwiClient
 from app.scrapers.ryanair_scraper import RyanairScraper
 from app.scrapers.skyscanner_scraper import SkyscannerScraper
 from app.scrapers.wizzair_scraper import WizzAirScraper
+from app.utils.date_utils import parse_time
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -462,15 +463,23 @@ class FlightOrchestrator:
                     logger.warning(f"Invalid departure_date format: {dep_date_str}")
                     continue
 
-                # Parse time (handle None or empty string)
-                if dep_time_str and dep_time_str != "None":
-                    try:
-                        dep_time = datetime.strptime(dep_time_str, "%H:%M").time()
-                        dep_datetime = datetime.combine(dep_date, dep_time)
-                    except (ValueError, TypeError):
-                        dep_datetime = datetime.combine(dep_date, time(12, 0))  # Default noon
+                # Parse time using robust parser
+                dep_time = parse_time(
+                    dep_time_str,
+                    context=f"departure_time for {flight.get('origin_airport')}->{flight.get('destination_airport')}"
+                )
+
+                # Use parsed time or default to noon if parsing failed
+                if dep_time is not None:
+                    dep_datetime = datetime.combine(dep_date, dep_time)
                 else:
-                    dep_datetime = datetime.combine(dep_date, time(12, 0))  # Default noon
+                    # Default to noon for grouping purposes when time is unavailable
+                    dep_datetime = datetime.combine(dep_date, time(12, 0))
+                    if dep_time_str:  # Only log if there was a value that failed to parse
+                        logger.debug(
+                            f"Using default noon for grouping (departure time unavailable): "
+                            f"{flight.get('origin_airport')}->{flight.get('destination_airport')} on {dep_date}"
+                        )
 
                 # Round departure time to 2-hour blocks for grouping
                 hour_block = (dep_datetime.hour // 2) * 2
@@ -484,14 +493,23 @@ class FlightOrchestrator:
                     try:
                         ret_date = datetime.strptime(ret_date_str, "%Y-%m-%d").date()
 
-                        if ret_time_str and ret_time_str != "None":
-                            try:
-                                ret_time = datetime.strptime(ret_time_str, "%H:%M").time()
-                                ret_datetime = datetime.combine(ret_date, ret_time)
-                            except (ValueError, TypeError):
-                                ret_datetime = datetime.combine(ret_date, time(12, 0))
+                        # Parse return time using robust parser
+                        ret_time = parse_time(
+                            ret_time_str,
+                            context=f"return_time for {flight.get('origin_airport')}->{flight.get('destination_airport')}"
+                        )
+
+                        # Use parsed time or default to noon if parsing failed
+                        if ret_time is not None:
+                            ret_datetime = datetime.combine(ret_date, ret_time)
                         else:
+                            # Default to noon for grouping purposes when time is unavailable
                             ret_datetime = datetime.combine(ret_date, time(12, 0))
+                            if ret_time_str:  # Only log if there was a value that failed to parse
+                                logger.debug(
+                                    f"Using default noon for grouping (return time unavailable): "
+                                    f"{flight.get('origin_airport')}->{flight.get('destination_airport')} on {ret_date}"
+                                )
 
                         ret_hour_block = (ret_datetime.hour // 2) * 2
                         rounded_ret_time = ret_datetime.replace(
@@ -656,19 +674,17 @@ class FlightOrchestrator:
                                 stats["skipped"] += 1
                                 continue
 
-                            # Parse departure time
-                            if dep_time_str and dep_time_str != "None":
-                                try:
-                                    departure_time_obj = datetime.strptime(dep_time_str, "%H:%M").time()
-                                except (ValueError, TypeError):
-                                    departure_time_obj = None
-                            else:
-                                departure_time_obj = None
+                            # Parse departure time using robust parser
+                            departure_time_obj = parse_time(
+                                dep_time_str,
+                                context=f"departure_time for DB save {origin_airport.iata_code}->{destination_airport.iata_code}"
+                            )
 
                             # Parse return date and time
                             ret_date_str = flight_data.get("return_date")
                             ret_time_str = flight_data.get("return_time")
 
+                            # Parse return date
                             if ret_date_str and ret_date_str != "None":
                                 try:
                                     return_date_obj = datetime.strptime(ret_date_str, "%Y-%m-%d").date()
@@ -677,13 +693,11 @@ class FlightOrchestrator:
                             else:
                                 return_date_obj = None
 
-                            if ret_time_str and ret_time_str != "None":
-                                try:
-                                    return_time_obj = datetime.strptime(ret_time_str, "%H:%M").time()
-                                except (ValueError, TypeError):
-                                    return_time_obj = None
-                            else:
-                                return_time_obj = None
+                            # Parse return time using robust parser
+                            return_time_obj = parse_time(
+                                ret_time_str,
+                                context=f"return_time for DB save {origin_airport.iata_code}->{destination_airport.iata_code}"
+                            )
 
                             # Check for existing flight (within 2-hour window)
                             existing_flight = await self._check_duplicate_flight(

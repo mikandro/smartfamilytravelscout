@@ -5,9 +5,12 @@ Provides functions for working with school holidays, long weekends,
 and date ranges for trip planning.
 """
 
+import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-from typing import Iterator, List, Tuple
+from datetime import date, datetime, time, timedelta
+from typing import Iterator, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -432,6 +435,95 @@ def parse_date(date_str: str) -> date | None:
         except ValueError:
             continue
 
+    return None
+
+
+def parse_time(time_str: str | None, context: str = "") -> Optional[time]:
+    """
+    Parse a time string in multiple formats with proper error handling.
+
+    This function attempts to parse time strings in various common formats,
+    returning None for unparseable input instead of silently defaulting to
+    arbitrary values. This prevents data corruption from invalid time parsing.
+
+    Supports formats:
+    - HH:MM (24-hour format, e.g., "14:30", "09:15")
+    - HH:MM:SS (24-hour with seconds, e.g., "14:30:00")
+    - h:MM AM/PM (12-hour format, e.g., "2:30 PM", "9:15 AM")
+    - h:MM:SS AM/PM (12-hour with seconds, e.g., "2:30:00 PM")
+
+    Args:
+        time_str: Time string to parse (can be None or empty)
+        context: Optional context string for logging (e.g., "departure_time for flight MUC->BCN")
+
+    Returns:
+        Parsed time object or None if:
+        - Input is None, empty string, or "None"
+        - Input cannot be parsed in any supported format
+        - Input contains invalid time values
+
+    Examples:
+        >>> parse_time("14:30")
+        datetime.time(14, 30)
+        >>> parse_time("14:30:00")
+        datetime.time(14, 30)
+        >>> parse_time("2:30 PM")
+        datetime.time(14, 30)
+        >>> parse_time("9:15 AM")
+        datetime.time(9, 15)
+        >>> parse_time("invalid") is None
+        True
+        >>> parse_time(None) is None
+        True
+        >>> parse_time("") is None
+        True
+        >>> parse_time("None") is None
+        True
+
+    Warning:
+        This function logs warnings when parsing fails, enabling debugging
+        of data quality issues. These warnings include the context parameter
+        to help identify the source of problematic data.
+    """
+    # Handle None, empty string, or string "None"
+    if not time_str or time_str == "None":
+        return None
+
+    # Handle non-string types (e.g., already a time object)
+    if isinstance(time_str, time):
+        return time_str
+
+    if not isinstance(time_str, str):
+        logger.warning(
+            f"Invalid time_str type: {type(time_str)} "
+            f"(expected str, got {time_str!r})"
+            f"{f' [{context}]' if context else ''}"
+        )
+        return None
+
+    time_str = time_str.strip()
+
+    # Try multiple time formats
+    formats = [
+        "%H:%M",        # 14:30
+        "%H:%M:%S",     # 14:30:00
+        "%I:%M %p",     # 2:30 PM
+        "%I:%M:%S %p",  # 2:30:00 PM
+    ]
+
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(time_str, fmt).time()
+            return parsed
+        except ValueError:
+            continue
+
+    # If all formats fail, log warning and return None
+    logger.warning(
+        f"Failed to parse time string: {time_str!r} "
+        f"(tried formats: HH:MM, HH:MM:SS, h:MM AM/PM, h:MM:SS AM/PM)"
+        f"{f' [{context}]' if context else ''}"
+    )
     return None
 
 
