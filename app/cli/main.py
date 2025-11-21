@@ -35,7 +35,7 @@ from app.database import check_db_connection, get_async_session_context, get_syn
 app = typer.Typer(
     name="scout",
     help="SmartFamilyTravelScout - AI-powered family travel deal finder",
-    add_completion=False,
+    add_completion=True,
 )
 
 # Create sub-commands

@@ -183,6 +183,29 @@ See `.env.example` for a complete list of available variables.
 
 ### Using the CLI
 
+The SmartFamilyTravelScout CLI (`scout`) provides comprehensive commands for managing travel searches and system operations.
+
+#### Shell Autocomplete
+
+Enable shell autocomplete for faster command discovery and reduced typing:
+
+```bash
+# Install completion for your current shell (bash, zsh, or fish)
+poetry run scout --install-completion
+
+# Show completion script (for manual installation or customization)
+poetry run scout --show-completion bash
+```
+
+After installation, restart your shell or source your profile, then use Tab to autocomplete commands and options:
+
+```bash
+scout <TAB>          # Shows all available commands
+scout scrape --<TAB> # Shows all options for scrape command
+```
+
+#### Common Commands
+
 ```bash
 # Search for deals
 poetry run travelscout search --from VIE --departure-date 2024-07-15

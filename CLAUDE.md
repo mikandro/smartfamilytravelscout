@@ -25,6 +25,20 @@ poetry run scout test-scraper ryanair --origin MUC --dest PRG
 
 The default scrapers work out of the box - no configuration needed!
 
+### Shell Autocomplete
+
+The CLI supports shell autocomplete for improved productivity:
+
+```bash
+# Install completion for your shell (bash, zsh, fish)
+poetry run scout --install-completion
+
+# Show completion script
+poetry run scout --show-completion bash
+```
+
+After installation, restart your shell to enable tab completion for all commands and options.
+
 ## Development Commands
 
 ### Setup & Installation
