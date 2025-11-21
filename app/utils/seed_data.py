@@ -4,12 +4,12 @@ Populates airports, school holidays, and default user preferences.
 """
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.models import Airport, SchoolHoliday, UserPreference
+from app.models import Airport, ModelPricing, SchoolHoliday, UserPreference
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +222,81 @@ def seed_school_holidays(db: Session) -> None:
     logger.info("School holiday seeding completed")
 
 
+def seed_model_pricing(db: Session) -> None:
+    """
+    Seed model pricing data for AI services.
+    Includes current Claude pricing (as of November 2025).
+    """
+    pricing_data = [
+        {
+            "service": "claude",
+            "model": "claude-sonnet-4-5-20250929",
+            "input_cost_per_million": 3.0,
+            "output_cost_per_million": 15.0,
+            "effective_date": datetime(2025, 11, 1, 0, 0, 0),
+            "currency": "USD",
+            "notes": "Claude Sonnet 4.5 pricing as of November 2025",
+        },
+        {
+            "service": "claude",
+            "model": "claude-3-5-sonnet-20241022",
+            "input_cost_per_million": 3.0,
+            "output_cost_per_million": 15.0,
+            "effective_date": datetime(2024, 10, 1, 0, 0, 0),
+            "currency": "USD",
+            "notes": "Claude 3.5 Sonnet pricing (legacy model)",
+        },
+        {
+            "service": "claude",
+            "model": "claude-3-opus-20240229",
+            "input_cost_per_million": 15.0,
+            "output_cost_per_million": 75.0,
+            "effective_date": datetime(2024, 3, 1, 0, 0, 0),
+            "currency": "USD",
+            "notes": "Claude 3 Opus pricing (legacy model)",
+        },
+        {
+            "service": "claude",
+            "model": "claude-3-haiku-20240307",
+            "input_cost_per_million": 0.25,
+            "output_cost_per_million": 1.25,
+            "effective_date": datetime(2024, 3, 1, 0, 0, 0),
+            "currency": "USD",
+            "notes": "Claude 3 Haiku pricing (legacy model)",
+        },
+    ]
+
+    for pricing in pricing_data:
+        # Check if pricing already exists for this service/model/date
+        existing = (
+            db.query(ModelPricing)
+            .filter_by(
+                service=pricing["service"],
+                model=pricing["model"],
+                effective_date=pricing["effective_date"],
+            )
+            .first()
+        )
+        if existing:
+            logger.info(
+                f"Pricing for {pricing['service']}/{pricing['model']} "
+                f"(effective {pricing['effective_date'].date()}) already exists, skipping"
+            )
+            continue
+
+        model_pricing = ModelPricing(**pricing)
+        db.add(model_pricing)
+        logger.info(
+            f"Created pricing: {pricing['service']}/{pricing['model']} - "
+            f"${pricing['input_cost_per_million']}/M input, "
+            f"${pricing['output_cost_per_million']}/M output "
+            f"(effective {pricing['effective_date'].date()})"
+        )
+
+    db.commit()
+    logger.info("Model pricing seeding completed")
+
+
 def seed_user_preferences(db: Session) -> None:
     """
     Seed default user preferences.
@@ -271,6 +346,7 @@ def seed_all(db: Session) -> None:
 
     seed_airports(db)
     seed_school_holidays(db)
+    seed_model_pricing(db)
     seed_user_preferences(db)
 
     logger.info("Database seeding completed successfully!")
@@ -279,9 +355,11 @@ def seed_all(db: Session) -> None:
 if __name__ == "__main__":
     """Run seeding when script is executed directly."""
     import sys
+    from pathlib import Path
 
-    # Add parent directory to path for imports
-    sys.path.insert(0, "/home/user/smartfamilytravelscout")
+    # Add project root to path for imports (dynamically determined)
+    project_root = Path(__file__).parent.parent.parent.resolve()
+    sys.path.insert(0, str(project_root))
 
     from app.database import get_sync_session
 

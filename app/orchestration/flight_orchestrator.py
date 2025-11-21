@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_async_session_context
+from app.exceptions import ScraperFailureThresholdExceeded
 from app.models.airport import Airport
 from app.models.flight import Flight
 from app.models.scraping_job import ScrapingJob
@@ -35,6 +36,7 @@ from app.scrapers.kiwi_scraper import KiwiClient
 from app.scrapers.ryanair_scraper import RyanairScraper
 from app.scrapers.skyscanner_scraper import SkyscannerScraper
 from app.scrapers.wizzair_scraper import WizzAirScraper
+from app.utils.date_utils import parse_time
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -164,7 +166,7 @@ class FlightOrchestrator:
             f"\n[bold cyan]Starting {len(tasks)} scraping tasks in parallel...[/bold cyan]\n"
         )
 
-        # Run all tasks concurrently with progress tracking
+        # Run all tasks concurrently with real-time progress tracking
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -173,12 +175,20 @@ class FlightOrchestrator:
             TimeElapsedColumn(),
             console=console,
         ) as progress:
-            task_id = progress.add_task("[cyan]Scraping flights...", total=len(tasks))
+            # Create individual progress tasks for each scraper type
+            scraper_tasks = {}
+            for scraper in ["Kiwi", "Skyscanner", "Ryanair", "WizzAir"]:
+                scraper_count = sum(1 for t in task_metadata if t.startswith(scraper))
+                if scraper_count > 0:
+                    scraper_tasks[scraper] = progress.add_task(
+                        f"[yellow]{scraper}: Starting...", total=scraper_count
+                    )
 
             # Gather results with return_exceptions=True to handle failures gracefully
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            progress.update(task_id, completed=len(tasks))
+            # We'll track completion in real-time using task callbacks
+            results = await self._gather_with_progress(
+                tasks, task_metadata, progress, scraper_tasks
+            )
 
         # Process results and collect statistics
         all_flights = []
@@ -205,6 +215,25 @@ class FlightOrchestrator:
             f"Scraping completed: {successful_scrapers} successful, {failed_scrapers} failed, "
             f"{len(all_flights)} total flights, {elapsed_time:.2f}s elapsed"
         )
+
+        # Check failure threshold
+        total_scrapers = successful_scrapers + failed_scrapers
+        if total_scrapers > 0:
+            failure_rate = failed_scrapers / total_scrapers
+            threshold = settings.scraper_failure_threshold
+
+            if failure_rate > threshold:
+                logger.critical(
+                    f"CRITICAL: Scraper failure threshold exceeded! "
+                    f"{failed_scrapers}/{total_scrapers} scrapers failed "
+                    f"({failure_rate:.1%} failure rate, threshold: {threshold:.1%})"
+                )
+                raise ScraperFailureThresholdExceeded(
+                    total_scrapers=total_scrapers,
+                    failed_scrapers=failed_scrapers,
+                    failure_rate=failure_rate,
+                    threshold=threshold,
+                )
 
         # Print statistics table
         self._print_stats_table(scraper_stats, elapsed_time)
@@ -248,6 +277,77 @@ class FlightOrchestrator:
         console.print(table)
         console.print(f"\n[dim]Time elapsed: {elapsed_time:.2f}s[/dim]\n")
 
+    async def _gather_with_progress(
+        self,
+        tasks: List,
+        task_metadata: List[str],
+        progress: Progress,
+        scraper_tasks: Dict,
+    ) -> List:
+        """
+        Execute tasks with real-time progress updates.
+
+        This method wraps asyncio.gather to provide real-time feedback as each
+        scraper completes, updating the progress bars and showing immediate results.
+
+        Args:
+            tasks: List of coroutines to execute
+            task_metadata: List of task descriptions matching tasks
+            progress: Rich Progress instance
+            scraper_tasks: Dict mapping scraper names to progress task IDs
+
+        Returns:
+            List of results from all tasks (with exceptions for failures)
+        """
+        results = [None] * len(tasks)
+        pending_tasks = {
+            asyncio.create_task(task): (idx, task_metadata[idx])
+            for idx, task in enumerate(tasks)
+        }
+
+        # Process tasks as they complete
+        while pending_tasks:
+            done, pending = await asyncio.wait(
+                pending_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+            )
+
+            for task in done:
+                idx, metadata = pending_tasks.pop(task)
+                scraper_name = metadata.split(":")[0].strip()
+                route = metadata.split(":")[1].strip() if ":" in metadata else ""
+
+                try:
+                    result = task.result()
+                    results[idx] = result
+                    flight_count = len(result) if isinstance(result, list) else 0
+
+                    # Update progress for this scraper
+                    if scraper_name in scraper_tasks:
+                        progress.update(
+                            scraper_tasks[scraper_name],
+                            advance=1,
+                            description=f"[green]{scraper_name}: {route} ({flight_count} flights)",
+                        )
+
+                    # Log completion
+                    logger.info(f"✓ {scraper_name} completed {route}: {flight_count} flights found")
+
+                except Exception as e:
+                    results[idx] = e
+
+                    # Update progress to show failure
+                    if scraper_name in scraper_tasks:
+                        progress.update(
+                            scraper_tasks[scraper_name],
+                            advance=1,
+                            description=f"[red]{scraper_name}: {route} (failed)",
+                        )
+
+                    # Log error
+                    logger.error(f"✗ {scraper_name} failed {route}: {str(e)}")
+
+        return results
+
     async def scrape_source(
         self,
         scraper,
@@ -274,10 +374,13 @@ class FlightOrchestrator:
         """
         departure_date, return_date = dates
 
-        logger.info(
-            f"[{scraper_name}] Scraping {origin} → {destination}, "
+        # Log start of scraping with console output for immediate feedback
+        log_msg = (
+            f"[{scraper_name}] Starting scrape: {origin} → {destination}, "
             f"{departure_date} to {return_date}"
         )
+        logger.info(log_msg)
+        console.print(f"[dim cyan]⟳ {log_msg}[/dim cyan]")
 
         try:
             # Call appropriate scraper method based on type
@@ -380,15 +483,21 @@ class FlightOrchestrator:
                 logger.error(f"Unknown scraper: {scraper_name}")
                 return []
 
-            logger.info(f"[{scraper_name}] Found {len(flights)} flights")
+            # Log completion with console output for immediate feedback
+            success_msg = f"[{scraper_name}] Completed: {len(flights)} flights found"
+            logger.info(success_msg)
+            console.print(f"[dim green]✓ {success_msg}[/dim green]")
             return flights
 
         except Exception as e:
-            logger.error(
-                f"[{scraper_name}] Scraping failed for {origin}→{destination}: {e}",
-                exc_info=True,
-            )
-            return []
+            # Log error with console output for immediate user feedback
+            error_msg = f"[{scraper_name}] Scraping failed for {origin}→{destination}: {e}"
+            logger.error(error_msg, exc_info=True)
+            console.print(f"[dim red]✗ {error_msg}[/dim red]")
+
+            # Re-raise exception to let scrape_all handle it via return_exceptions=True
+            # This allows proper failure tracking and threshold checking
+            raise
 
     def deduplicate(self, flights: List[Dict]) -> List[Dict]:
         """
@@ -440,15 +549,23 @@ class FlightOrchestrator:
                     logger.warning(f"Invalid departure_date format: {dep_date_str}")
                     continue
 
-                # Parse time (handle None or empty string)
-                if dep_time_str and dep_time_str != "None":
-                    try:
-                        dep_time = datetime.strptime(dep_time_str, "%H:%M").time()
-                        dep_datetime = datetime.combine(dep_date, dep_time)
-                    except (ValueError, TypeError):
-                        dep_datetime = datetime.combine(dep_date, time(12, 0))  # Default noon
+                # Parse time using robust parser
+                dep_time = parse_time(
+                    dep_time_str,
+                    context=f"departure_time for {flight.get('origin_airport')}->{flight.get('destination_airport')}"
+                )
+
+                # Use parsed time or default to noon if parsing failed
+                if dep_time is not None:
+                    dep_datetime = datetime.combine(dep_date, dep_time)
                 else:
-                    dep_datetime = datetime.combine(dep_date, time(12, 0))  # Default noon
+                    # Default to noon for grouping purposes when time is unavailable
+                    dep_datetime = datetime.combine(dep_date, time(12, 0))
+                    if dep_time_str:  # Only log if there was a value that failed to parse
+                        logger.debug(
+                            f"Using default noon for grouping (departure time unavailable): "
+                            f"{flight.get('origin_airport')}->{flight.get('destination_airport')} on {dep_date}"
+                        )
 
                 # Round departure time to 2-hour blocks for grouping
                 hour_block = (dep_datetime.hour // 2) * 2
@@ -462,14 +579,23 @@ class FlightOrchestrator:
                     try:
                         ret_date = datetime.strptime(ret_date_str, "%Y-%m-%d").date()
 
-                        if ret_time_str and ret_time_str != "None":
-                            try:
-                                ret_time = datetime.strptime(ret_time_str, "%H:%M").time()
-                                ret_datetime = datetime.combine(ret_date, ret_time)
-                            except (ValueError, TypeError):
-                                ret_datetime = datetime.combine(ret_date, time(12, 0))
+                        # Parse return time using robust parser
+                        ret_time = parse_time(
+                            ret_time_str,
+                            context=f"return_time for {flight.get('origin_airport')}->{flight.get('destination_airport')}"
+                        )
+
+                        # Use parsed time or default to noon if parsing failed
+                        if ret_time is not None:
+                            ret_datetime = datetime.combine(ret_date, ret_time)
                         else:
+                            # Default to noon for grouping purposes when time is unavailable
                             ret_datetime = datetime.combine(ret_date, time(12, 0))
+                            if ret_time_str:  # Only log if there was a value that failed to parse
+                                logger.debug(
+                                    f"Using default noon for grouping (return time unavailable): "
+                                    f"{flight.get('origin_airport')}->{flight.get('destination_airport')} on {ret_date}"
+                                )
 
                         ret_hour_block = (ret_datetime.hour // 2) * 2
                         rounded_ret_time = ret_datetime.replace(
@@ -634,19 +760,17 @@ class FlightOrchestrator:
                                 stats["skipped"] += 1
                                 continue
 
-                            # Parse departure time
-                            if dep_time_str and dep_time_str != "None":
-                                try:
-                                    departure_time_obj = datetime.strptime(dep_time_str, "%H:%M").time()
-                                except (ValueError, TypeError):
-                                    departure_time_obj = None
-                            else:
-                                departure_time_obj = None
+                            # Parse departure time using robust parser
+                            departure_time_obj = parse_time(
+                                dep_time_str,
+                                context=f"departure_time for DB save {origin_airport.iata_code}->{destination_airport.iata_code}"
+                            )
 
                             # Parse return date and time
                             ret_date_str = flight_data.get("return_date")
                             ret_time_str = flight_data.get("return_time")
 
+                            # Parse return date
                             if ret_date_str and ret_date_str != "None":
                                 try:
                                     return_date_obj = datetime.strptime(ret_date_str, "%Y-%m-%d").date()
@@ -655,13 +779,11 @@ class FlightOrchestrator:
                             else:
                                 return_date_obj = None
 
-                            if ret_time_str and ret_time_str != "None":
-                                try:
-                                    return_time_obj = datetime.strptime(ret_time_str, "%H:%M").time()
-                                except (ValueError, TypeError):
-                                    return_time_obj = None
-                            else:
-                                return_time_obj = None
+                            # Parse return time using robust parser
+                            return_time_obj = parse_time(
+                                ret_time_str,
+                                context=f"return_time for DB save {origin_airport.iata_code}->{destination_airport.iata_code}"
+                            )
 
                             # Check for existing flight (within 2-hour window)
                             existing_flight = await self._check_duplicate_flight(

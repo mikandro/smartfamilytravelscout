@@ -11,8 +11,9 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from anthropic import Anthropic, APIError, RateLimitError, APIConnectionError
+from anthropic import AsyncAnthropic, APIError, RateLimitError, APIConnectionError
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenacity import (
     retry,
@@ -22,6 +23,7 @@ from tenacity import (
 )
 
 from app.models.api_cost import ApiCost
+from app.models.model_pricing import ModelPricing
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ class ClaudeClient:
     - JSON response parsing with markdown code block handling
     - Retry logic for transient failures
     - Comprehensive error handling
+    - Dynamic pricing loaded from database with fallback to defaults
 
     Example:
         >>> client = ClaudeClient(api_key="sk-...", redis_client=redis)
@@ -53,9 +56,10 @@ class ClaudeClient:
         >>> print(response["score"])
     """
 
-    # Claude Sonnet 4.5 pricing (as of 2025)
-    INPUT_COST_PER_MILLION = 3.0  # $3 per 1M input tokens
-    OUTPUT_COST_PER_MILLION = 15.0  # $15 per 1M output tokens
+    # Default pricing fallback (Claude Sonnet 4.5 as of 2025-11-01)
+    # These are used if database pricing lookup fails
+    DEFAULT_INPUT_COST_PER_MILLION = 3.0  # $3 per 1M input tokens
+    DEFAULT_OUTPUT_COST_PER_MILLION = 15.0  # $15 per 1M output tokens
 
     def __init__(
         self,
@@ -75,13 +79,79 @@ class ClaudeClient:
             cache_ttl: Cache TTL in seconds (default: 86400 = 24 hours)
             db_session: Optional database session for cost tracking
         """
-        self.client = Anthropic(api_key=api_key)
+        self.client = AsyncAnthropic(api_key=api_key)
         self.redis = redis_client
         self.model = model
         self.cache_ttl = cache_ttl
         self.db_session = db_session
 
+        # Pricing will be loaded from database on first use
+        self.input_cost_per_million: Optional[float] = None
+        self.output_cost_per_million: Optional[float] = None
+        self._pricing_loaded = False
+
         logger.info(f"Initialized ClaudeClient with model: {model}")
+
+    async def _load_pricing(self) -> None:
+        """
+        Load pricing from database for the current model.
+
+        Falls back to default constants if pricing not found in database.
+        This is called automatically on first API call.
+        """
+        if self._pricing_loaded:
+            return
+
+        # If no database session, use defaults
+        if not self.db_session:
+            logger.warning(
+                f"No database session available, using default pricing for {self.model}"
+            )
+            self.input_cost_per_million = self.DEFAULT_INPUT_COST_PER_MILLION
+            self.output_cost_per_million = self.DEFAULT_OUTPUT_COST_PER_MILLION
+            self._pricing_loaded = True
+            return
+
+        try:
+            # Query for the most recent pricing for this model
+            stmt = (
+                select(ModelPricing)
+                .where(
+                    ModelPricing.service == "claude",
+                    ModelPricing.model == self.model,
+                    ModelPricing.effective_date <= datetime.now(),
+                )
+                .order_by(ModelPricing.effective_date.desc())
+                .limit(1)
+            )
+            result = await self.db_session.execute(stmt)
+            pricing = result.scalar_one_or_none()
+
+            if pricing:
+                self.input_cost_per_million = pricing.input_cost_per_million
+                self.output_cost_per_million = pricing.output_cost_per_million
+                logger.info(
+                    f"Loaded pricing from database for {self.model}: "
+                    f"${self.input_cost_per_million}/M input, "
+                    f"${self.output_cost_per_million}/M output "
+                    f"(effective {pricing.effective_date.date()})"
+                )
+            else:
+                # No pricing found in database, use defaults
+                logger.warning(
+                    f"No pricing found in database for {self.model}, using defaults"
+                )
+                self.input_cost_per_million = self.DEFAULT_INPUT_COST_PER_MILLION
+                self.output_cost_per_million = self.DEFAULT_OUTPUT_COST_PER_MILLION
+
+            self._pricing_loaded = True
+
+        except Exception as e:
+            logger.error(f"Error loading pricing from database: {e}")
+            # Fall back to defaults on error
+            self.input_cost_per_million = self.DEFAULT_INPUT_COST_PER_MILLION
+            self.output_cost_per_million = self.DEFAULT_OUTPUT_COST_PER_MILLION
+            self._pricing_loaded = True
 
     async def analyze(
         self,
@@ -114,6 +184,9 @@ class ClaudeClient:
             ClaudeAPIError: If the API call fails or response parsing fails
         """
         try:
+            # Load pricing from database if not already loaded
+            await self._load_pricing()
+
             # Format prompt with data
             if data:
                 full_prompt = prompt.format(**data)
@@ -212,7 +285,7 @@ class ClaudeClient:
             APIConnectionError: If connection fails after retries
             APIError: For other API errors
         """
-        return self.client.messages.create(
+        return await self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -324,6 +397,8 @@ class ClaudeClient:
         """
         Calculate API cost and log to database.
 
+        Uses pricing loaded from database, or defaults if not available.
+
         Args:
             input_tokens: Number of input tokens
             output_tokens: Number of output tokens
@@ -334,9 +409,12 @@ class ClaudeClient:
         Returns:
             Total cost in USD
         """
-        # Calculate cost
-        input_cost = (input_tokens / 1_000_000) * self.INPUT_COST_PER_MILLION
-        output_cost = (output_tokens / 1_000_000) * self.OUTPUT_COST_PER_MILLION
+        # Ensure pricing is loaded
+        await self._load_pricing()
+
+        # Calculate cost using loaded pricing
+        input_cost = (input_tokens / 1_000_000) * self.input_cost_per_million
+        output_cost = (output_tokens / 1_000_000) * self.output_cost_per_million
         total_cost = input_cost + output_cost
 
         logger.info(
