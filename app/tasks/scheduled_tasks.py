@@ -14,10 +14,27 @@ logger = logging.getLogger(__name__)
 @celery_app.task(name="app.tasks.scheduled_tasks.daily_flight_search", bind=True)
 def daily_flight_search(self):
     """
-    Daily task to search for flight deals.
+    Daily scheduled task to search for flight deals from configured airports.
 
-    Runs every day at 6 AM UTC.
-    Searches for flights from configured departure airports.
+    Runs every day at 6 AM UTC via Celery beat scheduler.
+    Searches for flights from all configured departure airports within
+    the advance booking window (configurable days ahead).
+
+    Args:
+        self: Celery task instance (bound task)
+
+    Returns:
+        dict: Task result with keys:
+            - status: 'success' if completed successfully
+            - airports: List of airport codes searched
+            - task_id: Unique Celery task ID
+
+    Raises:
+        Exception: Any errors during flight search are logged and re-raised
+
+    Examples:
+        >>> # Triggered automatically by Celery beat
+        >>> # Or manually via: daily_flight_search.delay()
     """
     logger.info("Starting daily flight search task")
 
@@ -48,10 +65,26 @@ def daily_flight_search(self):
 @celery_app.task(name="app.tasks.scheduled_tasks.update_flight_prices", bind=True)
 def update_flight_prices(self):
     """
-    Hourly task to update flight prices.
+    Hourly scheduled task to refresh flight prices from sources.
 
-    Runs every hour.
-    Updates prices for tracked flights.
+    Runs every hour at :00 minutes via Celery beat scheduler.
+    Re-scrapes prices for tracked flights to detect price changes
+    and update price history.
+
+    Args:
+        self: Celery task instance (bound task)
+
+    Returns:
+        dict: Task result with keys:
+            - status: 'success' if completed successfully
+            - task_id: Unique Celery task ID
+
+    Raises:
+        Exception: Any errors during price updates are logged and re-raised
+
+    Examples:
+        >>> # Triggered automatically by Celery beat every hour
+        >>> # Or manually via: update_flight_prices.delay()
     """
     logger.info("Starting hourly price update task")
 
@@ -73,10 +106,26 @@ def update_flight_prices(self):
 @celery_app.task(name="app.tasks.scheduled_tasks.discover_events", bind=True)
 def discover_events(self):
     """
-    Weekly task to discover family-friendly events.
+    Weekly scheduled task to discover family-friendly events at destinations.
 
-    Runs every Sunday at 8 AM UTC.
-    Discovers events from Eventbrite and other sources.
+    Runs every Sunday at 8 AM UTC via Celery beat scheduler.
+    Scrapes events from Eventbrite API and tourism websites for
+    popular destinations.
+
+    Args:
+        self: Celery task instance (bound task)
+
+    Returns:
+        dict: Task result with keys:
+            - status: 'success' if completed successfully
+            - task_id: Unique Celery task ID
+
+    Raises:
+        Exception: Any errors during event discovery are logged and re-raised
+
+    Examples:
+        >>> # Triggered automatically by Celery beat every Sunday
+        >>> # Or manually via: discover_events.delay()
     """
     logger.info("Starting weekly event discovery task")
 
@@ -98,10 +147,26 @@ def discover_events(self):
 @celery_app.task(name="app.tasks.scheduled_tasks.search_accommodations", bind=True)
 def search_accommodations(self):
     """
-    Daily task to search for accommodations.
+    Daily scheduled task to search for family-friendly accommodations.
 
-    Runs every day at 7 AM UTC.
-    Searches for family-friendly accommodations.
+    Runs every day at 7 AM UTC via Celery beat scheduler.
+    Scrapes accommodations from Booking.com and Airbnb for destinations
+    with available flight deals.
+
+    Args:
+        self: Celery task instance (bound task)
+
+    Returns:
+        dict: Task result with keys:
+            - status: 'success' if completed successfully
+            - task_id: Unique Celery task ID
+
+    Raises:
+        Exception: Any errors during accommodation search are logged and re-raised
+
+    Examples:
+        >>> # Triggered automatically by Celery beat every day
+        >>> # Or manually via: search_accommodations.delay()
     """
     logger.info("Starting daily accommodation search task")
 
@@ -124,10 +189,27 @@ def search_accommodations(self):
 @celery_app.task(name="app.tasks.scheduled_tasks.cleanup_old_data", bind=True)
 def cleanup_old_data(self):
     """
-    Daily task to clean up old data.
+    Daily scheduled task to clean up expired and old data.
 
-    Runs every day at 2 AM UTC.
-    Removes expired deals, old price data, etc.
+    Runs every day at 2 AM UTC via Celery beat scheduler.
+    Removes data older than 30 days including expired flight deals,
+    old price history records, and outdated trip packages.
+
+    Args:
+        self: Celery task instance (bound task)
+
+    Returns:
+        dict: Task result with keys:
+            - status: 'success' if completed successfully
+            - cutoff_date: ISO format date used as deletion threshold
+            - task_id: Unique Celery task ID
+
+    Raises:
+        Exception: Any errors during cleanup are logged and re-raised
+
+    Examples:
+        >>> # Triggered automatically by Celery beat every day at 2 AM
+        >>> # Or manually via: cleanup_old_data.delay()
     """
     logger.info("Starting daily cleanup task")
 
@@ -153,10 +235,28 @@ def cleanup_old_data(self):
 @celery_app.task(name="app.tasks.scheduled_tasks.send_deal_notifications", bind=True)
 def send_deal_notifications(self):
     """
-    Task to send notifications for new deals.
+    Send email notifications for new high-scoring travel deals.
 
-    Can be triggered manually or scheduled.
-    Sends email notifications to users about new deals.
+    Can be triggered manually or added to beat schedule.
+    Sends email notifications to users about new deals that exceed
+    their configured notification threshold and haven't been notified yet.
+
+    Args:
+        self: Celery task instance (bound task)
+
+    Returns:
+        dict: Task result with keys:
+            - status: 'success' if completed successfully
+            - task_id: Unique Celery task ID
+
+    Raises:
+        Exception: Any errors during notification sending are logged and re-raised
+
+    Examples:
+        >>> # Trigger manually via:
+        >>> send_deal_notifications.delay()
+        >>> # Or call synchronously for testing:
+        >>> send_deal_notifications()
     """
     logger.info("Starting deal notification task")
 

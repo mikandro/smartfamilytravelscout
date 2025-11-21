@@ -23,8 +23,42 @@ from app.models.base import Base, TimestampMixin
 
 class Flight(Base, TimestampMixin):
     """
-    Model for storing flight information from multiple sources.
-    Supports both one-way and round-trip flights.
+    SQLAlchemy model for storing flight information from multiple scraper sources.
+
+    Represents flight deals with pricing, schedule, and source information.
+    Supports both one-way and round-trip flights with optional return dates.
+    Tracks true cost including baggage, parking, and other fees.
+
+    Attributes:
+        id: Unique flight ID (auto-increment)
+        origin_airport_id: Foreign key to origin Airport
+        destination_airport_id: Foreign key to destination Airport
+        airline: Airline name (e.g., "Ryanair", "Lufthansa")
+        departure_date: Flight departure date
+        departure_time: Flight departure time (optional)
+        return_date: Return flight date (optional, null for one-way)
+        return_time: Return flight time (optional)
+        price_per_person: Base price in EUR per person
+        total_price: Total price for 4 people in EUR
+        true_cost: Total cost including fees, parking, baggage (calculated)
+        booking_class: Seat class (e.g., "Economy", "Premium Economy")
+        direct_flight: Whether flight is non-stop
+        source: Scraper source name ("kiwi", "skyscanner", "ryanair", "wizzair")
+        booking_url: Deep link to booking page
+        scraped_at: Timestamp when flight was scraped
+        origin_airport: Relationship to origin Airport object
+        destination_airport: Relationship to destination Airport object
+
+    Examples:
+        >>> flight = Flight(
+        ...     airline="Ryanair",
+        ...     departure_date=date(2025, 6, 15),
+        ...     return_date=date(2025, 6, 22),
+        ...     price_per_person=89.99,
+        ...     total_price=359.96,
+        ...     direct_flight=True,
+        ...     source="ryanair"
+        ... )
     """
 
     __tablename__ = "flights"
@@ -91,19 +125,35 @@ class Flight(Base, TimestampMixin):
 
     @property
     def route(self) -> str:
-        """Return route code like 'MUC-LIS'."""
+        """
+        Return route code in IATA format (e.g., 'MUC-LIS').
+
+        Returns:
+            str: Origin-Destination airport codes (e.g., "MUC-LIS", "VIE-BCN")
+        """
         origin_code = self.origin_airport.iata_code if self.origin_airport else "N/A"
         dest_code = self.destination_airport.iata_code if self.destination_airport else "N/A"
         return f"{origin_code}-{dest_code}"
 
     @property
     def is_round_trip(self) -> bool:
-        """Check if this is a round-trip flight."""
+        """
+        Check if this is a round-trip flight.
+
+        Returns:
+            bool: True if return_date is set, False for one-way flights
+        """
         return self.return_date is not None
 
     @property
     def duration_days(self) -> Optional[int]:
-        """Calculate trip duration in days if round-trip."""
+        """
+        Calculate trip duration in days for round-trip flights.
+
+        Returns:
+            Optional[int]: Number of days between departure and return,
+                          or None for one-way flights
+        """
         if self.return_date and self.departure_date:
             return (self.return_date - self.departure_date).days
         return None

@@ -24,13 +24,45 @@ router = APIRouter()
 
 
 async def get_db() -> AsyncSession:
-    """Get database session."""
+    """
+    Get async database session for dependency injection.
+
+    Yields:
+        AsyncSession: Active database session that automatically commits or rolls back
+
+    Examples:
+        >>> @router.get("/items")
+        >>> async def read_items(db: AsyncSession = Depends(get_db)):
+        >>>     result = await db.execute(select(Item))
+        >>>     return result.scalars().all()
+    """
     async with AsyncSessionLocal() as session:
         yield session
 
 
 async def get_stats(db: AsyncSession) -> dict:
-    """Get dashboard statistics."""
+    """
+    Calculate and return dashboard statistics.
+
+    Aggregates data from the trip_packages table to provide overview metrics
+    including package counts, average scores and prices, and destination counts.
+
+    Args:
+        db: Async database session
+
+    Returns:
+        dict: Statistics dictionary with keys:
+            - total_packages: Total number of trip packages
+            - high_score_packages: Count of packages with AI score >= 70
+            - avg_score: Average AI score across all packages
+            - avg_price: Average total price across all packages
+            - unique_destinations: Number of unique destination cities
+
+    Examples:
+        >>> stats = await get_stats(db)
+        >>> print(stats['total_packages'])
+        125
+    """
     try:
         # Count packages
         total_packages = await db.scalar(select(func.count()).select_from(TripPackage))
@@ -71,7 +103,25 @@ async def get_stats(db: AsyncSession) -> dict:
 
 @router.get("/")
 async def dashboard(request: Request):
-    """Main dashboard with recent deals."""
+    """
+    Render the main dashboard page with recent top-scoring deals.
+
+    Displays up to 12 recent trip packages sorted by AI score descending,
+    along with aggregate statistics.
+
+    Args:
+        request: FastAPI Request object for template rendering
+
+    Returns:
+        TemplateResponse: Rendered dashboard.html template with context:
+            - deals: List of up to 12 top-scoring TripPackage objects
+            - stats: Dashboard statistics dict
+            - page_title: Page title string
+            - error: Error message (only if error occurs)
+
+    Examples:
+        Access via browser: GET http://localhost:8000/
+    """
     async with AsyncSessionLocal() as db:
         try:
             # Get recent deals ordered by AI score
@@ -117,7 +167,31 @@ async def deals_page(
     max_price: Optional[int] = None,
     package_type: Optional[str] = None,
 ):
-    """Deals list with filters."""
+    """
+    Render deals list page with optional filtering.
+
+    Supports filtering by AI score, destination city, price range, and package type.
+    Results are sorted by AI score descending.
+
+    Args:
+        request: FastAPI Request object for template rendering
+        min_score: Minimum AI score filter (0-100), defaults to 0
+        destination: Filter by destination city name
+        min_price: Minimum total price filter in EUR
+        max_price: Maximum total price filter in EUR
+        package_type: Filter by package type ('family' or 'parent_escape')
+
+    Returns:
+        TemplateResponse: Rendered deals.html template with context:
+            - deals: List of filtered TripPackage objects
+            - destinations: List of unique destination cities for filter dropdown
+            - filters: Dict of current filter values
+            - page_title: Page title string
+            - error: Error message (only if error occurs)
+
+    Examples:
+        GET /deals?min_score=70&destination=Barcelona&max_price=2000
+    """
     async with AsyncSessionLocal() as db:
         try:
             # Build query
@@ -181,7 +255,26 @@ async def deals_page(
 
 @router.get("/deal/{package_id}")
 async def deal_details(request: Request, package_id: int):
-    """View detailed information about a specific deal."""
+    """
+    Render detailed view of a specific trip package.
+
+    Displays comprehensive information about a trip package including
+    flights, accommodation details, events, itinerary, and AI analysis.
+
+    Args:
+        request: FastAPI Request object for template rendering
+        package_id: Integer ID of the TripPackage to display
+
+    Returns:
+        TemplateResponse: Rendered deal_details.html or error.html template with context:
+            - deal: TripPackage object with full details
+            - accommodation: Accommodation object if associated
+            - page_title: Page title string
+            - error: Error message (if package not found or error occurs)
+
+    Examples:
+        GET /deal/123
+    """
     async with AsyncSessionLocal() as db:
         try:
             # Get the package
@@ -222,7 +315,24 @@ async def deal_details(request: Request, package_id: int):
 
 @router.get("/preferences")
 async def preferences_page(request: Request):
-    """User preferences configuration form."""
+    """
+    Render user preferences configuration page.
+
+    Displays a form for configuring user travel preferences including
+    budget limits, destinations, interests, and notification settings.
+
+    Args:
+        request: FastAPI Request object for template rendering
+
+    Returns:
+        TemplateResponse: Rendered preferences.html template with context:
+            - preferences: UserPreference object (or default if none exists)
+            - page_title: Page title string
+            - error: Error message (only if error occurs)
+
+    Examples:
+        GET /preferences
+    """
     async with AsyncSessionLocal() as db:
         try:
             # Get the first user preference (for now, single user system)
@@ -272,7 +382,33 @@ async def update_preferences(
     avoid_destinations: str = Form(""),
     interests: str = Form(""),
 ):
-    """Update user preferences."""
+    """
+    Handle user preferences form submission and update database.
+
+    Parses form data, converts comma-separated lists to arrays, and
+    updates or creates UserPreference record in the database.
+
+    Args:
+        request: FastAPI Request object for template rendering
+        max_flight_price_family: Maximum flight price for family trips in EUR
+        max_flight_price_parents: Maximum flight price for parent-only trips in EUR
+        max_total_budget_family: Maximum total budget for family trips in EUR
+        notification_threshold: Minimum AI score (0-100) to trigger notifications
+        parent_escape_frequency: How often to suggest parent-only trips ('weekly', 'monthly')
+        preferred_destinations: Comma-separated list of preferred destination cities
+        avoid_destinations: Comma-separated list of destinations to avoid
+        interests: Comma-separated list of user interests (e.g., "museums, beaches, hiking")
+
+    Returns:
+        TemplateResponse: Rendered preferences.html template with context:
+            - preferences: Updated UserPreference object
+            - page_title: Page title string
+            - success: Success message (if update successful)
+            - error: Error message (only if error occurs)
+
+    Examples:
+        POST /preferences with form data
+    """
     async with AsyncSessionLocal() as db:
         try:
             # Get existing preferences
@@ -332,7 +468,27 @@ async def update_preferences(
 
 @router.get("/stats")
 async def stats_page(request: Request):
-    """Statistics and charts page."""
+    """
+    Render statistics and analytics page with charts.
+
+    Displays comprehensive analytics including price distributions,
+    score distributions, and top destinations with aggregated data.
+
+    Args:
+        request: FastAPI Request object for template rendering
+
+    Returns:
+        TemplateResponse: Rendered stats.html template with context:
+            - stats: Overall statistics dict (from get_stats)
+            - price_data: List of (price, destination) tuples for price distribution
+            - score_data: List of (score, destination) tuples for score distribution
+            - top_destinations: List of (destination, count, avg_score) tuples
+            - page_title: Page title string
+            - error: Error message (only if error occurs)
+
+    Examples:
+        GET /stats
+    """
     async with AsyncSessionLocal() as db:
         try:
             # Get overall stats
