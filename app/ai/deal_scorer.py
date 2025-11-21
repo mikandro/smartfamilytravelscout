@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.claude_client import ClaudeClient
 from app.ai.prompt_loader import PromptLoader
+from app.config import settings
 from app.models.accommodation import Accommodation
 from app.models.event import Event
 from app.models.flight import Flight
@@ -138,8 +139,9 @@ class DealScorer:
                 data=prompt_data,
                 response_format="json",
                 use_cache=True,
-                max_tokens=2048,
+                max_tokens=settings.claude_max_tokens_default,
                 operation="deal_scoring",
+                temperature=settings.claude_temperature,
             )
 
             # Validate response structure

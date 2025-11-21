@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.claude_client import ClaudeClient
 from app.ai.prompt_loader import PromptLoader
+from app.config import settings
 from app.models.event import Event
 from app.models.user_preference import UserPreference
 
@@ -114,9 +115,9 @@ class EventScorer:
                 data=event_data,
                 response_format="json",
                 use_cache=True,
-                max_tokens=1024,
+                max_tokens=settings.claude_max_tokens_event,
                 operation="event_scoring",
-                temperature=0.7,
+                temperature=settings.claude_temperature,
             )
 
             # Extract relevance score

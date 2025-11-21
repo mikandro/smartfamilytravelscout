@@ -78,6 +78,25 @@ class Settings(BaseSettings):
         description="User agent for scrapers",
     )
 
+    # Business Logic Configuration
+    default_currency: str = Field(default="EUR", description="Default currency for prices")
+    family_size: int = Field(default=4, description="Default family size for calculations")
+    days_lookahead: int = Field(default=180, description="Days to look ahead for trip searches")
+
+    # AI Configuration
+    claude_max_tokens_default: int = Field(
+        default=2048, description="Default max tokens for Claude API calls"
+    )
+    claude_max_tokens_itinerary: int = Field(
+        default=4096, description="Max tokens for itinerary generation (detailed output)"
+    )
+    claude_max_tokens_event: int = Field(
+        default=1024, description="Max tokens for event scoring (simple output)"
+    )
+    claude_temperature: float = Field(
+        default=0.7, description="Temperature for Claude API calls (0.0-1.0)"
+    )
+
     # Price Thresholds (in EUR)
     max_flight_price_per_person: float = Field(
         default=200.0, description="Maximum flight price per person in EUR"

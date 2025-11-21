@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.claude_client import ClaudeClient
 from app.ai.prompt_loader import load_prompt
+from app.config import settings
 from app.models.accommodation import Accommodation
 from app.models.event import Event
 from app.models.trip_package import TripPackage
@@ -160,9 +161,9 @@ class ItineraryGenerator:
                 data=prompt_data,
                 response_format="json",
                 use_cache=True,
-                max_tokens=4096,  # Larger token limit for detailed itineraries
+                max_tokens=settings.claude_max_tokens_itinerary,
                 operation="itinerary_generation",
-                temperature=0.7,  # Slightly lower for more consistent formatting
+                temperature=settings.claude_temperature,
             )
 
             # Extract itinerary (without metadata)

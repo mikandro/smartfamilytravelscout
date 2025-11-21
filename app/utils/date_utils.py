@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Iterator, List, Tuple
 
+from app.config import settings
+
 
 @dataclass
 class Holiday:
@@ -445,7 +447,7 @@ def get_school_holiday_periods(
 
     Args:
         start_date: Start of the search range. If None, uses today.
-        end_date: End of the search range. If None, uses 6 months from start.
+        end_date: End of the search range. If None, uses configured lookahead days from start.
         holidays: List of Holiday objects. If None, uses Bavaria 2025-2026 holidays.
 
     Returns:
@@ -460,7 +462,7 @@ def get_school_holiday_periods(
         start_date = date.today()
 
     if end_date is None:
-        end_date = start_date + timedelta(days=180)  # 6 months
+        end_date = start_date + timedelta(days=settings.days_lookahead)
 
     if holidays is None:
         holidays = BAVARIA_HOLIDAYS_2025_2026

@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.airport import Airport
 from app.models.flight import Flight
 
@@ -276,7 +277,7 @@ class TrueCostCalculator:
         # Calculate totals
         hidden_costs = baggage + parking + fuel + time_value
         total_true_cost = base_price + hidden_costs
-        cost_per_person = round(total_true_cost / 4.0, 2)  # Assuming 4 people
+        cost_per_person = round(total_true_cost / float(settings.family_size), 2)
 
         return {
             'base_price': round(base_price, 2),
