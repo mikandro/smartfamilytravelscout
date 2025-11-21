@@ -15,6 +15,7 @@ Example:
 """
 
 import asyncio
+import time as time_module
 import logging
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
@@ -36,6 +37,13 @@ from app.models.airport import Airport
 from app.models.flight import Flight
 from app.models.scraping_job import ScrapingJob
 from app.domain.party_size import FAMILY, PartySize
+from app.monitoring.metrics import (
+    active_scraping_jobs,
+    flights_discovered_total,
+    scraper_duration_seconds,
+    scraper_requests_total,
+    scraping_errors_total,
+)
 from app.scrapers.flight_source import (
     FlightQuery,
     FlightSource,
@@ -436,6 +444,11 @@ class FlightOrchestrator:
             SourceError: Re-raised so scrape_all can count it against the
                 failure threshold. Adapters translate their scraper's own
                 exceptions into these declared modes.
+
+        Emits Prometheus metrics for request count, duration, in-flight jobs,
+        discovered flights and error type. Labels come from the source and the
+        query rather than the loose `scraper_name`/`origin`/`destination`
+        locals the original instrumentation relied on.
         """
         log_msg = (
             f"[{source.name}] Starting scrape: {query.origin} \u2192 {query.destination}, "
@@ -444,9 +457,20 @@ class FlightOrchestrator:
         logger.info(log_msg)
         self._report(f"[dim cyan]\u27f3 {log_msg}[/dim cyan]")
 
+        active_scraping_jobs.labels(scraper=source.name).inc()
+        start_time = time_module.monotonic()
+        status = "success"
+
         try:
             flights = await source.search(query)
         except SourceError as exc:
+            status = "failure"
+            # The declared error mode is a far more useful label than the
+            # concrete class name: it distinguishes "rate limited, back off"
+            # from "parse broke, fix the adapter".
+            scraping_errors_total.labels(
+                scraper=source.name, error_type=type(exc).__name__
+            ).inc()
             error_msg = (
                 f"[{source.name}] Scraping failed for "
                 f"{query.origin}\u2192{query.destination}: {exc} "
@@ -455,6 +479,21 @@ class FlightOrchestrator:
             logger.error(error_msg, exc_info=True)
             self._report(f"[dim red]\u2717 {error_msg}[/dim red]")
             raise
+        finally:
+            active_scraping_jobs.labels(scraper=source.name).dec()
+            scraper_duration_seconds.labels(scraper=source.name).observe(
+                time_module.monotonic() - start_time
+            )
+            scraper_requests_total.labels(
+                scraper=source.name, status=status
+            ).inc()
+
+        if flights:
+            flights_discovered_total.labels(
+                scraper=source.name,
+                origin=query.origin,
+                destination=query.destination,
+            ).inc(len(flights))
 
         success_msg = f"[{source.name}] Completed: {len(flights)} flights found"
         logger.info(success_msg)
