@@ -18,6 +18,7 @@ from bs4 import BeautifulSoup
 from dateutil import parser as dateutil_parser
 from playwright.async_api import async_playwright, Browser, Page
 
+from app.config import settings
 from app.models.event import Event
 from app.utils.date_utils import parse_date
 
@@ -271,7 +272,7 @@ class BaseTourismScraper(ABC):
             except Exception as e:
                 logger.warning(f"Attempt {attempt + 1}/{self.MAX_RETRIES} failed for {url}: {e}")
                 if attempt < self.MAX_RETRIES - 1:
-                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    await asyncio.sleep(settings.scraper_request_delay * (2 ** attempt))  # Exponential backoff
                 else:
                     logger.error(f"Failed to fetch {url} after {self.MAX_RETRIES} attempts")
                     return None

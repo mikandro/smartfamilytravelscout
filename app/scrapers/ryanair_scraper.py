@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from playwright_stealth import Stealth
 
+from app.config import settings
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -604,7 +605,10 @@ class RyanairScraper:
 
             # Wait for results page to load
             await page.wait_for_load_state("networkidle", timeout=60000)
-            await self._human_delay(5, 8)  # Conservative delay
+            await self._human_delay(
+                settings.scraper_page_load_delay * 2.5,
+                settings.scraper_page_load_delay * 4
+            )  # Conservative delay
 
         except Exception as e:
             logger.error(f"Error submitting search: {e}")
@@ -838,7 +842,10 @@ class RyanairScraper:
             # Navigate to homepage
             logger.info(f"Navigating to {self.BASE_URL}...")
             await self.page.goto(self.BASE_URL, wait_until="networkidle", timeout=60000)
-            await self._human_delay(3, 5)
+            await self._human_delay(
+                settings.scraper_page_load_delay * 1.5,
+                settings.scraper_page_load_delay * 2.5
+            )
 
             # Save initial screenshot
             await self._save_screenshot("initial_page")
@@ -894,7 +901,10 @@ class RyanairScraper:
 
         finally:
             # Add conservative delay before closing
-            await self._human_delay(5, 10)
+            await self._human_delay(
+                settings.scraper_page_load_delay * 2.5,
+                settings.scraper_page_load_delay * 5
+            )
 
     def _construct_booking_url(
         self,

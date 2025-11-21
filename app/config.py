@@ -78,6 +78,32 @@ class Settings(BaseSettings):
         description="User agent for scrapers",
     )
 
+    # Scraping Delays (configurable for different environments and testing)
+    scraper_page_load_delay: float = Field(
+        default=2.0,
+        description="Delay after page navigation in seconds (set to 0.1 for testing)"
+    )
+    scraper_request_delay: float = Field(
+        default=1.0,
+        description="Base delay between requests in seconds (set to 0.1 for testing)"
+    )
+    scraper_action_delay: float = Field(
+        default=1.0,
+        description="Delay after user actions (clicks, form fills) in seconds"
+    )
+    scraper_dynamic_content_timeout: int = Field(
+        default=3000,
+        description="Timeout for dynamic content loading in milliseconds"
+    )
+    scraper_min_request_interval: float = Field(
+        default=3.0,
+        description="Minimum interval between requests in seconds (rate limiting)"
+    )
+    scraper_max_request_interval: float = Field(
+        default=7.0,
+        description="Maximum interval between requests in seconds (rate limiting)"
+    )
+
     # Price Thresholds (in EUR)
     max_flight_price_per_person: float = Field(
         default=200.0, description="Maximum flight price per person in EUR"

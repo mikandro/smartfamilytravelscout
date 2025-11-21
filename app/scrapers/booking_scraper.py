@@ -19,6 +19,7 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeout, async_
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models.accommodation import Accommodation
 
@@ -203,7 +204,7 @@ class BookingClient:
                     await page.wait_for_selector(selector, timeout=3000)
                     await page.click(selector)
                     logger.info("Cookie consent accepted")
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(settings.scraper_action_delay)
                     return
                 except PlaywrightTimeout:
                     continue
@@ -247,11 +248,17 @@ class BookingClient:
         for i in range(max_scrolls):
             # Scroll to bottom
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(random.uniform(1.5, 2.5))
+            await asyncio.sleep(random.uniform(
+                settings.scraper_page_load_delay * 0.75,
+                settings.scraper_page_load_delay * 1.25
+            ))
 
             # Scroll back up a bit (more human-like)
             await page.evaluate("window.scrollBy(0, -300)")
-            await asyncio.sleep(random.uniform(0.5, 1.0))
+            await asyncio.sleep(random.uniform(
+                settings.scraper_request_delay * 0.5,
+                settings.scraper_request_delay * 1.0
+            ))
 
         logger.info(f"Completed {max_scrolls} scroll cycles")
 

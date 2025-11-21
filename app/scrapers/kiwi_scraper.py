@@ -257,11 +257,11 @@ class KiwiClient:
                     )
                     raise
 
-                # Exponential backoff: 2s, 4s, 8s
-                wait_time = 2 ** attempt
+                # Exponential backoff: configurable base * 2^attempt
+                wait_time = settings.scraper_request_delay * (2 ** attempt)
                 self.logger.warning(
                     f"Request failed (attempt {attempt}/{max_retries}): {e}. "
-                    f"Retrying in {wait_time}s..."
+                    f"Retrying in {wait_time:.1f}s..."
                 )
                 await asyncio.sleep(wait_time)
 

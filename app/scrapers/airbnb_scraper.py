@@ -361,7 +361,7 @@ class AirbnbClient:
             try:
                 # Navigate to Airbnb search
                 await page.goto(url, wait_until="networkidle", timeout=30000)
-                await page.wait_for_timeout(3000)  # Wait for dynamic content
+                await page.wait_for_timeout(settings.scraper_dynamic_content_timeout)  # Wait for dynamic content
 
                 # Extract listing cards
                 listings = await page.query_selector_all('[data-testid="card-container"]')

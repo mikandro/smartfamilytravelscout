@@ -209,14 +209,18 @@ class SkyscannerScraper:
         current_time = time.time()
         time_since_last = current_time - _last_request_time
 
-        # Minimum 3 seconds between requests
-        if time_since_last < 3:
-            wait_time = 3 - time_since_last
+        # Minimum interval between requests
+        min_interval = settings.scraper_min_request_interval
+        if time_since_last < min_interval:
+            wait_time = min_interval - time_since_last
             logger.debug(f"Waiting {wait_time:.1f}s before next request...")
             await asyncio.sleep(wait_time)
 
-        # Add random delay (3-7 seconds total)
-        delay = random.uniform(3, 7)
+        # Add random delay
+        delay = random.uniform(
+            settings.scraper_min_request_interval,
+            settings.scraper_max_request_interval
+        )
         logger.debug(f"Respectful delay: {delay:.1f}s")
         await asyncio.sleep(delay)
 
@@ -250,7 +254,7 @@ class SkyscannerScraper:
                     if button:
                         await button.click()
                         logger.info(f"Clicked cookie consent: {selector}")
-                        await asyncio.sleep(1)  # Wait for popup to close
+                        await asyncio.sleep(settings.scraper_action_delay)  # Wait for popup to close
                         return
                 except PlaywrightTimeoutError:
                     continue
@@ -464,7 +468,7 @@ class SkyscannerScraper:
                 try:
                     await page.wait_for_selector(selector, timeout=10000)
                     logger.debug(f"Flight results loaded: {selector}")
-                    await asyncio.sleep(2)  # Extra wait for dynamic content
+                    await asyncio.sleep(settings.scraper_page_load_delay)  # Extra wait for dynamic content
                     return
                 except PlaywrightTimeoutError:
                     continue
