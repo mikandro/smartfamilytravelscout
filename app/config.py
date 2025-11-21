@@ -49,9 +49,6 @@ class Settings(BaseSettings):
 
     # API Keys - Travel Services
     kiwi_api_key: Optional[str] = Field(default=None, description="Kiwi.com API key")
-    skyscanner_api_key: Optional[str] = Field(default=None, description="Skyscanner API key")
-    amadeus_api_key: Optional[str] = Field(default=None, description="Amadeus API key")
-    amadeus_api_secret: Optional[str] = Field(default=None, description="Amadeus API secret")
     eventbrite_api_key: Optional[str] = Field(default=None, description="Eventbrite API key")
     apify_api_key: Optional[str] = Field(default=None, description="Apify API key for web scraping")
 
@@ -139,20 +136,6 @@ class Settings(BaseSettings):
     use_ryanair_scraper: bool = Field(default=True, description="Enable Ryanair scraper (free, no API key)")
     use_wizzair_scraper: bool = Field(default=True, description="Enable WizzAir scraper (free, no API key)")
 
-    # AWS Configuration (Optional)
-    aws_access_key_id: Optional[str] = Field(default=None, description="AWS access key ID")
-    aws_secret_access_key: Optional[str] = Field(
-        default=None, description="AWS secret access key"
-    )
-    aws_region: str = Field(default="eu-central-1", description="AWS region")
-    aws_s3_bucket: Optional[str] = Field(default=None, description="AWS S3 bucket name")
-
-    # Monitoring (Optional)
-    sentry_dsn: Optional[str] = Field(default=None, description="Sentry DSN")
-    sentry_environment: str = Field(default="development", description="Sentry environment")
-    sentry_traces_sample_rate: float = Field(
-        default=0.1, description="Sentry traces sample rate"
-    )
 
     @field_validator("celery_broker_url", mode="before")
     @classmethod
