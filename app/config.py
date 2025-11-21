@@ -77,6 +77,12 @@ class Settings(BaseSettings):
         default="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         description="User agent for scrapers",
     )
+    scraper_failure_threshold: float = Field(
+        default=0.5,
+        description="Maximum allowed scraper failure rate (0.0-1.0). Default 0.5 means abort if >50% of scrapers fail",
+        ge=0.0,
+        le=1.0,
+    )
 
     # Price Thresholds (in EUR)
     max_flight_price_per_person: float = Field(

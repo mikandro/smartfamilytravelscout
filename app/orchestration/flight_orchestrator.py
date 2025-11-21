@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_async_session_context
+from app.exceptions import ScraperFailureThresholdExceeded
 from app.models.airport import Airport
 from app.models.flight import Flight
 from app.models.scraping_job import ScrapingJob
@@ -205,6 +206,25 @@ class FlightOrchestrator:
             f"Scraping completed: {successful_scrapers} successful, {failed_scrapers} failed, "
             f"{len(all_flights)} total flights, {elapsed_time:.2f}s elapsed"
         )
+
+        # Check failure threshold
+        total_scrapers = successful_scrapers + failed_scrapers
+        if total_scrapers > 0:
+            failure_rate = failed_scrapers / total_scrapers
+            threshold = settings.scraper_failure_threshold
+
+            if failure_rate > threshold:
+                logger.critical(
+                    f"CRITICAL: Scraper failure threshold exceeded! "
+                    f"{failed_scrapers}/{total_scrapers} scrapers failed "
+                    f"({failure_rate:.1%} failure rate, threshold: {threshold:.1%})"
+                )
+                raise ScraperFailureThresholdExceeded(
+                    total_scrapers=total_scrapers,
+                    failed_scrapers=failed_scrapers,
+                    failure_rate=failure_rate,
+                    threshold=threshold,
+                )
 
         # Print statistics table
         self._print_stats_table(scraper_stats, elapsed_time)
@@ -388,7 +408,9 @@ class FlightOrchestrator:
                 f"[{scraper_name}] Scraping failed for {origin}→{destination}: {e}",
                 exc_info=True,
             )
-            return []
+            # Re-raise exception to let scrape_all handle it via return_exceptions=True
+            # This allows proper failure tracking and threshold checking
+            raise
 
     def deduplicate(self, flights: List[Dict]) -> List[Dict]:
         """

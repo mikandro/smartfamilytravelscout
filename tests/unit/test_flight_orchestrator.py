@@ -9,6 +9,7 @@ import pytest
 from datetime import date, datetime, time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.exceptions import ScraperFailureThresholdExceeded
 from app.orchestration.flight_orchestrator import FlightOrchestrator
 
 
@@ -18,12 +19,29 @@ class TestFlightOrchestrator:
     @pytest.fixture
     def orchestrator(self):
         """Create FlightOrchestrator instance with mocked scrapers."""
-        with patch("app.orchestration.flight_orchestrator.KiwiClient"), patch(
-            "app.orchestration.flight_orchestrator.SkyscannerScraper"
-        ), patch("app.orchestration.flight_orchestrator.RyanairScraper"), patch(
-            "app.orchestration.flight_orchestrator.WizzAirScraper"
-        ):
-            return FlightOrchestrator()
+        with patch("app.orchestration.flight_orchestrator.settings") as mock_settings, \
+             patch("app.orchestration.flight_orchestrator.KiwiClient") as mock_kiwi, \
+             patch("app.orchestration.flight_orchestrator.SkyscannerScraper") as mock_skyscanner, \
+             patch("app.orchestration.flight_orchestrator.RyanairScraper") as mock_ryanair, \
+             patch("app.orchestration.flight_orchestrator.WizzAirScraper") as mock_wizzair:
+
+            # Mock settings to enable all scrapers
+            mock_settings.get_available_scrapers.return_value = ["kiwi", "skyscanner", "ryanair", "wizzair"]
+            mock_settings.scraper_failure_threshold = 0.5
+
+            orchestrator = FlightOrchestrator()
+
+            # Ensure all scrapers are properly initialized (not None)
+            if orchestrator.kiwi is None:
+                orchestrator.kiwi = mock_kiwi.return_value
+            if orchestrator.skyscanner is None:
+                orchestrator.skyscanner = mock_skyscanner.return_value
+            if orchestrator.ryanair is None:
+                orchestrator.ryanair = mock_ryanair.return_value
+            if orchestrator.wizzair is None:
+                orchestrator.wizzair = mock_wizzair.return_value
+
+            return orchestrator
 
     @pytest.fixture
     def sample_flights(self):
@@ -294,21 +312,20 @@ class TestFlightOrchestrator:
 
     @pytest.mark.asyncio
     async def test_scrape_source_error_handling(self, orchestrator):
-        """Test that scrape_source handles errors gracefully."""
+        """Test that scrape_source logs errors and re-raises exceptions."""
         orchestrator.kiwi.search_flights = AsyncMock(
             side_effect=Exception("API Error")
         )
 
-        result = await orchestrator.scrape_source(
-            orchestrator.kiwi,
-            "kiwi",
-            "MUC",
-            "LIS",
-            (date(2025, 12, 20), date(2025, 12, 27)),
-        )
-
-        # Should return empty list on error
-        assert result == []
+        # Should raise exception (not silently return empty list)
+        with pytest.raises(Exception, match="API Error"):
+            await orchestrator.scrape_source(
+                orchestrator.kiwi,
+                "kiwi",
+                "MUC",
+                "LIS",
+                (date(2025, 12, 20), date(2025, 12, 27)),
+            )
 
     @pytest.mark.asyncio
     async def test_scrape_all_parallel_execution(self, orchestrator):
@@ -359,9 +376,9 @@ class TestFlightOrchestrator:
         assert len(result) >= 0  # At least the Kiwi flight (after deduplication)
 
     @pytest.mark.asyncio
-    async def test_scrape_all_handles_partial_failures(self, orchestrator):
-        """Test that scrape_all continues even if some scrapers fail."""
-        # Mock Kiwi to succeed, others to fail
+    async def test_scrape_all_handles_acceptable_partial_failures(self, orchestrator):
+        """Test that scrape_all continues when failure rate is acceptable (below threshold)."""
+        # Mock 2 scrapers to succeed, 2 to fail (50% failure rate = at threshold, should succeed)
         orchestrator.kiwi.search_flights = AsyncMock(
             return_value=[
                 {
@@ -382,7 +399,7 @@ class TestFlightOrchestrator:
             ]
         )
 
-        orchestrator.skyscanner.scrape_route = AsyncMock(side_effect=Exception("Skyscanner Error"))
+        orchestrator.skyscanner.scrape_route = AsyncMock(return_value=[])
         orchestrator.ryanair.scrape_route = AsyncMock(side_effect=Exception("Ryanair Error"))
         orchestrator.wizzair.search_flights = AsyncMock(side_effect=Exception("WizzAir Error"))
 
@@ -398,8 +415,8 @@ class TestFlightOrchestrator:
             date_ranges=[(date(2025, 12, 20), date(2025, 12, 27))],
         )
 
-        # Should still return Kiwi results despite other failures
-        assert len(result) >= 1
+        # Should return results when failure rate is at threshold (50% = at threshold, only > triggers exception)
+        assert len(result) >= 0
 
     def test_deduplicate_keeps_cheapest(self, orchestrator):
         """Test that deduplication keeps the cheapest flight."""
@@ -459,6 +476,201 @@ class TestFlightOrchestrator:
         assert "https://kiwi.com/cheap" in unique[0]["booking_urls"]
         assert "https://skyscanner.com/expensive" in unique[0]["booking_urls"]
         assert "https://wizzair.com/medium" in unique[0]["booking_urls"]
+
+    @pytest.mark.asyncio
+    async def test_scrape_all_raises_on_threshold_exceeded(self, orchestrator):
+        """Test that scrape_all raises exception when failure threshold is exceeded."""
+        # Mock all scrapers to fail (100% failure rate)
+        orchestrator.kiwi.search_flights = AsyncMock(side_effect=Exception("Kiwi Error"))
+        orchestrator.skyscanner.scrape_route = AsyncMock(side_effect=Exception("Skyscanner Error"))
+        orchestrator.ryanair.scrape_route = AsyncMock(side_effect=Exception("Ryanair Error"))
+        orchestrator.wizzair.search_flights = AsyncMock(side_effect=Exception("WizzAir Error"))
+
+        # Mock context managers
+        orchestrator.skyscanner.__aenter__ = AsyncMock(return_value=orchestrator.skyscanner)
+        orchestrator.skyscanner.__aexit__ = AsyncMock(return_value=None)
+        orchestrator.ryanair.__aenter__ = AsyncMock(return_value=orchestrator.ryanair)
+        orchestrator.ryanair.__aexit__ = AsyncMock(return_value=None)
+
+        # Should raise ScraperFailureThresholdExceeded (100% > 50% default threshold)
+        with pytest.raises(ScraperFailureThresholdExceeded) as exc_info:
+            await orchestrator.scrape_all(
+                origins=["MUC"],
+                destinations=["LIS"],
+                date_ranges=[(date(2025, 12, 20), date(2025, 12, 27))],
+            )
+
+        # Verify exception details
+        exception = exc_info.value
+        assert exception.total_scrapers == 4
+        assert exception.failed_scrapers == 4
+        assert exception.failure_rate == 1.0  # 100% failure
+        assert exception.threshold == 0.5  # Default 50%
+
+    @pytest.mark.asyncio
+    async def test_scrape_all_raises_on_high_failure_rate(self, orchestrator):
+        """Test that exception is raised when 75% of scrapers fail (above 50% threshold)."""
+        # Mock 3 out of 4 scrapers to fail (75% failure rate)
+        orchestrator.kiwi.search_flights = AsyncMock(
+            return_value=[
+                {
+                    "origin_airport": "MUC",
+                    "destination_airport": "LIS",
+                    "origin_city": "Munich",
+                    "destination_city": "Lisbon",
+                    "airline": "Ryanair",
+                    "departure_date": "2025-12-20",
+                    "departure_time": "14:30",
+                    "return_date": "2025-12-27",
+                    "return_time": "18:45",
+                    "price_per_person": 89.99,
+                    "total_price": 359.96,
+                    "source": "kiwi",
+                    "booking_url": "https://kiwi.com/123",
+                }
+            ]
+        )
+        orchestrator.skyscanner.scrape_route = AsyncMock(side_effect=Exception("Skyscanner Error"))
+        orchestrator.ryanair.scrape_route = AsyncMock(side_effect=Exception("Ryanair Error"))
+        orchestrator.wizzair.search_flights = AsyncMock(side_effect=Exception("WizzAir Error"))
+
+        # Mock context managers
+        orchestrator.skyscanner.__aenter__ = AsyncMock(return_value=orchestrator.skyscanner)
+        orchestrator.skyscanner.__aexit__ = AsyncMock(return_value=None)
+        orchestrator.ryanair.__aenter__ = AsyncMock(return_value=orchestrator.ryanair)
+        orchestrator.ryanair.__aexit__ = AsyncMock(return_value=None)
+
+        # Should raise ScraperFailureThresholdExceeded (75% > 50% threshold)
+        with pytest.raises(ScraperFailureThresholdExceeded) as exc_info:
+            await orchestrator.scrape_all(
+                origins=["MUC"],
+                destinations=["LIS"],
+                date_ranges=[(date(2025, 12, 20), date(2025, 12, 27))],
+            )
+
+        # Verify exception details
+        exception = exc_info.value
+        assert exception.total_scrapers == 4
+        assert exception.failed_scrapers == 3
+        assert exception.failure_rate == 0.75  # 75% failure
+
+    @pytest.mark.asyncio
+    async def test_scrape_all_succeeds_below_threshold(self, orchestrator):
+        """Test that scrape_all succeeds when failure rate is below threshold."""
+        # Mock 1 out of 4 scrapers to fail (25% failure rate, below 50% threshold)
+        orchestrator.kiwi.search_flights = AsyncMock(
+            return_value=[
+                {
+                    "origin_airport": "MUC",
+                    "destination_airport": "LIS",
+                    "origin_city": "Munich",
+                    "destination_city": "Lisbon",
+                    "airline": "Ryanair",
+                    "departure_date": "2025-12-20",
+                    "departure_time": "14:30",
+                    "return_date": "2025-12-27",
+                    "return_time": "18:45",
+                    "price_per_person": 89.99,
+                    "total_price": 359.96,
+                    "source": "kiwi",
+                    "booking_url": "https://kiwi.com/123",
+                }
+            ]
+        )
+        orchestrator.skyscanner.scrape_route = AsyncMock(return_value=[])
+        orchestrator.ryanair.scrape_route = AsyncMock(return_value=[])
+        orchestrator.wizzair.search_flights = AsyncMock(side_effect=Exception("WizzAir Error"))
+
+        # Mock context managers
+        orchestrator.skyscanner.__aenter__ = AsyncMock(return_value=orchestrator.skyscanner)
+        orchestrator.skyscanner.__aexit__ = AsyncMock(return_value=None)
+        orchestrator.ryanair.__aenter__ = AsyncMock(return_value=orchestrator.ryanair)
+        orchestrator.ryanair.__aexit__ = AsyncMock(return_value=None)
+
+        # Should succeed (25% < 50% threshold)
+        result = await orchestrator.scrape_all(
+            origins=["MUC"],
+            destinations=["LIS"],
+            date_ranges=[(date(2025, 12, 20), date(2025, 12, 27))],
+        )
+
+        # Should return results from successful scrapers
+        assert len(result) >= 0
+
+    @pytest.mark.asyncio
+    async def test_scrape_all_succeeds_at_exact_threshold(self, orchestrator):
+        """Test that scrape_all succeeds when failure rate equals threshold (not exceeded)."""
+        # Mock 2 out of 4 scrapers to fail (50% failure rate, equals 50% threshold)
+        orchestrator.kiwi.search_flights = AsyncMock(
+            return_value=[
+                {
+                    "origin_airport": "MUC",
+                    "destination_airport": "LIS",
+                    "origin_city": "Munich",
+                    "destination_city": "Lisbon",
+                    "airline": "Ryanair",
+                    "departure_date": "2025-12-20",
+                    "departure_time": "14:30",
+                    "return_date": "2025-12-27",
+                    "return_time": "18:45",
+                    "price_per_person": 89.99,
+                    "total_price": 359.96,
+                    "source": "kiwi",
+                    "booking_url": "https://kiwi.com/123",
+                }
+            ]
+        )
+        orchestrator.skyscanner.scrape_route = AsyncMock(return_value=[])
+        orchestrator.ryanair.scrape_route = AsyncMock(side_effect=Exception("Ryanair Error"))
+        orchestrator.wizzair.search_flights = AsyncMock(side_effect=Exception("WizzAir Error"))
+
+        # Mock context managers
+        orchestrator.skyscanner.__aenter__ = AsyncMock(return_value=orchestrator.skyscanner)
+        orchestrator.skyscanner.__aexit__ = AsyncMock(return_value=None)
+        orchestrator.ryanair.__aenter__ = AsyncMock(return_value=orchestrator.ryanair)
+        orchestrator.ryanair.__aexit__ = AsyncMock(return_value=None)
+
+        # Should succeed (50% == 50% threshold, only > triggers exception)
+        result = await orchestrator.scrape_all(
+            origins=["MUC"],
+            destinations=["LIS"],
+            date_ranges=[(date(2025, 12, 20), date(2025, 12, 27))],
+        )
+
+        # Should return results from successful scrapers
+        assert len(result) >= 0
+
+    @pytest.mark.asyncio
+    async def test_scrape_all_with_custom_threshold(self, orchestrator):
+        """Test that custom failure threshold is respected."""
+        # Mock 2 out of 4 scrapers to fail (50% failure rate)
+        orchestrator.kiwi.search_flights = AsyncMock(return_value=[])
+        orchestrator.skyscanner.scrape_route = AsyncMock(return_value=[])
+        orchestrator.ryanair.scrape_route = AsyncMock(side_effect=Exception("Ryanair Error"))
+        orchestrator.wizzair.search_flights = AsyncMock(side_effect=Exception("WizzAir Error"))
+
+        # Mock context managers
+        orchestrator.skyscanner.__aenter__ = AsyncMock(return_value=orchestrator.skyscanner)
+        orchestrator.skyscanner.__aexit__ = AsyncMock(return_value=None)
+        orchestrator.ryanair.__aenter__ = AsyncMock(return_value=orchestrator.ryanair)
+        orchestrator.ryanair.__aexit__ = AsyncMock(return_value=None)
+
+        # Mock settings with lower threshold (40%)
+        with patch("app.orchestration.flight_orchestrator.settings") as mock_settings:
+            mock_settings.scraper_failure_threshold = 0.4
+            mock_settings.get_available_scrapers.return_value = ["kiwi", "skyscanner", "ryanair", "wizzair"]
+
+            # Should raise exception (50% > 40% threshold)
+            with pytest.raises(ScraperFailureThresholdExceeded) as exc_info:
+                await orchestrator.scrape_all(
+                    origins=["MUC"],
+                    destinations=["LIS"],
+                    date_ranges=[(date(2025, 12, 20), date(2025, 12, 27))],
+                )
+
+            # Verify threshold was used
+            exception = exc_info.value
+            assert exception.threshold == 0.4
 
 
 class TestFlightOrchestratorDatabase:
