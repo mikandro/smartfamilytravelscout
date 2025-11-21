@@ -546,9 +546,17 @@ def deals(
         None,
         help="Filter by destination city",
     ),
-    limit: int = typer.Option(
+    limit: Optional[int] = typer.Option(
+        None,
+        help="Number of deals to show (deprecated, use --per-page instead)",
+    ),
+    page: int = typer.Option(
+        1,
+        help="Page number to display (starts at 1)",
+    ),
+    per_page: int = typer.Option(
         10,
-        help="Number of deals to show",
+        help="Number of deals per page",
     ),
     package_type: Optional[str] = typer.Option(
         None,
@@ -560,16 +568,17 @@ def deals(
     ),
 ):
     """
-    Show top travel deals based on AI scoring.
+    Show top travel deals based on AI scoring with pagination support.
 
     Examples:
         scout deals
-        scout deals --min-score 80 --limit 20
+        scout deals --min-score 80 --per-page 20
         scout deals --destination lisbon --type family
+        scout deals --page 2 --per-page 15
         scout deals --format json
     """
     try:
-        asyncio.run(_show_deals(min_score, destination, limit, package_type, format))
+        asyncio.run(_show_deals(min_score, destination, limit, page, per_page, package_type, format))
     except Exception as e:
         handle_error(e, "Failed to retrieve deals")
 
@@ -577,41 +586,84 @@ def deals(
 async def _show_deals(
     min_score: int,
     destination: Optional[str],
-    limit: int,
+    limit: Optional[int],
+    page: int,
+    per_page: int,
     package_type: Optional[str],
     format: str,
 ):
-    """Retrieve and display top deals."""
+    """Retrieve and display top deals with pagination."""
     from app.models.trip_package import TripPackage
 
+    # Handle deprecated 'limit' parameter
+    if limit is not None:
+        warning("The --limit option is deprecated. Use --per-page and --page instead.")
+        per_page = limit
+        page = 1
+
+    # Validate page number
+    if page < 1:
+        console.print("[red]Error: Page number must be 1 or greater[/red]")
+        return
+
+    # Calculate offset
+    offset = (page - 1) * per_page
+
     async with get_async_session_context() as db:
-        # Build query
-        query = select(TripPackage).where(
+        # Build base query for filtering
+        base_query = select(TripPackage).where(
             TripPackage.ai_score >= min_score
         )
 
         if destination:
-            query = query.where(
+            base_query = base_query.where(
                 TripPackage.destination_city.ilike(f"%{destination}%")
             )
 
         if package_type:
-            query = query.where(TripPackage.package_type == package_type)
+            base_query = base_query.where(TripPackage.package_type == package_type)
 
-        query = query.order_by(desc(TripPackage.ai_score)).limit(limit)
+        # Get total count
+        count_query = select(func.count()).select_from(base_query.subquery())
+        total_result = await db.execute(count_query)
+        total_count = total_result.scalar() or 0
+
+        if total_count == 0:
+            warning("No deals found matching your criteria")
+            return
+
+        # Calculate pagination info
+        total_pages = (total_count + per_page - 1) // per_page  # Ceiling division
+        start_item = offset + 1
+        end_item = min(offset + per_page, total_count)
+
+        # Check if page number is valid
+        if page > total_pages:
+            console.print(f"[red]Error: Page {page} does not exist. Total pages: {total_pages}[/red]")
+            return
+
+        # Build paginated query
+        query = base_query.order_by(desc(TripPackage.ai_score)).offset(offset).limit(per_page)
 
         result = await db.execute(query)
         packages = result.scalars().all()
 
-        if not packages:
-            warning("No deals found matching your criteria")
-            return
-
         if format == "json":
-            # JSON output
-            deals_data = []
+            # JSON output with pagination metadata
+            deals_data = {
+                "pagination": {
+                    "page": page,
+                    "per_page": per_page,
+                    "total_items": total_count,
+                    "total_pages": total_pages,
+                    "showing_from": start_item,
+                    "showing_to": end_item,
+                },
+                "deals": []
+            }
+
             for pkg in packages:
-                deals_data.append({
+                deals_data["deals"].append({
                     "id": pkg.id,
                     "destination": pkg.destination_city,
                     "departure_date": pkg.departure_date.isoformat(),
@@ -627,7 +679,7 @@ async def _show_deals(
         else:
             # Table output
             table = Table(
-                title=f"🌟 Top {len(packages)} Travel Deals",
+                title=f"🌟 Travel Deals",
                 show_header=True,
                 header_style="bold magenta",
             )
@@ -656,7 +708,22 @@ async def _show_deals(
             console.print("\n")
             console.print(table)
             console.print("\n")
-            success(f"Found {len(packages)} deals")
+
+            # Display pagination information
+            pagination_info = f"[cyan]Showing deals {start_item}-{end_item} of {total_count} total[/cyan]"
+            page_info = f"[cyan]Page {page} of {total_pages}[/cyan]"
+
+            console.print(pagination_info)
+            console.print(page_info)
+
+            # Show navigation hints
+            if page < total_pages:
+                console.print(f"[dim]Next page: scout deals --page {page + 1} --per-page {per_page}[/dim]")
+            if page > 1:
+                console.print(f"[dim]Previous page: scout deals --page {page - 1} --per-page {per_page}[/dim]")
+
+            console.print("\n")
+            success(f"Displayed {len(packages)} deals")
 
 
 # ============================================================================
