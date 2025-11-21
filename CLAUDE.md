@@ -25,6 +25,28 @@ poetry run scout test-scraper ryanair --origin MUC --dest PRG
 
 The default scrapers work out of the box - no configuration needed!
 
+## CLI Command Structure
+
+SmartFamilyTravelScout uses a clear, hierarchical command structure:
+
+**Primary Commands:**
+- `scout scrape` - Quick flight searches (supports all scrapers: skyscanner, ryanair, wizzair, kiwi)
+- `scout pipeline` - Complete end-to-end travel search pipeline (scrape → match → score → notify)
+- `scout deals` - View top AI-scored travel deals (high-value recommendations, score >= 70)
+- `scout packages` - View all trip packages (broader results, includes unscored packages)
+- `scout stats` - View system statistics and scraping history
+- `scout health` - Check application health and configuration
+
+**Deprecated Commands (backward compatibility, will be removed in future versions):**
+- `scout run` → Use `scout pipeline` instead
+- `scout kiwi-search` → Use `scout scrape --scraper kiwi` instead
+
+**Command Philosophy:**
+- `scrape` = quick manual searches for specific routes
+- `pipeline` = automated full-stack deal discovery
+- `deals` = BEST packages (AI-vetted, high scores)
+- `packages` = ALL packages (complete view, includes pending AI analysis)
+
 ## Development Commands
 
 ### Setup & Installation
@@ -59,13 +81,15 @@ docker-compose up -d
 poetry run scout health          # Check system health
 poetry run scout scrape --origin MUC --destination LIS  # Quick scrape (no API key needed!)
 poetry run scout scrape-accommodations --city Barcelona  # Scrape accommodations
-poetry run scout run             # Run full pipeline
-poetry run scout deals           # View top deals
+poetry run scout pipeline        # Run complete end-to-end pipeline
+poetry run scout deals           # View top AI-scored deals (score >= 70)
+poetry run scout packages        # View all trip packages
 poetry run scout stats           # Show statistics
 
 # Quick start with default (free) scrapers - NO API KEY NEEDED:
 poetry run scout scrape --origin MUC --destination BCN
 poetry run scout scrape --origin VIE --destination LIS --scraper skyscanner
+poetry run scout scrape --origin MUC --destination PRG --scraper kiwi  # Requires KIWI_API_KEY
 poetry run scout test-scraper skyscanner --origin MUC --dest PRG
 
 # Accommodation scraping:
