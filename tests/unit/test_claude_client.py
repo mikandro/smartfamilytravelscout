@@ -38,7 +38,7 @@ class TestClaudeClient:
     @pytest.fixture
     def claude_client(self, mock_redis, mock_db_session):
         """Create ClaudeClient instance with mocked dependencies."""
-        with patch("app.ai.claude_client.Anthropic"):
+        with patch("app.ai.claude_client.AsyncAnthropic"):
             return ClaudeClient(
                 api_key="test-api-key",
                 redis_client=mock_redis,
@@ -304,10 +304,14 @@ class TestClaudeClient:
     async def test_analyze_api_error(self, claude_client):
         """Test analyze handling API errors."""
         from anthropic import APIError
+        from httpx import Request
+
+        # Create a mock request for APIError
+        mock_request = Request("POST", "https://api.anthropic.com/v1/messages")
 
         # Mock API to raise error
         claude_client._call_api_with_retry = AsyncMock(
-            side_effect=APIError("API Error")
+            side_effect=APIError("API Error", request=mock_request, body=None)
         )
 
         with pytest.raises(ClaudeAPIError) as exc_info:
@@ -328,7 +332,7 @@ class TestClaudeClient:
             for key in mock_keys:
                 yield key
 
-        mock_redis.scan_iter.return_value = async_gen()
+        mock_redis.scan_iter = MagicMock(return_value=async_gen())
         mock_redis.delete.return_value = len(mock_keys)
 
         deleted = await claude_client.clear_cache()
@@ -343,7 +347,7 @@ class TestClaudeClient:
             for _ in range(5):
                 yield b"claude:response:key"
 
-        mock_redis.scan_iter.return_value = async_gen()
+        mock_redis.scan_iter = MagicMock(return_value=async_gen())
 
         stats = await claude_client.get_cache_stats()
 
