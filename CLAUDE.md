@@ -8,6 +8,23 @@ SmartFamilyTravelScout is an AI-powered family travel deal finder that scrapes f
 
 **Tech Stack**: Python 3.11+, FastAPI, PostgreSQL, Redis, Celery, Playwright, SQLAlchemy (async), Anthropic Claude API
 
+## Quick Start (No API Key Needed!)
+
+You can start scraping flights immediately using the default scrapers (Skyscanner, Ryanair, WizzAir) without any API keys:
+
+```bash
+# Quick scrape with all free scrapers
+poetry run scout scrape --origin MUC --destination BCN
+
+# Use a specific scraper
+poetry run scout scrape --origin VIE --destination LIS --scraper skyscanner
+
+# Test individual scrapers
+poetry run scout test-scraper ryanair --origin MUC --dest PRG
+```
+
+The default scrapers work out of the box - no configuration needed!
+
 ## Development Commands
 
 ### Setup & Installation
@@ -40,9 +57,15 @@ docker-compose up -d
 
 # CLI commands (using 'scout')
 poetry run scout health          # Check system health
+poetry run scout scrape --origin MUC --destination LIS  # Quick scrape (no API key needed!)
 poetry run scout run             # Run full pipeline
 poetry run scout deals           # View top deals
 poetry run scout stats           # Show statistics
+
+# Quick start with default (free) scrapers - NO API KEY NEEDED:
+poetry run scout scrape --origin MUC --destination BCN
+poetry run scout scrape --origin VIE --destination LIS --scraper skyscanner
+poetry run scout test-scraper skyscanner --origin MUC --dest PRG
 ```
 
 ### Testing
@@ -115,13 +138,21 @@ poetry run mypy app/
 ### Core Components
 
 **Scrapers** (`app/scrapers/`): Web scrapers for multiple data sources
-- `kiwi_scraper.py`: Kiwi.com API client (flight aggregator)
-- `skyscanner_scraper.py`: Skyscanner web scraper (Playwright)
-- `ryanair_scraper.py`: Ryanair web scraper
-- `wizzair_scraper.py`: WizzAir API scraper
+
+**Default Scrapers (NO API KEY NEEDED):**
+- `skyscanner_scraper.py`: Skyscanner web scraper (Playwright) ✓ FREE
+- `ryanair_scraper.py`: Ryanair web scraper (Playwright) ✓ FREE
+- `wizzair_scraper.py`: WizzAir API scraper (unofficial API) ✓ FREE
+
+**API-Key Scrapers:**
+- `kiwi_scraper.py`: Kiwi.com API client (requires KIWI_API_KEY - 100 calls/month free tier)
+- `eventbrite_scraper.py`: Eventbrite API client (requires EVENTBRITE_API_KEY)
+
+**Accommodation Scrapers:**
 - `booking_scraper.py`: Booking.com scraper (accommodations)
 - `airbnb_scraper.py`: Airbnb scraper (accommodations)
-- `eventbrite_scraper.py`: Eventbrite API client (events)
+
+**Tourism Scrapers:**
 - Tourism scrapers: Barcelona, Prague, Lisbon city events
 
 **Orchestration** (`app/orchestration/`): Coordinates multiple scrapers and data sources

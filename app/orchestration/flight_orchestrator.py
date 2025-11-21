@@ -26,6 +26,7 @@ from rich.table import Table
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_async_session_context
 from app.models.airport import Airport
 from app.models.flight import Flight
@@ -63,13 +64,21 @@ class FlightOrchestrator:
     """
 
     def __init__(self):
-        """Initialize all flight scrapers."""
-        self.kiwi = KiwiClient()
-        self.skyscanner = SkyscannerScraper(headless=True)
-        self.ryanair = RyanairScraper()
-        self.wizzair = WizzAirScraper()
+        """Initialize enabled flight scrapers based on configuration."""
+        self.enabled_scrapers = settings.get_available_scrapers()
 
-        logger.info("FlightOrchestrator initialized with all 4 scrapers")
+        # Initialize only enabled scrapers
+        self.kiwi = KiwiClient() if "kiwi" in self.enabled_scrapers else None
+        self.skyscanner = (
+            SkyscannerScraper(headless=True) if "skyscanner" in self.enabled_scrapers else None
+        )
+        self.ryanair = RyanairScraper() if "ryanair" in self.enabled_scrapers else None
+        self.wizzair = WizzAirScraper() if "wizzair" in self.enabled_scrapers else None
+
+        logger.info(
+            f"FlightOrchestrator initialized with {len(self.enabled_scrapers)} scrapers: "
+            f"{', '.join(self.enabled_scrapers)}"
+        )
 
     async def scrape_all(
         self,
@@ -114,38 +123,42 @@ class FlightOrchestrator:
         for origin in origins:
             for destination in destinations:
                 for departure_date, return_date in date_ranges:
-                    # Create task for each scraper
-                    tasks.append(
-                        self.scrape_source(
-                            self.kiwi, "kiwi", origin, destination, (departure_date, return_date)
+                    # Create task for each ENABLED scraper
+                    if self.kiwi:
+                        tasks.append(
+                            self.scrape_source(
+                                self.kiwi, "kiwi", origin, destination, (departure_date, return_date)
+                            )
                         )
-                    )
-                    task_metadata.append(f"Kiwi: {origin}→{destination}")
+                        task_metadata.append(f"Kiwi: {origin}→{destination}")
 
-                    tasks.append(
-                        self.scrape_source(
-                            self.skyscanner,
-                            "skyscanner",
-                            origin,
-                            destination,
-                            (departure_date, return_date),
+                    if self.skyscanner:
+                        tasks.append(
+                            self.scrape_source(
+                                self.skyscanner,
+                                "skyscanner",
+                                origin,
+                                destination,
+                                (departure_date, return_date),
+                            )
                         )
-                    )
-                    task_metadata.append(f"Skyscanner: {origin}→{destination}")
+                        task_metadata.append(f"Skyscanner: {origin}→{destination}")
 
-                    tasks.append(
-                        self.scrape_source(
-                            self.ryanair, "ryanair", origin, destination, (departure_date, return_date)
+                    if self.ryanair:
+                        tasks.append(
+                            self.scrape_source(
+                                self.ryanair, "ryanair", origin, destination, (departure_date, return_date)
+                            )
                         )
-                    )
-                    task_metadata.append(f"Ryanair: {origin}→{destination}")
+                        task_metadata.append(f"Ryanair: {origin}→{destination}")
 
-                    tasks.append(
-                        self.scrape_source(
-                            self.wizzair, "wizzair", origin, destination, (departure_date, return_date)
+                    if self.wizzair:
+                        tasks.append(
+                            self.scrape_source(
+                                self.wizzair, "wizzair", origin, destination, (departure_date, return_date)
+                            )
                         )
-                    )
-                    task_metadata.append(f"WizzAir: {origin}→{destination}")
+                        task_metadata.append(f"WizzAir: {origin}→{destination}")
 
         console.print(
             f"\n[bold cyan]Starting {len(tasks)} scraping tasks in parallel...[/bold cyan]\n"

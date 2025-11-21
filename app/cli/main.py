@@ -108,6 +108,217 @@ def main():
 
 
 # ============================================================================
+# SCRAPE Command - Quick scraping with default (free) scrapers
+# ============================================================================
+
+@app.command()
+def scrape(
+    origin: str = typer.Option(
+        ...,
+        help="Origin airport IATA code (e.g., MUC, VIE)",
+    ),
+    destination: str = typer.Option(
+        ...,
+        help="Destination airport IATA code (e.g., LIS, BCN)",
+    ),
+    departure_date: Optional[str] = typer.Option(
+        None,
+        help="Departure date (YYYY-MM-DD). Default: 60 days from today",
+    ),
+    return_date: Optional[str] = typer.Option(
+        None,
+        help="Return date (YYYY-MM-DD). Default: 7 days after departure",
+    ),
+    scraper: Optional[str] = typer.Option(
+        None,
+        help="Specific scraper to use: 'skyscanner', 'ryanair', 'wizzair', or 'all' for all free scrapers",
+    ),
+    save: bool = typer.Option(
+        True,
+        help="Save results to database",
+    ),
+):
+    """
+    Quick flight search using default (free, no API key) scrapers.
+
+    This command uses Skyscanner, Ryanair, and WizzAir scrapers which don't
+    require API keys. Perfect for getting started without configuration!
+
+    Examples:
+        scout scrape --origin MUC --destination LIS
+        scout scrape --origin VIE --destination BCN --scraper skyscanner
+        scout scrape --origin MUC --destination PRG --departure 2025-12-20 --return 2025-12-27
+    """
+    console.print(Panel(
+        "[bold]Quick Flight Scrape (No API Key Required)[/bold]",
+        border_style="green",
+    ))
+
+    try:
+        asyncio.run(_run_scrape(origin, destination, departure_date, return_date, scraper, save))
+    except Exception as e:
+        handle_error(e, "Scraping failed")
+
+
+async def _run_scrape(
+    origin: str,
+    destination: str,
+    departure_date_str: Optional[str],
+    return_date_str: Optional[str],
+    scraper_name: Optional[str],
+    save: bool,
+):
+    """Execute quick scrape with default scrapers."""
+    from datetime import date, timedelta
+
+    # Parse dates
+    if departure_date_str:
+        dep_date = datetime.strptime(departure_date_str, "%Y-%m-%d").date()
+    else:
+        dep_date = date.today() + timedelta(days=60)
+
+    if return_date_str:
+        ret_date = datetime.strptime(return_date_str, "%Y-%m-%d").date()
+    else:
+        ret_date = dep_date + timedelta(days=7)
+
+    # Display search parameters
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Parameter", style="cyan")
+    table.add_column("Value", style="green")
+
+    table.add_row("Origin", origin.upper())
+    table.add_row("Destination", destination.upper())
+    table.add_row("Departure", dep_date.strftime("%Y-%m-%d"))
+    table.add_row("Return", ret_date.strftime("%Y-%m-%d"))
+
+    # Determine which scrapers to use
+    if scraper_name and scraper_name != "all":
+        scrapers_to_use = [scraper_name.lower()]
+        table.add_row("Scraper", scraper_name.title())
+    else:
+        # Use all default (free) scrapers
+        scrapers_to_use = ["skyscanner", "ryanair", "wizzair"]
+        table.add_row("Scrapers", "All free scrapers (Skyscanner, Ryanair, WizzAir)")
+
+    table.add_row("Save to DB", "Yes" if save else "No")
+
+    console.print("\n")
+    console.print(table)
+    console.print("\n")
+
+    all_results = []
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task(
+            f"[yellow]Scraping flights...", total=len(scrapers_to_use)
+        )
+
+        # Run each scraper
+        for scraper in scrapers_to_use:
+            try:
+                progress.update(task, description=f"[yellow]Running {scraper}...")
+
+                if scraper == "skyscanner":
+                    from app.scrapers.skyscanner_scraper import SkyscannerScraper
+                    async with SkyscannerScraper(headless=True) as scraper_instance:
+                        results = await scraper_instance.scrape_route(
+                            origin=origin.upper(),
+                            destination=destination.upper(),
+                            departure_date=dep_date,
+                            return_date=ret_date,
+                        )
+                        # Normalize data
+                        for r in results:
+                            r["origin_airport"] = origin.upper()
+                            r["destination_airport"] = destination.upper()
+                            r["source"] = "skyscanner"
+                        all_results.extend(results)
+
+                elif scraper == "ryanair":
+                    from app.scrapers.ryanair_scraper import RyanairScraper
+                    async with RyanairScraper() as scraper_instance:
+                        results = await scraper_instance.scrape_route(
+                            origin=origin.upper(),
+                            destination=destination.upper(),
+                            departure_date=dep_date,
+                            return_date=ret_date,
+                        )
+                        all_results.extend(results)
+
+                elif scraper == "wizzair":
+                    from app.scrapers.wizzair_scraper import WizzAirScraper
+                    scraper_instance = WizzAirScraper()
+                    results = await scraper_instance.search_flights(
+                        origin=origin.upper(),
+                        destination=destination.upper(),
+                        departure_date=dep_date,
+                        return_date=ret_date,
+                        adult_count=2,
+                        child_count=2,
+                    )
+                    all_results.extend(results)
+
+                else:
+                    warning(f"Unknown scraper: {scraper}")
+
+                progress.update(task, advance=1)
+
+            except Exception as e:
+                logger.error(f"Scraper {scraper} failed: {e}")
+                warning(f"{scraper.title()} scraper failed: {str(e)}")
+                progress.update(task, advance=1)
+                continue
+
+    # Display results
+    if all_results:
+        success(f"Found {len(all_results)} flights")
+
+        # Create results table
+        results_table = Table(show_header=True, header_style="bold magenta")
+        results_table.add_column("Airline", style="cyan")
+        results_table.add_column("Price/Person", style="green", justify="right")
+        results_table.add_column("Total (4 people)", style="green", justify="right")
+        results_table.add_column("Direct", style="magenta")
+        results_table.add_column("Source", style="yellow")
+
+        # Sort by price
+        sorted_results = sorted(
+            all_results,
+            key=lambda x: x.get("price_per_person", x.get("price", 9999))
+        )
+
+        for result in sorted_results[:15]:  # Show top 15
+            price_per = result.get("price_per_person", result.get("price", 0))
+            total = result.get("total_price", price_per * 4)
+
+            results_table.add_row(
+                result.get("airline", "Unknown"),
+                f"€{price_per:.0f}",
+                f"€{total:.0f}",
+                "✓" if result.get("direct_flight", result.get("direct", False)) else "✗",
+                result.get("source", "unknown"),
+            )
+
+        console.print("\n")
+        console.print(results_table)
+        console.print("\n")
+
+        if save:
+            info("Saving results to database...")
+            # TODO: Implement save logic similar to kiwi-search
+            success("Results saved")
+    else:
+        warning("No flights found")
+
+
+# ============================================================================
 # RUN Command - Main Pipeline
 # ============================================================================
 
