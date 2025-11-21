@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from playwright_stealth import Stealth
 
+from app.config import settings
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -54,7 +55,6 @@ class RyanairScraper:
 
     BASE_URL = "https://www.ryanair.com"
     MAX_DAILY_SEARCHES = 5
-    RATE_LIMIT_FILE = "/tmp/ryanair_rate_limit.json"
 
     # User agents that look residential/real
     USER_AGENTS = [
@@ -64,14 +64,18 @@ class RyanairScraper:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
     ]
 
-    def __init__(self, log_dir: str = "/home/user/smartfamilytravelscout/logs/ryanair"):
+    def __init__(self, log_dir: Optional[str] = None):
         """
         Initialize Ryanair scraper with stealth configuration.
 
         Args:
-            log_dir: Directory to save error screenshots
+            log_dir: Directory to save error screenshots (defaults to configured log directory)
         """
-        self.log_dir = Path(log_dir)
+        if log_dir:
+            self.log_dir = Path(log_dir)
+        else:
+            self.log_dir = settings.get_log_dir() / "ryanair"
+
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
@@ -183,7 +187,7 @@ class RyanairScraper:
         Raises:
             RateLimitExceeded: If daily limit is exceeded
         """
-        rate_file = Path(self.RATE_LIMIT_FILE)
+        rate_file = settings.get_temp_dir() / "ryanair_rate_limit.json"
 
         # Load existing rate limit data
         if rate_file.exists():

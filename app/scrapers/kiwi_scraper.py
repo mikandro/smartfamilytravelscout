@@ -47,16 +47,19 @@ class RateLimiter:
     of 100 calls/month (~3 per day).
     """
 
-    def __init__(self, limit_per_month: int = 100, storage_file: str = "/tmp/kiwi_api_calls.txt"):
+    def __init__(self, limit_per_month: int = 100, storage_file: Optional[str] = None):
         """
         Initialize rate limiter.
 
         Args:
             limit_per_month: Maximum API calls allowed per month (default: 100)
-            storage_file: File path to store API call timestamps
+            storage_file: File path to store API call timestamps (defaults to configured temp directory)
         """
         self.limit_per_month = limit_per_month
-        self.storage_file = storage_file
+        if storage_file:
+            self.storage_file = storage_file
+        else:
+            self.storage_file = str(settings.get_temp_dir() / "kiwi_api_calls.txt")
         self.logger = logging.getLogger(f"{__name__}.RateLimiter")
 
     def _read_calls(self) -> List[datetime]:

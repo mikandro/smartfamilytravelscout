@@ -3,7 +3,9 @@ Configuration management using Pydantic Settings.
 Loads environment variables with validation and type checking.
 """
 
+import tempfile
 from functools import lru_cache
+from pathlib import Path
 from typing import List, Optional
 
 from pydantic import Field, PostgresDsn, RedisDsn, field_validator
@@ -26,6 +28,20 @@ class Settings(BaseSettings):
     debug: bool = Field(default=False, description="Debug mode")
     log_level: str = Field(default="INFO", description="Logging level")
     environment: str = Field(default="development", description="Environment name")
+
+    # Paths (Docker-compatible, dynamically determined)
+    base_dir: Optional[str] = Field(
+        default=None,
+        description="Base directory for the application (defaults to project root)"
+    )
+    log_dir: Optional[str] = Field(
+        default=None,
+        description="Directory for log files (defaults to {base_dir}/logs)"
+    )
+    temp_dir: Optional[str] = Field(
+        default=None,
+        description="Directory for temporary files (defaults to system temp dir)"
+    )
 
     # Database
     database_url: PostgresDsn = Field(
@@ -224,6 +240,47 @@ class Settings(BaseSettings):
             or self.use_ryanair_scraper
             or self.use_wizzair_scraper
         )
+
+    def get_base_dir(self) -> Path:
+        """
+        Get the base directory for the application.
+
+        Returns:
+            Path to the project root directory
+        """
+        if self.base_dir:
+            return Path(self.base_dir)
+        # Dynamically determine project root (4 levels up from this file: app/config.py)
+        return Path(__file__).parent.parent.resolve()
+
+    def get_log_dir(self) -> Path:
+        """
+        Get the log directory, creating it if it doesn't exist.
+
+        Returns:
+            Path to the log directory
+        """
+        if self.log_dir:
+            log_path = Path(self.log_dir)
+        else:
+            log_path = self.get_base_dir() / "logs"
+
+        log_path.mkdir(parents=True, exist_ok=True)
+        return log_path
+
+    def get_temp_dir(self) -> Path:
+        """
+        Get the temporary files directory.
+
+        Returns:
+            Path to the temp directory
+        """
+        if self.temp_dir:
+            temp_path = Path(self.temp_dir)
+            temp_path.mkdir(parents=True, exist_ok=True)
+            return temp_path
+        # Use system temp directory
+        return Path(tempfile.gettempdir())
 
 
 @lru_cache()
