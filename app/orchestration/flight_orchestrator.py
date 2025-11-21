@@ -35,6 +35,16 @@ from app.scrapers.kiwi_scraper import KiwiClient
 from app.scrapers.ryanair_scraper import RyanairScraper
 from app.scrapers.skyscanner_scraper import SkyscannerScraper
 from app.scrapers.wizzair_scraper import WizzAirScraper
+from app.utils.progress_tracker import (
+    emit_job_started,
+    emit_job_progress,
+    emit_job_completed,
+    emit_job_failed,
+    emit_scraper_started,
+    emit_scraper_completed,
+    emit_scraper_failed,
+    emit_results_updated,
+)
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -85,6 +95,7 @@ class FlightOrchestrator:
         origins: List[str],
         destinations: List[str],
         date_ranges: List[Tuple[date, date]],
+        job_id: Optional[int] = None,
     ) -> List[Dict]:
         """
         Run all scrapers in parallel, deduplicate, and return unique flights.
@@ -97,6 +108,7 @@ class FlightOrchestrator:
             origins: List of origin airport IATA codes (e.g., ['MUC', 'FMM', 'NUE', 'SZG'])
             destinations: List of destination airport IATA codes (e.g., ['LIS', 'BCN', 'PRG'])
             date_ranges: List of (departure_date, return_date) tuples for school holidays
+            job_id: Optional scraping job ID for progress tracking
 
         Returns:
             List of unique flight dictionaries ready for database insertion
@@ -116,6 +128,15 @@ class FlightOrchestrator:
 
         start_time = datetime.now()
 
+        # Emit job started event if job_id provided
+        if job_id:
+            await emit_job_started(
+                job_id=job_id,
+                job_type="flights",
+                source="orchestrator",
+                message=f"Starting flight scraping: {len(origins)}×{len(destinations)}×{len(date_ranges)} combinations",
+            )
+
         # Create tasks for all combinations
         tasks = []
         task_metadata = []  # Track which scraper/route each task represents
@@ -127,7 +148,7 @@ class FlightOrchestrator:
                     if self.kiwi:
                         tasks.append(
                             self.scrape_source(
-                                self.kiwi, "kiwi", origin, destination, (departure_date, return_date)
+                                self.kiwi, "kiwi", origin, destination, (departure_date, return_date), job_id
                             )
                         )
                         task_metadata.append(f"Kiwi: {origin}→{destination}")
@@ -140,6 +161,7 @@ class FlightOrchestrator:
                                 origin,
                                 destination,
                                 (departure_date, return_date),
+                                job_id,
                             )
                         )
                         task_metadata.append(f"Skyscanner: {origin}→{destination}")
@@ -147,7 +169,7 @@ class FlightOrchestrator:
                     if self.ryanair:
                         tasks.append(
                             self.scrape_source(
-                                self.ryanair, "ryanair", origin, destination, (departure_date, return_date)
+                                self.ryanair, "ryanair", origin, destination, (departure_date, return_date), job_id
                             )
                         )
                         task_metadata.append(f"Ryanair: {origin}→{destination}")
@@ -155,7 +177,7 @@ class FlightOrchestrator:
                     if self.wizzair:
                         tasks.append(
                             self.scrape_source(
-                                self.wizzair, "wizzair", origin, destination, (departure_date, return_date)
+                                self.wizzair, "wizzair", origin, destination, (departure_date, return_date), job_id
                             )
                         )
                         task_metadata.append(f"WizzAir: {origin}→{destination}")
@@ -199,6 +221,21 @@ class FlightOrchestrator:
                 scraper_stats[scraper_name]["flights"] += len(result)
                 all_flights.extend(result)
 
+        # Emit progress update with total results
+        if job_id:
+            progress_pct = (successful_scrapers + failed_scrapers) / len(tasks) * 100
+            await emit_job_progress(
+                job_id=job_id,
+                progress=progress_pct,
+                results_count=len(all_flights),
+                message=f"Scrapers completed: {successful_scrapers} successful, {failed_scrapers} failed",
+                metadata={
+                    "successful_scrapers": successful_scrapers,
+                    "failed_scrapers": failed_scrapers,
+                    "total_flights": len(all_flights),
+                },
+            )
+
         # Log statistics
         elapsed_time = (datetime.now() - start_time).total_seconds()
         logger.info(
@@ -217,6 +254,14 @@ class FlightOrchestrator:
             f"[bold green]✓ Found {len(unique_flights)} unique flights "
             f"(removed {len(all_flights) - len(unique_flights)} duplicates)[/bold green]\n"
         )
+
+        # Emit job completed event
+        if job_id:
+            await emit_job_completed(
+                job_id=job_id,
+                results_count=len(unique_flights),
+                message=f"Scraping completed: {len(unique_flights)} unique flights found",
+            )
 
         return unique_flights
 
@@ -255,6 +300,7 @@ class FlightOrchestrator:
         origin: str,
         destination: str,
         dates: Tuple[date, date],
+        job_id: Optional[int] = None,
     ) -> List[Dict]:
         """
         Scrape a single source with error handling and normalization.
@@ -268,16 +314,22 @@ class FlightOrchestrator:
             origin: Origin airport IATA code
             destination: Destination airport IATA code
             dates: Tuple of (departure_date, return_date)
+            job_id: Optional scraping job ID for progress tracking
 
         Returns:
             List of normalized flight dictionaries, or empty list if scraping fails
         """
         departure_date, return_date = dates
+        route = f"{origin}→{destination}"
 
         logger.info(
-            f"[{scraper_name}] Scraping {origin} → {destination}, "
+            f"[{scraper_name}] Scraping {route}, "
             f"{departure_date} to {return_date}"
         )
+
+        # Emit scraper started event
+        if job_id:
+            await emit_scraper_started(job_id=job_id, scraper_name=scraper_name, route=route)
 
         try:
             # Call appropriate scraper method based on type
@@ -378,16 +430,40 @@ class FlightOrchestrator:
 
             else:
                 logger.error(f"Unknown scraper: {scraper_name}")
+                if job_id:
+                    await emit_scraper_failed(
+                        job_id=job_id,
+                        scraper_name=scraper_name,
+                        route=route,
+                        error=f"Unknown scraper: {scraper_name}",
+                    )
                 return []
 
             logger.info(f"[{scraper_name}] Found {len(flights)} flights")
+
+            # Emit scraper completed event
+            if job_id:
+                await emit_scraper_completed(
+                    job_id=job_id,
+                    scraper_name=scraper_name,
+                    route=route,
+                    results_count=len(flights),
+                )
+
             return flights
 
         except Exception as e:
             logger.error(
-                f"[{scraper_name}] Scraping failed for {origin}→{destination}: {e}",
+                f"[{scraper_name}] Scraping failed for {route}: {e}",
                 exc_info=True,
             )
+
+            # Emit scraper failed event
+            if job_id:
+                await emit_scraper_failed(
+                    job_id=job_id, scraper_name=scraper_name, route=route, error=str(e)
+                )
+
             return []
 
     def deduplicate(self, flights: List[Dict]) -> List[Dict]:
@@ -539,7 +615,7 @@ class FlightOrchestrator:
         return unique_flights
 
     async def save_to_database(
-        self, flights: List[Dict], create_job: bool = True
+        self, flights: List[Dict], create_job: bool = True, job_id: Optional[int] = None
     ) -> Dict[str, int]:
         """
         Batch save flights to database with duplicate checking.
@@ -550,6 +626,7 @@ class FlightOrchestrator:
         Args:
             flights: List of flight dictionaries to save
             create_job: Whether to create a ScrapingJob record (default: True)
+            job_id: Optional existing job ID to update instead of creating new one
 
         Returns:
             Dict with statistics:
@@ -577,13 +654,19 @@ class FlightOrchestrator:
 
         logger.info(f"Saving {len(flights)} flights to database...")
 
-        # Create scraping job if requested
+        # Get or create scraping job
         job = None
         job_start_time = datetime.now()
 
         async with get_async_session_context() as db:
             try:
-                if create_job:
+                if job_id:
+                    # Use existing job
+                    from sqlalchemy import select
+                    result = await db.execute(select(ScrapingJob).where(ScrapingJob.id == job_id))
+                    job = result.scalar_one_or_none()
+                elif create_job:
+                    # Create new job
                     job = ScrapingJob(
                         job_type="flights",
                         source="orchestrator",
@@ -736,6 +819,13 @@ class FlightOrchestrator:
                     job.completed_at = datetime.now()
                     await db.commit()
 
+                    # Emit results updated event
+                    await emit_results_updated(
+                        job_id=job.id,
+                        results_count=job.items_scraped,
+                        progress=100.0,
+                    )
+
                 logger.info(
                     f"Database save complete: {stats['inserted']} inserted, "
                     f"{stats['updated']} updated, {stats['skipped']} skipped"
@@ -751,6 +841,9 @@ class FlightOrchestrator:
                     job.error_message = str(e)
                     job.completed_at = datetime.now()
                     await db.commit()
+
+                    # Emit job failed event
+                    await emit_job_failed(job_id=job.id, error_message=str(e))
 
                 raise
 

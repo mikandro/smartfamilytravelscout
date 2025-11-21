@@ -16,6 +16,7 @@ import redis.asyncio as aioredis
 from app import __version__, __app_name__
 from app.config import settings
 from app.database import check_db_connection, close_db_connections
+from app.websocket import websocket_manager
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +54,20 @@ async def lifespan(app: FastAPI):
     else:
         logger.error("Database connection failed")
 
+    # Initialize WebSocket manager
+    await websocket_manager.initialize_redis()
+    logger.info("WebSocket manager initialized")
+
     logger.info("Application startup complete")
 
     yield
 
     # Shutdown
     logger.info("Shutting down application")
+
+    # Shutdown WebSocket manager
+    await websocket_manager.shutdown()
+    logger.info("WebSocket manager shut down")
 
     # Close Redis connection
     if redis_client:
@@ -162,10 +171,13 @@ async def api_root() -> Dict[str, str]:
 
 
 # Import and include routers
-from app.api.routes import web
+from app.api.routes import web, websocket
 
 # Include web dashboard routes (handles /, /deals, /preferences, /stats)
 app.include_router(web.router, tags=["Web Dashboard"])
+
+# Include WebSocket routes
+app.include_router(websocket.router, tags=["WebSocket"])
 
 # API routes (to be implemented)
 # from app.api.routes import flights, accommodations, events, search
