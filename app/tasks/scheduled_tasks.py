@@ -5,21 +5,24 @@ Scheduled Celery tasks for automated operations.
 import logging
 from datetime import datetime, timedelta
 
-from app.tasks.celery_app import celery_app
+from app.tasks.celery_app import celery_app, GracefulTask, cleanup_scraping_job
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="app.tasks.scheduled_tasks.daily_flight_search", bind=True)
+@celery_app.task(name="app.tasks.scheduled_tasks.daily_flight_search", base=GracefulTask, bind=True)
 def daily_flight_search(self):
     """
     Daily task to search for flight deals.
 
     Runs every day at 6 AM UTC.
     Searches for flights from configured departure airports.
+    Uses GracefulTask for proper shutdown handling.
     """
     logger.info("Starting daily flight search task")
+
+    scraping_job_id = None
 
     try:
         # Get departure airports from settings
@@ -32,70 +35,107 @@ def daily_flight_search(self):
 
         logger.info(f"Search period: {start_date.date()} to {end_date.date()}")
 
+        # Check for shutdown periodically
+        if hasattr(self, 'check_shutdown'):
+            self.check_shutdown()
+
         # TODO(#59): Implement actual flight search logic
         # Example:
         # for airport in airports:
+        #     # Check for shutdown between operations
+        #     if hasattr(self, 'check_shutdown'):
+        #         self.check_shutdown()
         #     search_flights_from_airport.delay(airport, start_date, end_date)
 
         logger.info("Daily flight search task completed successfully")
         return {"status": "success", "airports": airports, "task_id": self.request.id}
 
+    except SystemExit:
+        # Handle graceful shutdown
+        logger.warning(f"Daily flight search task {self.request.id} interrupted by shutdown")
+        if scraping_job_id:
+            cleanup_scraping_job(scraping_job_id, "Task interrupted by shutdown")
+        raise
     except Exception as e:
         logger.error(f"Error in daily flight search task: {e}", exc_info=True)
         raise
 
 
-@celery_app.task(name="app.tasks.scheduled_tasks.update_flight_prices", bind=True)
+@celery_app.task(name="app.tasks.scheduled_tasks.update_flight_prices", base=GracefulTask, bind=True)
 def update_flight_prices(self):
     """
     Hourly task to update flight prices.
 
     Runs every hour.
     Updates prices for tracked flights.
+    Uses GracefulTask for proper shutdown handling.
     """
     logger.info("Starting hourly price update task")
 
     try:
+        # Check for shutdown periodically
+        if hasattr(self, 'check_shutdown'):
+            self.check_shutdown()
+
         # TODO(#59): Implement price update logic
         # Example:
         # tracked_flights = get_tracked_flights()
         # for flight in tracked_flights:
+        #     if hasattr(self, 'check_shutdown'):
+        #         self.check_shutdown()
         #     update_flight_price.delay(flight.id)
 
         logger.info("Hourly price update task completed successfully")
         return {"status": "success", "task_id": self.request.id}
 
+    except SystemExit:
+        logger.warning(f"Price update task {self.request.id} interrupted by shutdown")
+        raise
     except Exception as e:
         logger.error(f"Error in price update task: {e}", exc_info=True)
         raise
 
 
-@celery_app.task(name="app.tasks.scheduled_tasks.discover_events", bind=True)
+@celery_app.task(name="app.tasks.scheduled_tasks.discover_events", base=GracefulTask, bind=True)
 def discover_events(self):
     """
     Weekly task to discover family-friendly events.
 
     Runs every Sunday at 8 AM UTC.
     Discovers events from Eventbrite and other sources.
+    Uses GracefulTask for proper shutdown handling.
     """
     logger.info("Starting weekly event discovery task")
 
+    scraping_job_id = None
+
     try:
+        # Check for shutdown periodically
+        if hasattr(self, 'check_shutdown'):
+            self.check_shutdown()
+
         # TODO(#59): Implement event discovery logic
         # Example:
         # destinations = get_popular_destinations()
         # for destination in destinations:
+        #     if hasattr(self, 'check_shutdown'):
+        #         self.check_shutdown()
         #     scrape_eventbrite.delay(destination)
 
         logger.info("Weekly event discovery task completed successfully")
         return {"status": "success", "task_id": self.request.id}
 
+    except SystemExit:
+        logger.warning(f"Event discovery task {self.request.id} interrupted by shutdown")
+        if scraping_job_id:
+            cleanup_scraping_job(scraping_job_id, "Task interrupted by shutdown")
+        raise
     except Exception as e:
         logger.error(f"Error in event discovery task: {e}", exc_info=True)
         raise
 
 
-@celery_app.task(name="app.tasks.scheduled_tasks.search_accommodations", bind=True)
+@celery_app.task(name="app.tasks.scheduled_tasks.search_accommodations", base=GracefulTask, bind=True)
 def search_accommodations(self):
     """
     Daily task to search for accommodations.
@@ -103,8 +143,11 @@ def search_accommodations(self):
     Runs every day at 7 AM UTC.
     Searches for family-friendly accommodations in destinations with upcoming flights.
     Uses AccommodationOrchestrator to coordinate multiple sources (Booking.com, Airbnb).
+    Uses GracefulTask for proper shutdown handling.
     """
     logger.info("Starting daily accommodation search task")
+
+    scraping_job_id = None
 
     try:
         import asyncio
@@ -115,6 +158,10 @@ def search_accommodations(self):
         from app.models.airport import Airport
         from app.models.flight import Flight
         from app.utils.date_utils import get_school_holiday_periods
+
+        # Check for shutdown periodically
+        if hasattr(self, 'check_shutdown'):
+            self.check_shutdown()
 
         db = get_sync_session()
         try:
@@ -214,18 +261,24 @@ def search_accommodations(self):
         finally:
             db.close()
 
+    except SystemExit:
+        logger.warning(f"Accommodation search task {self.request.id} interrupted by shutdown")
+        if scraping_job_id:
+            cleanup_scraping_job(scraping_job_id, "Task interrupted by shutdown")
+        raise
     except Exception as e:
         logger.error(f"Error in accommodation search task: {e}", exc_info=True)
         raise
 
 
-@celery_app.task(name="app.tasks.scheduled_tasks.cleanup_old_data", bind=True)
+@celery_app.task(name="app.tasks.scheduled_tasks.cleanup_old_data", base=GracefulTask, bind=True)
 def cleanup_old_data(self):
     """
     Daily task to clean up old data.
 
     Runs every day at 2 AM UTC.
     Removes expired deals, old price data, etc.
+    Uses GracefulTask for proper shutdown handling.
     """
     logger.info("Starting daily cleanup task")
 
@@ -234,27 +287,39 @@ def cleanup_old_data(self):
         cutoff_date = datetime.now() - timedelta(days=30)
         logger.info(f"Cleaning up data older than: {cutoff_date.date()}")
 
+        # Check for shutdown periodically
+        if hasattr(self, 'check_shutdown'):
+            self.check_shutdown()
+
         # TODO(#59): Implement cleanup logic
         # Example:
         # delete_old_flights(cutoff_date)
+        # if hasattr(self, 'check_shutdown'):
+        #     self.check_shutdown()
         # delete_old_price_history(cutoff_date)
+        # if hasattr(self, 'check_shutdown'):
+        #     self.check_shutdown()
         # delete_expired_deals()
 
         logger.info("Daily cleanup task completed successfully")
         return {"status": "success", "cutoff_date": cutoff_date.isoformat(), "task_id": self.request.id}
 
+    except SystemExit:
+        logger.warning(f"Cleanup task {self.request.id} interrupted by shutdown")
+        raise
     except Exception as e:
         logger.error(f"Error in cleanup task: {e}", exc_info=True)
         raise
 
 
-@celery_app.task(name="app.tasks.scheduled_tasks.send_daily_digest", bind=True)
+@celery_app.task(name="app.tasks.scheduled_tasks.send_daily_digest", base=GracefulTask, bind=True)
 def send_daily_digest(self):
     """
     Daily task to send digest emails to all users with notifications enabled.
 
     Runs every day at 8 AM UTC.
     Sends top deals from last 24 hours to users.
+    Uses GracefulTask for proper shutdown handling.
     """
     logger.info("Starting daily digest task")
 
@@ -262,6 +327,10 @@ def send_daily_digest(self):
         from app.database import get_sync_session
         from app.models.user_preference import UserPreference
         from app.notifications.notification_service import create_notification_service
+
+        # Check for shutdown periodically
+        if hasattr(self, 'check_shutdown'):
+            self.check_shutdown()
 
         db = get_sync_session()
         notification_service = create_notification_service()
@@ -309,7 +378,7 @@ def send_daily_digest(self):
         raise
 
 
-@celery_app.task(name="app.tasks.scheduled_tasks.send_deal_notifications", bind=True)
+@celery_app.task(name="app.tasks.scheduled_tasks.send_deal_notifications", base=GracefulTask, bind=True)
 def send_deal_notifications(self):
     """
     Task to send notifications for new deals.
@@ -317,6 +386,7 @@ def send_deal_notifications(self):
     Can be triggered manually or scheduled.
     Sends email notifications to users about new deals.
     This is primarily for instant alerts when exceptional deals are found.
+    Uses GracefulTask for proper shutdown handling.
     """
     logger.info("Starting deal notification task")
 
@@ -325,6 +395,10 @@ def send_deal_notifications(self):
         from app.models.trip_package import TripPackage
         from app.models.user_preference import UserPreference
         from app.notifications.notification_service import create_notification_service
+
+        # Check for shutdown periodically
+        if hasattr(self, 'check_shutdown'):
+            self.check_shutdown()
 
         db = get_sync_session()
         notification_service = create_notification_service()
@@ -407,6 +481,9 @@ def send_deal_notifications(self):
         finally:
             db.close()
 
+    except SystemExit:
+        logger.warning(f"Notification task {self.request.id} interrupted by shutdown")
+        raise
     except Exception as e:
         logger.error(f"Error in notification task: {e}", exc_info=True)
         raise

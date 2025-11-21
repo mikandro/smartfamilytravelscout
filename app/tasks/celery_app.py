@@ -3,12 +3,125 @@ Celery application configuration for distributed task queue.
 """
 
 import logging
-from celery import Celery
+import signal
+from typing import Any
+from celery import Celery, Task
 from celery.schedules import crontab
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Cleanup Utilities
+# ============================================================================
+
+
+def cleanup_scraping_job(job_id: int, error_message: str = "Task interrupted by shutdown signal") -> None:
+    """
+    Mark a scraping job as interrupted in the database.
+
+    This function should be called during task cleanup to ensure
+    scraping jobs are properly marked as interrupted rather than
+    left in 'running' state.
+
+    Args:
+        job_id: ID of the scraping job to clean up
+        error_message: Optional error message to store with the job
+    """
+    from datetime import datetime
+    from app.database import get_sync_session
+    from app.models.scraping_job import ScrapingJob
+
+    try:
+        db = get_sync_session()
+        try:
+            job = db.query(ScrapingJob).filter(ScrapingJob.id == job_id).first()
+            if job and job.status == "running":
+                job.status = "interrupted"
+                job.error_message = error_message
+                job.completed_at = datetime.now()
+                db.commit()
+                logger.info(f"Marked scraping job {job_id} as interrupted")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Error cleaning up scraping job {job_id}: {e}", exc_info=True)
+
+
+# ============================================================================
+# Graceful Task Base Class
+# ============================================================================
+
+
+class GracefulTask(Task):
+    """
+    Custom Celery Task class that handles graceful shutdown.
+
+    This task intercepts SIGTERM signals and allows for cleanup
+    before termination, preventing data corruption during deployments.
+
+    Usage:
+        @celery_app.task(base=GracefulTask, bind=True)
+        def my_task(self):
+            # Task implementation
+            pass
+    """
+
+    _shutdown_requested = False
+    _original_sigterm_handler = None
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """
+        Execute task with graceful shutdown handling.
+
+        Sets up SIGTERM signal handler before task execution and
+        restores original handler after completion.
+        """
+        def signal_handler(signum: int, frame: Any) -> None:
+            """Handle SIGTERM signal gracefully."""
+            logger.warning(
+                f"Task {self.request.id} ({self.name}) received shutdown signal (SIGTERM). "
+                f"Attempting graceful shutdown..."
+            )
+            self._shutdown_requested = True
+
+            # Call cleanup hook if implemented by subclass
+            if hasattr(self, 'on_shutdown'):
+                try:
+                    self.on_shutdown()
+                except Exception as e:
+                    logger.error(f"Error during task cleanup: {e}", exc_info=True)
+
+            # Raise SystemExit to terminate task execution
+            raise SystemExit("Task terminated by SIGTERM signal")
+
+        # Store original SIGTERM handler
+        self._original_sigterm_handler = signal.signal(signal.SIGTERM, signal_handler)
+
+        try:
+            # Execute the task
+            return super().__call__(*args, **kwargs)
+        finally:
+            # Restore original SIGTERM handler
+            if self._original_sigterm_handler is not None:
+                signal.signal(signal.SIGTERM, self._original_sigterm_handler)
+
+    def is_shutdown_requested(self) -> bool:
+        """Check if shutdown has been requested."""
+        return self._shutdown_requested
+
+    def check_shutdown(self) -> None:
+        """
+        Check if shutdown is requested and raise SystemExit if true.
+
+        Call this method periodically in long-running tasks to
+        allow for earlier termination.
+        """
+        if self._shutdown_requested:
+            raise SystemExit("Task terminated due to shutdown request")
+
 
 # Create Celery instance
 celery_app = Celery(
@@ -37,8 +150,8 @@ celery_app.conf.update(
     result_extended=True,
     # Task execution settings
     task_track_started=True,
-    task_time_limit=1800,  # 30 minutes hard limit
-    task_soft_time_limit=1500,  # 25 minutes soft limit
+    task_time_limit=300,  # 5 minutes hard limit (for graceful shutdown)
+    task_soft_time_limit=270,  # 4.5 minutes soft limit (warning before hard limit)
     task_acks_late=True,  # Acknowledge tasks after completion
     task_reject_on_worker_lost=True,
     # Worker settings
