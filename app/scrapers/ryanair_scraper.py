@@ -22,14 +22,20 @@ from typing import Dict, List, Optional
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from playwright_stealth import Stealth
 
+from app.config import settings
 from app.exceptions import ScraperInitializationError
 from app.utils.logging_config import get_logger
+from app.utils.rate_limiter import (
+    RedisRateLimiter,
+    RateLimitExceededError,
+    get_ryanair_rate_limiter,
+)
 
 logger = get_logger(__name__)
 
 
 class RateLimitExceeded(Exception):
-    """Raised when daily rate limit is exceeded."""
+    """Raised when daily rate limit is exceeded (deprecated, use RateLimitExceededError)."""
 
     pass
 
@@ -54,8 +60,6 @@ class RyanairScraper:
     """
 
     BASE_URL = "https://www.ryanair.com"
-    MAX_DAILY_SEARCHES = 5
-    RATE_LIMIT_FILE = "/tmp/ryanair_rate_limit.json"
 
     # User agents that look residential/real
     USER_AGENTS = [
@@ -65,18 +69,28 @@ class RyanairScraper:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
     ]
 
-    def __init__(self, log_dir: str = "/home/user/smartfamilytravelscout/logs/ryanair"):
+    def __init__(
+        self,
+        log_dir: Optional[str] = None,
+        rate_limiter: Optional[RedisRateLimiter] = None,
+    ):
         """
         Initialize Ryanair scraper with stealth configuration.
 
         Args:
-            log_dir: Directory to save error screenshots
+            log_dir: Directory to save error screenshots (defaults to configured log directory)
+            rate_limiter: Custom rate limiter instance (optional)
         """
-        self.log_dir = Path(log_dir)
+        if log_dir:
+            self.log_dir = Path(log_dir)
+        else:
+            self.log_dir = settings.get_log_dir() / "ryanair"
+
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self.rate_limiter = rate_limiter or get_ryanair_rate_limiter()
 
     async def __aenter__(self):
         """Context manager entry."""
@@ -182,39 +196,26 @@ class RyanairScraper:
         Check if rate limit has been exceeded.
 
         Raises:
-            RateLimitExceeded: If daily limit is exceeded
+            RateLimitExceededError: If daily limit is exceeded
         """
-        rate_file = Path(self.RATE_LIMIT_FILE)
-
-        # Load existing rate limit data
-        if rate_file.exists():
-            with open(rate_file, "r") as f:
-                data = json.load(f)
-        else:
-            data = {"date": None, "count": 0}
-
-        today = str(date.today())
-
-        # Reset counter if it's a new day
-        if data["date"] != today:
-            data = {"date": today, "count": 0}
-
-        # Check limit
-        if data["count"] >= self.MAX_DAILY_SEARCHES:
-            logger.warning(f"Rate limit exceeded: {data['count']}/{self.MAX_DAILY_SEARCHES}")
-            raise RateLimitExceeded(
-                f"Daily rate limit exceeded ({self.MAX_DAILY_SEARCHES} searches/day). "
-                f"Try again tomorrow."
+        if not self.rate_limiter.is_allowed():
+            remaining = self.rate_limiter.get_remaining()
+            status = self.rate_limiter.get_status()
+            logger.warning(
+                f"Rate limit exceeded: {status['current_count']}/{status['max_requests']} "
+                f"searches today"
+            )
+            raise RateLimitExceededError(
+                f"Daily rate limit exceeded ({status['max_requests']} searches/day). "
+                f"Try again tomorrow. {remaining} requests remaining."
             )
 
-        # Increment counter
-        data["count"] += 1
-
-        # Save
-        with open(rate_file, "w") as f:
-            json.dump(data, f)
-
-        logger.info(f"Rate limit check: {data['count']}/{self.MAX_DAILY_SEARCHES} searches today")
+        # Record the request
+        self.rate_limiter.record_request()
+        status = self.rate_limiter.get_status()
+        logger.info(
+            f"Rate limit check: {status['current_count']}/{status['max_requests']} searches today"
+        )
 
     async def _save_screenshot(self, name: str) -> str:
         """

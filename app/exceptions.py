@@ -1,7 +1,11 @@
 """
-Custom exception classes with informative error messages.
+Custom exceptions for SmartFamilyTravelScout application.
 
-This module provides enhanced exceptions that include:
+This module provides:
+1. Base exception hierarchy for application-wide error handling
+2. Informative exceptions with actionable guidance (Issue #57)
+
+The informative exceptions include:
 - Clear explanation of what went wrong
 - Specific remediation instructions
 - Relevant configuration details
@@ -11,7 +15,107 @@ This module provides enhanced exceptions that include:
 from typing import Optional
 
 
-class InformativeException(Exception):
+# ============================================================================
+# Base Exception Hierarchy (for application-wide error handling)
+# ============================================================================
+
+
+class SmartTravelScoutException(Exception):
+    """Base exception class for all SmartFamilyTravelScout exceptions."""
+
+    pass
+
+
+class ScraperException(SmartTravelScoutException):
+    """Base exception for scraper-related errors."""
+
+    pass
+
+
+class ScraperFailureThresholdExceeded(ScraperException):
+    """
+    Exception raised when too many scrapers fail during orchestration.
+
+    This exception signals that the scraper failure rate has exceeded the
+    configured threshold, indicating a critical system issue that requires
+    immediate attention.
+
+    Attributes:
+        total_scrapers: Total number of scrapers attempted
+        failed_scrapers: Number of scrapers that failed
+        failure_rate: Calculated failure rate (0.0 to 1.0)
+        threshold: Configured failure threshold (0.0 to 1.0)
+        message: Detailed error message
+    """
+
+    def __init__(
+        self,
+        total_scrapers: int,
+        failed_scrapers: int,
+        failure_rate: float,
+        threshold: float,
+        message: str = None,
+    ):
+        """
+        Initialize the exception with failure statistics.
+
+        Args:
+            total_scrapers: Total number of scrapers attempted
+            failed_scrapers: Number of scrapers that failed
+            failure_rate: Calculated failure rate (0.0 to 1.0)
+            threshold: Configured failure threshold (0.0 to 1.0)
+            message: Optional custom error message
+        """
+        self.total_scrapers = total_scrapers
+        self.failed_scrapers = failed_scrapers
+        self.failure_rate = failure_rate
+        self.threshold = threshold
+
+        if message is None:
+            message = (
+                f"Scraper failure threshold exceeded: "
+                f"{failed_scrapers}/{total_scrapers} scrapers failed "
+                f"({failure_rate:.1%} failure rate, threshold: {threshold:.1%})"
+            )
+
+        self.message = message
+        super().__init__(self.message)
+
+    def __str__(self):
+        """Return detailed error message."""
+        return self.message
+
+
+class ConfigurationException(SmartTravelScoutException):
+    """Exception raised for configuration errors."""
+
+    pass
+
+
+class DatabaseException(SmartTravelScoutException):
+    """Exception raised for database-related errors."""
+
+    pass
+
+
+class AIServiceException(SmartTravelScoutException):
+    """Exception raised for AI service (Claude API) errors."""
+
+    pass
+
+
+class NotificationException(SmartTravelScoutException):
+    """Exception raised for notification/email errors."""
+
+    pass
+
+
+# ============================================================================
+# Informative Exceptions with Actionable Guidance (Issue #57)
+# ============================================================================
+
+
+class InformativeException(SmartTravelScoutException):
     """Base class for informative exceptions with actionable guidance."""
 
     def __init__(self, message: str, remediation: Optional[str] = None,
@@ -50,7 +154,7 @@ class InformativeException(Exception):
         super().__init__(full_message)
 
 
-class DatabaseConnectionError(InformativeException):
+class DatabaseConnectionError(InformativeException, DatabaseException):
     """Raised when database connection fails."""
 
     def __init__(self, connection_type: str = "unknown", error_details: str = ""):
@@ -77,7 +181,7 @@ class DatabaseConnectionError(InformativeException):
         super().__init__(message, remediation, details, commands)
 
 
-class APIKeyMissingError(InformativeException):
+class APIKeyMissingError(InformativeException, ConfigurationException):
     """Raised when required API key is missing."""
 
     def __init__(self, service: str, env_var: str, optional: bool = False,
@@ -114,7 +218,7 @@ OPTIONAL: To enable {service}, add to your .env file:
         super().__init__(message, remediation, details, commands)
 
 
-class ScraperInitializationError(InformativeException):
+class ScraperInitializationError(InformativeException, ScraperException):
     """Raised when scraper fails to initialize properly."""
 
     def __init__(self, scraper_name: str, component: str, error_details: str = ""):
@@ -140,7 +244,7 @@ class ScraperInitializationError(InformativeException):
         super().__init__(message, remediation, details, commands)
 
 
-class ConfigurationError(InformativeException):
+class ConfigurationError(InformativeException, ConfigurationException):
     """Raised when configuration is invalid or missing."""
 
     def __init__(self, config_item: str, expected: str, actual: str = ""):
@@ -188,7 +292,7 @@ class DataValidationError(InformativeException):
         super().__init__(message, remediation, details, commands)
 
 
-class SMTPConfigurationError(InformativeException):
+class SMTPConfigurationError(InformativeException, NotificationException):
     """Raised when SMTP configuration is invalid."""
 
     def __init__(self, issue: str, smtp_details: Optional[dict] = None):
@@ -224,7 +328,7 @@ class SMTPConfigurationError(InformativeException):
         super().__init__(message, remediation, details, commands)
 
 
-class PlaywrightNotInstalledError(InformativeException):
+class PlaywrightNotInstalledError(InformativeException, ScraperException):
     """Raised when Playwright is not installed but required."""
 
     def __init__(self, scraper_name: str):
@@ -251,7 +355,7 @@ class PlaywrightNotInstalledError(InformativeException):
         super().__init__(message, remediation, details, commands)
 
 
-class ScrapingError(InformativeException):
+class ScrapingError(InformativeException, ScraperException):
     """Raised when scraping fails with actionable context."""
 
     def __init__(self, scraper_name: str, reason: str, url: Optional[str] = None,

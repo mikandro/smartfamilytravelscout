@@ -80,7 +80,12 @@ class EventBriteClient:
                 service="EventBrite API",
                 env_var="EVENTBRITE_API_KEY",
                 optional=True,
-                fallback_info="EventBrite integration will be disabled. You can still use:\n  - Tourism scrapers (Barcelona, Prague, Lisbon)\n  - Other event sources"
+                fallback_info=(
+                    "Get a free API key (1,000 requests/day) at: https://www.eventbrite.com/platform/api\n\n"
+                    "EventBrite integration will be disabled. You can still use:\n"
+                    "  - Tourism scrapers (Barcelona, Prague, Lisbon)\n"
+                    "  - Other event sources"
+                )
             )
 
         self.session: Optional[httpx.AsyncClient] = None

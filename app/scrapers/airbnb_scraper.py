@@ -492,7 +492,8 @@ class AirbnbClient:
             # Remove non-numeric characters except decimal point
             price_str = "".join(c for c in text if c.isdigit() or c == ".")
             return float(price_str) if price_str else 0.0
-        except:
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Failed to extract price from text '{text}': {e}")
             return 0.0
 
     def _extract_rating_from_text(self, text: str) -> Optional[float]:
@@ -505,7 +506,8 @@ class AirbnbClient:
                 rating = float(match.group(1))
                 return rating if 0 <= rating <= 5 else None
             return None
-        except:
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.warning(f"Failed to extract rating from text '{text}': {e}")
             return None
 
     async def save_to_database(
