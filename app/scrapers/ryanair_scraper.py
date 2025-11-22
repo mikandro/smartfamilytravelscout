@@ -23,6 +23,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from playwright_stealth import Stealth
 
 from app.config import settings
+from app.exceptions import ScraperInitializationError
 from app.utils.logging_config import get_logger
 from app.utils.rate_limiter import (
     RedisRateLimiter,
@@ -834,7 +835,11 @@ class RyanairScraper:
                 await self._init_browser()
 
             if not self.page:
-                raise Exception("Page not initialized")
+                raise ScraperInitializationError(
+                    scraper_name="Ryanair",
+                    component="browser page",
+                    error_details="Page object failed to initialize after browser startup"
+                )
 
             # Navigate to homepage
             logger.info(f"Navigating to {self.BASE_URL}...")

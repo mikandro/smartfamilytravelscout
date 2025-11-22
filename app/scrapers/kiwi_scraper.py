@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_async_session_context
+from app.exceptions import APIKeyMissingError
 from app.models.airport import Airport
 from app.models.flight import Flight
 from app.utils.rate_limiter import (
@@ -71,10 +72,17 @@ class KiwiClient:
         """
         self.api_key = api_key or settings.kiwi_api_key
         if not self.api_key:
-            raise ValueError(
-                "Kiwi.com API key is required but not configured.\n"
-                "Get a free API key (100 requests/month) at: https://tequila.kiwi.com/portal/login\n"
-                "Then set it in your .env file: KIWI_API_KEY=your_api_key_here"
+            raise APIKeyMissingError(
+                service="Kiwi.com API",
+                env_var="KIWI_API_KEY",
+                optional=True,
+                fallback_info=(
+                    "Get a free API key (100 requests/month) at: https://tequila.kiwi.com/portal/login\n\n"
+                    "You can also use the default scrapers instead:\n"
+                    "  - Skyscanner (playwright-based, no API key)\n"
+                    "  - Ryanair (playwright-based, no API key)\n"
+                    "  - WizzAir (API-based, no API key)"
+                )
             )
 
         self.rate_limiter = rate_limiter or get_kiwi_rate_limiter()

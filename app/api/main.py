@@ -121,7 +121,13 @@ async def lifespan(app: FastAPI):
     try:
         redis_client = await connect_to_redis()
     except Exception as e:
-        logger.error(f"Failed to connect to Redis after retries: {e}")
+        # Enhanced error logging (Issue #57)
+        logger.error(
+            f"Failed to connect to Redis after retries: {e}\n"
+            f"Redis URL (masked): {str(settings.redis_url).replace(settings.redis_url.password or '', '***') if settings.redis_url else 'not configured'}\n"
+            f"To fix: Ensure Redis is running (docker-compose up -d redis) and REDIS_URL is correctly set in .env",
+            exc_info=True
+        )
         raise RuntimeError(f"Redis connection failed: {e}")
 
     # Check database connection with retry
@@ -129,7 +135,15 @@ async def lifespan(app: FastAPI):
         await check_db_connection()
         logger.info("Database connection established")
     except Exception as e:
-        logger.error(f"Failed to connect to database after retries: {e}")
+        # Enhanced error logging (Issue #57)
+        logger.error(
+            f"Failed to connect to database after retries: {e}\n"
+            "To fix:\n"
+            "  1. Ensure PostgreSQL is running: docker-compose up -d postgres\n"
+            "  2. Check logs: docker-compose logs postgres\n"
+            "  3. Verify DATABASE_URL in .env file",
+            exc_info=True
+        )
         raise RuntimeError(f"Database connection failed: {e}")
 
     logger.info("Application startup complete - all dependencies healthy")
@@ -181,13 +195,29 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Global exception handler for unhandled exceptions."""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    logger.error(
+        f"Unhandled exception during {request.method} {request.url.path}: {exc}",
+        exc_info=True
+    )
+
+    # Provide more context in debug mode
+    if settings.debug:
+        content = {
+            "error": "Internal server error",
+            "message": str(exc),
+            "type": exc.__class__.__name__,
+            "path": str(request.url.path),
+            "method": request.method,
+        }
+    else:
+        content = {
+            "error": "Internal server error",
+            "message": "An unexpected error occurred. Please check the logs or contact support.",
+        }
+
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "error": "Internal server error",
-            "message": str(exc) if settings.debug else "An unexpected error occurred",
-        },
+        content=content,
     )
 
 
