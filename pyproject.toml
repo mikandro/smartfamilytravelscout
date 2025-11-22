@@ -16,7 +16,7 @@ alembic = "^1.13.1"
 celery = "^5.3.6"
 redis = "^5.0.1"
 playwright = "^1.41.0"
-anthropic = "^0.18.0"
+anthropic = "^0.40.0"
 pandas = "^2.2.0"
 requests = "^2.31.0"
 beautifulsoup4 = "^4.12.3"
@@ -51,6 +51,8 @@ mypy = "^1.8.0"
 ipython = "^8.21.0"
 httpx = "^0.26.0"
 playwright-stealth = "^2.0.0"
+pre-commit = "^3.6.0"
+bandit = {extras = ["toml"], version = "^1.7.6"}
 
 [tool.poetry.scripts]
 scout = "app.cli.main:app"
@@ -80,7 +82,8 @@ extend-exclude = '''
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-select = ["E", "F", "I", "N", "W", "UP"]
+# B: flake8-bugbear (includes B001 to catch bare except:)
+select = ["E", "F", "I", "N", "W", "UP", "B"]
 ignore = ["E501"]
 
 [tool.mypy]
@@ -116,3 +119,7 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
 ]
+
+[tool.bandit]
+exclude_dirs = ["tests", "alembic/versions"]
+skips = ["B101"]  # Skip assert_used test (asserts are OK in tests)

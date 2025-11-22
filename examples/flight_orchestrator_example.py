@@ -14,9 +14,11 @@ import asyncio
 import logging
 from datetime import date
 
+from redis.asyncio import Redis
 from rich.console import Console
 from rich.logging import RichHandler
 
+from app.config import settings
 from app.orchestration.flight_orchestrator import FlightOrchestrator
 
 # Configure logging with Rich
@@ -34,8 +36,18 @@ async def main():
     """Run the flight orchestrator example."""
     console.print("\n[bold cyan]═══ Flight Orchestrator Example ═══[/bold cyan]\n")
 
+    # Initialize Redis client for caching
+    redis_client = None
+    try:
+        redis_client = await Redis.from_url(str(settings.redis_url))
+        await redis_client.ping()
+        console.print("[green]✓ Redis connection established (caching enabled)[/green]\n")
+    except Exception as e:
+        console.print(f"[yellow]⚠ Redis connection failed (caching disabled): {e}[/yellow]\n")
+        redis_client = None
+
     # Initialize orchestrator
-    orchestrator = FlightOrchestrator()
+    orchestrator = FlightOrchestrator(redis_client=redis_client)
 
     # Define search parameters
     origins = ["MUC", "FMM"]  # Munich and Memmingen
@@ -107,6 +119,11 @@ async def main():
         console.print(f"\n[bold red]Error: {e}[/bold red]")
         logger.exception("Fatal error")
         raise
+    finally:
+        # Close Redis connection
+        if redis_client:
+            await redis_client.close()
+            console.print("\n[dim]Redis connection closed[/dim]")
 
 
 if __name__ == "__main__":
