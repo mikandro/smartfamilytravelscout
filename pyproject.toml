@@ -51,6 +51,8 @@ mypy = "^1.8.0"
 ipython = "^8.21.0"
 httpx = "^0.26.0"
 playwright-stealth = "^2.0.0"
+pre-commit = "^3.6.0"
+bandit = {extras = ["toml"], version = "^1.7.6"}
 
 [tool.poetry.scripts]
 scout = "app.cli.main:app"
@@ -117,3 +119,7 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
 ]
+
+[tool.bandit]
+exclude_dirs = ["tests", "alembic/versions"]
+skips = ["B101"]  # Skip assert_used test (asserts are OK in tests)

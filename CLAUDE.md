@@ -162,7 +162,22 @@ poetry run ruff check app/
 
 # Type checking
 poetry run mypy app/
+
+# Pre-commit hooks (run automatically on git commit)
+poetry run pre-commit install          # Install hooks (one-time setup)
+poetry run pre-commit run --all-files  # Run manually on all files
+poetry run pre-commit run              # Run on staged files only
+
+# Security scanning
+poetry run bandit -r app/
 ```
+
+**Pre-commit Hook Enforcement:**
+- All TODOs must reference a GitHub issue: `# TODO(#123): description`
+- Code is auto-formatted with Black and Ruff
+- Security vulnerabilities are detected with Bandit
+- YAML/JSON/TOML files are validated
+- Trailing whitespace and line endings are fixed
 
 ## Architecture Overview
 
@@ -303,6 +318,23 @@ All scrapers follow this pattern:
    - The `FlightOrchestrator` tracks failures via `asyncio.gather(..., return_exceptions=True)`
    - Raises `ScraperFailureThresholdExceeded` if failure rate exceeds configured threshold
 5. Track scraping job status in `scraping_jobs` table
+
+### TODO Policy
+
+All TODO comments must reference a GitHub issue to prevent technical debt accumulation:
+
+**Format:** `# TODO(#123): Brief description of what needs to be done`
+
+**Example:**
+```python
+# TODO(#59): Implement price update logic
+# tracked_flights = get_tracked_flights()
+```
+
+**Enforcement:**
+- Pre-commit hooks automatically reject TODOs without issue references
+- This ensures all incomplete features are tracked and prioritized
+- Obsolete TODOs should be removed, not left in code
 
 ### Exception Handling
 

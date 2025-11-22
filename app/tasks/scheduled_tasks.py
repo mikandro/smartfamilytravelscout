@@ -32,7 +32,7 @@ def daily_flight_search(self):
 
         logger.info(f"Search period: {start_date.date()} to {end_date.date()}")
 
-        # TODO: Implement actual flight search logic
+        # TODO(#59): Implement actual flight search logic
         # Example:
         # for airport in airports:
         #     search_flights_from_airport.delay(airport, start_date, end_date)
@@ -56,7 +56,7 @@ def update_flight_prices(self):
     logger.info("Starting hourly price update task")
 
     try:
-        # TODO: Implement price update logic
+        # TODO(#59): Implement price update logic
         # Example:
         # tracked_flights = get_tracked_flights()
         # for flight in tracked_flights:
@@ -81,7 +81,7 @@ def discover_events(self):
     logger.info("Starting weekly event discovery task")
 
     try:
-        # TODO: Implement event discovery logic
+        # TODO(#59): Implement event discovery logic
         # Example:
         # destinations = get_popular_destinations()
         # for destination in destinations:
@@ -234,7 +234,7 @@ def cleanup_old_data(self):
         cutoff_date = datetime.now() - timedelta(days=30)
         logger.info(f"Cleaning up data older than: {cutoff_date.date()}")
 
-        # TODO: Implement cleanup logic
+        # TODO(#59): Implement cleanup logic
         # Example:
         # delete_old_flights(cutoff_date)
         # delete_old_price_history(cutoff_date)
