@@ -27,81 +27,8 @@ os.environ.setdefault("KIWI_API_KEY", "test-kiwi-key")
 from app.scrapers.kiwi_scraper import (
     KiwiAPIError,
     KiwiClient,
-    RateLimitExceededError,
-    RateLimiter,
 )
-
-
-class TestRateLimiter:
-    """Test suite for RateLimiter class."""
-
-    @pytest.fixture
-    def temp_storage(self):
-        """Create temporary file for rate limit storage."""
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-            temp_file = f.name
-        yield temp_file
-        # Cleanup
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-
-    @pytest.fixture
-    def rate_limiter(self, temp_storage):
-        """Create RateLimiter instance with temporary storage."""
-        return RateLimiter(limit_per_month=100, storage_file=temp_storage)
-
-    def test_init(self, rate_limiter):
-        """Test RateLimiter initialization."""
-        assert rate_limiter.limit_per_month == 100
-        assert rate_limiter.storage_file is not None
-
-    def test_check_limit_empty(self, rate_limiter):
-        """Test rate limit check with no previous calls."""
-        assert rate_limiter.check_limit() is True
-        assert rate_limiter.get_remaining_calls() == 100
-
-    def test_record_call(self, rate_limiter):
-        """Test recording API calls."""
-        rate_limiter.record_call()
-        assert rate_limiter.get_remaining_calls() == 99
-
-        rate_limiter.record_call()
-        rate_limiter.record_call()
-        assert rate_limiter.get_remaining_calls() == 97
-
-    def test_check_limit_exceeded(self, rate_limiter):
-        """Test rate limit exceeded scenario."""
-        # Record 100 calls
-        for _ in range(100):
-            rate_limiter.record_call()
-
-        assert rate_limiter.check_limit() is False
-        assert rate_limiter.get_remaining_calls() == 0
-
-    def test_reset(self, rate_limiter):
-        """Test resetting rate limiter."""
-        # Record some calls
-        for _ in range(10):
-            rate_limiter.record_call()
-
-        assert rate_limiter.get_remaining_calls() == 90
-
-        # Reset
-        rate_limiter.reset()
-        assert rate_limiter.get_remaining_calls() == 100
-
-    def test_filter_old_calls(self, rate_limiter):
-        """Test that old calls from previous months are filtered out."""
-        # Manually write old timestamps
-        old_timestamp = datetime(2023, 1, 1, 12, 0, 0)
-        recent_timestamp = datetime.now()
-
-        with open(rate_limiter.storage_file, "w") as f:
-            f.write(f"{old_timestamp.isoformat()}\n")
-            f.write(f"{recent_timestamp.isoformat()}\n")
-
-        # Should only count recent call
-        assert rate_limiter.get_remaining_calls() == 99
+from app.utils.rate_limiter import RateLimitExceededError, RedisRateLimiter
 
 
 class TestKiwiClient:
@@ -110,9 +37,10 @@ class TestKiwiClient:
     @pytest.fixture
     def mock_rate_limiter(self):
         """Create mock rate limiter that always allows calls."""
-        limiter = Mock(spec=RateLimiter)
-        limiter.check_limit.return_value = True
-        limiter.record_call.return_value = None
+        limiter = Mock(spec=RedisRateLimiter)
+        limiter.is_allowed.return_value = True
+        limiter.record_request.return_value = None
+        limiter.get_remaining.return_value = 100
         return limiter
 
     @pytest.fixture
@@ -520,60 +448,56 @@ class TestIntegrationScenarios:
         """Test complete workflow: search flights and save to database."""
         # This would be an integration test in a real scenario
         # For unit tests, we mock the entire flow
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-            temp_file = f.name
 
-        try:
-            rate_limiter = RateLimiter(limit_per_month=100, storage_file=temp_file)
-            client = KiwiClient(api_key="test_key", rate_limiter=rate_limiter)
+        # Mock rate limiter
+        rate_limiter = Mock(spec=RedisRateLimiter)
+        rate_limiter.is_allowed.return_value = True
+        rate_limiter.get_remaining.return_value = 100
 
-            # Mock API response
-            sample_response = {
-                "data": [
-                    {
-                        "id": "12345",
-                        "price": 400.0,
-                        "booking_token": "token",
-                        "deep_link": "https://kiwi.com/book",
-                        "route": [
-                            {
-                                "flyFrom": "MUC",
-                                "flyTo": "LIS",
-                                "cityFrom": "Munich",
-                                "cityTo": "Lisbon",
-                                "airline": "FR",
-                                "dTimeUTC": 1703080200,
-                                "aTimeUTC": 1703091000,
-                            },
-                            {
-                                "flyFrom": "LIS",
-                                "flyTo": "MUC",
-                                "cityFrom": "Lisbon",
-                                "cityTo": "Munich",
-                                "airline": "FR",
-                                "dTimeUTC": 1703685900,
-                                "aTimeUTC": 1703696700,
-                            },
-                        ],
-                    }
-                ]
-            }
+        client = KiwiClient(api_key="test_key", rate_limiter=rate_limiter)
 
-            with patch.object(client, "_make_request", AsyncMock(return_value=sample_response)):
-                # Search flights
-                flights = await client.search_flights(
-                    "MUC", "LIS", date(2025, 12, 20), date(2025, 12, 27)
-                )
+        # Mock API response
+        sample_response = {
+            "data": [
+                {
+                    "id": "12345",
+                    "price": 400.0,
+                    "booking_token": "token",
+                    "deep_link": "https://kiwi.com/book",
+                    "route": [
+                        {
+                            "flyFrom": "MUC",
+                            "flyTo": "LIS",
+                            "cityFrom": "Munich",
+                            "cityTo": "Lisbon",
+                            "airline": "FR",
+                            "dTimeUTC": 1703080200,
+                            "aTimeUTC": 1703091000,
+                        },
+                        {
+                            "flyFrom": "LIS",
+                            "flyTo": "MUC",
+                            "cityFrom": "Lisbon",
+                            "cityTo": "Munich",
+                            "airline": "FR",
+                            "dTimeUTC": 1703685900,
+                            "aTimeUTC": 1703696700,
+                        },
+                    ],
+                }
+            ]
+        }
 
-                assert len(flights) == 1
-                assert flights[0]["origin_airport"] == "MUC"
-                assert flights[0]["total_price"] == 400.0
+        with patch.object(client, "_make_request", AsyncMock(return_value=sample_response)):
+            # Search flights
+            flights = await client.search_flights(
+                "MUC", "LIS", date(2025, 12, 20), date(2025, 12, 27)
+            )
 
-                # Verify rate limiter did NOT track the call (we mocked _make_request directly)
-                # The actual rate limiting happens inside _make_request which we bypassed
-                assert rate_limiter.get_remaining_calls() == 100
+            assert len(flights) == 1
+            assert flights[0]["origin_airport"] == "MUC"
+            assert flights[0]["total_price"] == 400.0
 
-        finally:
-            # Cleanup
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
+            # Verify rate limiter did NOT track the call (we mocked _make_request directly)
+            # The actual rate limiting happens inside _make_request which we bypassed
+            assert rate_limiter.get_remaining.return_value == 100

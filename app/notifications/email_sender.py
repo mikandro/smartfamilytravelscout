@@ -14,6 +14,7 @@ from typing import List, Optional
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.config import Settings
+from app.exceptions import SMTPConfigurationError
 from app.models.trip_package import TripPackage
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,7 @@ class EmailNotifier:
         return f"€{float(value):.2f}"
 
     async def send_daily_digest(
-        self, deals: List[TripPackage], to_email: Optional[str] = None
+        self, deals: List[TripPackage], to_email: Optional[str] = None, unsubscribe_token: Optional[str] = None
     ) -> bool:
         """
         Send daily digest email with top deals.
@@ -71,6 +72,7 @@ class EmailNotifier:
         Args:
             deals: List of trip packages (score > 70)
             to_email: Recipient email (defaults to user_email)
+            unsubscribe_token: User's unsubscribe token for the email footer
 
         Returns:
             True if email sent successfully, False otherwise
@@ -95,6 +97,7 @@ class EmailNotifier:
                 date=date.today(),
                 total_deals=len(deals),
                 summary=f"Found {len(deals)} great family travel deals today! Here are the top {len(top_deals)}:",
+                unsubscribe_token=unsubscribe_token,
             )
 
             subject = f"🌍 Daily Travel Deals - {date.today().strftime('%B %d, %Y')}"
@@ -109,7 +112,7 @@ class EmailNotifier:
             return False
 
     async def send_deal_alert(
-        self, deal: TripPackage, to_email: Optional[str] = None
+        self, deal: TripPackage, to_email: Optional[str] = None, unsubscribe_token: Optional[str] = None
     ) -> bool:
         """
         Send immediate alert for exceptional deal.
@@ -117,6 +120,7 @@ class EmailNotifier:
         Args:
             deal: Trip package with score > 85
             to_email: Recipient email (defaults to user_email)
+            unsubscribe_token: User's unsubscribe token for the email footer
 
         Returns:
             True if email sent successfully, False otherwise
@@ -136,6 +140,7 @@ class EmailNotifier:
             html_content = template.render(
                 deal=deal,
                 date=date.today(),
+                unsubscribe_token=unsubscribe_token,
             )
 
             subject = f"🚨 Exceptional Deal Alert: {deal.destination_city} - {deal.ai_score:.0f}/100!"
@@ -150,7 +155,7 @@ class EmailNotifier:
             return False
 
     async def send_parent_escape_digest(
-        self, getaways: List[TripPackage], to_email: Optional[str] = None
+        self, getaways: List[TripPackage], to_email: Optional[str] = None, unsubscribe_token: Optional[str] = None
     ) -> bool:
         """
         Send weekly digest of romantic getaways for parents.
@@ -158,6 +163,7 @@ class EmailNotifier:
         Args:
             getaways: List of parent escape trip packages
             to_email: Recipient email (defaults to user_email)
+            unsubscribe_token: User's unsubscribe token for the email footer
 
         Returns:
             True if email sent successfully, False otherwise
@@ -184,6 +190,7 @@ class EmailNotifier:
                 date=date.today(),
                 total_getaways=len(getaways),
                 summary=f"Found {len(getaways)} romantic getaways perfect for parents. Here are the top {len(top_getaways)}:",
+                unsubscribe_token=unsubscribe_token,
             )
 
             subject = f"💑 Weekly Parent Escape Digest - {date.today().strftime('%B %d, %Y')}"
@@ -247,13 +254,37 @@ class EmailNotifier:
             return True
 
         except smtplib.SMTPAuthenticationError as e:
-            logger.error(f"SMTP authentication failed: {e}")
+            logger.error(
+                f"SMTP authentication failed: {e}\n"
+                f"Server: {self.smtp_host}:{self.smtp_port}\n"
+                f"User: {self.smtp_user}\n"
+                f"To fix:\n"
+                f"  1. Verify SMTP_USER and SMTP_PASSWORD in .env\n"
+                f"  2. For Gmail, use app-specific password (not your regular password)\n"
+                f"  3. Ensure 2FA is enabled for app-specific passwords\n"
+                f"  4. Check if 'Less secure app access' needs to be enabled",
+                exc_info=True
+            )
             return False
         except smtplib.SMTPException as e:
-            logger.error(f"SMTP error while sending email: {e}")
+            logger.error(
+                f"SMTP error while sending email to {to_email}: {e}\n"
+                f"Server: {self.smtp_host}:{self.smtp_port}\n"
+                f"Subject: {subject}\n"
+                f"To fix:\n"
+                f"  1. Verify SMTP server is reachable\n"
+                f"  2. Check firewall settings\n"
+                f"  3. Verify SMTP_HOST and SMTP_PORT in .env",
+                exc_info=True
+            )
             return False
         except Exception as e:
-            logger.error(f"Unexpected error sending email: {e}", exc_info=True)
+            logger.error(
+                f"Unexpected error sending email to {to_email}: {e}\n"
+                f"Subject: {subject}\n"
+                f"Check SMTP configuration in .env file",
+                exc_info=True
+            )
             return False
 
     def preview_daily_digest(self, deals: List[TripPackage]) -> str:

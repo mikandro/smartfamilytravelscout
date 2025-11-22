@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_async_session_context
+from app.exceptions import PlaywrightNotInstalledError
 from app.models.accommodation import Accommodation
 
 logger = logging.getLogger(__name__)
@@ -339,8 +340,7 @@ class AirbnbClient:
         try:
             from playwright.async_api import async_playwright
         except ImportError:
-            logger.error("Playwright not installed. Cannot perform direct scraping.")
-            return []
+            raise PlaywrightNotInstalledError(scraper_name="Airbnb")
 
         logger.info(f"Starting Playwright scraping for {city}")
 
@@ -492,7 +492,8 @@ class AirbnbClient:
             # Remove non-numeric characters except decimal point
             price_str = "".join(c for c in text if c.isdigit() or c == ".")
             return float(price_str) if price_str else 0.0
-        except:
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Failed to extract price from text '{text}': {e}")
             return 0.0
 
     def _extract_rating_from_text(self, text: str) -> Optional[float]:
@@ -505,7 +506,8 @@ class AirbnbClient:
                 rating = float(match.group(1))
                 return rating if 0 <= rating <= 5 else None
             return None
-        except:
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.warning(f"Failed to extract rating from text '{text}': {e}")
             return None
 
     async def save_to_database(
