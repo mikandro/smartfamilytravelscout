@@ -23,8 +23,9 @@ from typing import Dict, List, Optional, Tuple
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich.table import Table
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_async_session_context
@@ -673,6 +674,10 @@ class FlightOrchestrator:
         Uses SQLAlchemy bulk operations for efficiency. Updates existing flights
         if price is cheaper, otherwise skips duplicates.
 
+        Optimized to avoid N+1 queries by:
+        - Batch loading all required airports upfront
+        - Batch loading potential duplicate flights upfront
+
         Args:
             flights: List of flight dictionaries to save
             create_job: Whether to create a ScrapingJob record (default: True)
@@ -726,19 +731,117 @@ class FlightOrchestrator:
                 for i in range(0, len(flights), batch_size):
                     batch = flights[i : i + batch_size]
 
+                    # FIX N+1: Collect all unique airport IATA codes in this batch
+                    airport_codes = set()
+                    for flight_data in batch:
+                        origin = flight_data.get("origin_airport", "")
+                        destination = flight_data.get("destination_airport", "")
+                        if origin:
+                            airport_codes.add(origin.upper())
+                        if destination:
+                            airport_codes.add(destination.upper())
+
+                    # FIX N+1: Batch load all airports at once
+                    airport_stmt = select(Airport).where(Airport.iata_code.in_(airport_codes))
+                    airport_result = await db.execute(airport_stmt)
+                    airports_list = airport_result.scalars().all()
+
+                    # Build airport cache by IATA code
+                    airport_cache: Dict[str, Airport] = {
+                        airport.iata_code: airport for airport in airports_list
+                    }
+
+                    # FIX N+1: Create missing airports in batch
+                    missing_codes = airport_codes - set(airport_cache.keys())
+                    for iata_code in missing_codes:
+                        # Find the city name from flight data
+                        city = ""
+                        for flight_data in batch:
+                            if flight_data.get("origin_airport", "").upper() == iata_code:
+                                city = flight_data.get("origin_city", "")
+                                break
+                            elif flight_data.get("destination_airport", "").upper() == iata_code:
+                                city = flight_data.get("destination_city", "")
+                                break
+
+                        logger.info(f"Creating new airport: {iata_code} ({city})")
+                        new_airport = Airport(
+                            iata_code=iata_code,
+                            name=f"{city} Airport" if city else f"{iata_code} Airport",
+                            city=city or iata_code,
+                            distance_from_home=0,
+                            driving_time=0,
+                        )
+                        db.add(new_airport)
+                        airport_cache[iata_code] = new_airport
+
+                    # Flush to get IDs for new airports
+                    await db.flush()
+
+                    # FIX N+1: Collect all flight parameters for duplicate checking
+                    flight_params = []
+                    for flight_data in batch:
+                        dep_date_str = flight_data.get("departure_date", "")
+                        if not dep_date_str:
+                            continue
+
+                        try:
+                            departure_date_obj = datetime.strptime(dep_date_str, "%Y-%m-%d").date()
+                            origin_code = flight_data.get("origin_airport", "").upper()
+                            dest_code = flight_data.get("destination_airport", "").upper()
+
+                            if origin_code in airport_cache and dest_code in airport_cache:
+                                flight_params.append({
+                                    "origin_airport_id": airport_cache[origin_code].id,
+                                    "destination_airport_id": airport_cache[dest_code].id,
+                                    "airline": flight_data.get("airline", "Unknown"),
+                                    "departure_date": departure_date_obj,
+                                })
+                        except (ValueError, TypeError):
+                            continue
+
+                    # FIX N+1: Batch load all potential duplicate flights
+                    existing_flights_map = {}
+                    if flight_params:
+                        # Build query to find all potential duplicates
+                        duplicate_conditions = []
+                        for params in flight_params:
+                            duplicate_conditions.append(
+                                and_(
+                                    Flight.origin_airport_id == params["origin_airport_id"],
+                                    Flight.destination_airport_id == params["destination_airport_id"],
+                                    Flight.airline == params["airline"],
+                                    Flight.departure_date == params["departure_date"],
+                                )
+                            )
+
+                        if duplicate_conditions:
+                            from sqlalchemy import or_
+                            existing_stmt = select(Flight).where(or_(*duplicate_conditions))
+                            existing_result = await db.execute(existing_stmt)
+                            existing_flights = existing_result.scalars().all()
+
+                            # Build index for O(1) lookup
+                            for flight in existing_flights:
+                                key = (
+                                    flight.origin_airport_id,
+                                    flight.destination_airport_id,
+                                    flight.airline,
+                                    flight.departure_date,
+                                )
+                                if key not in existing_flights_map:
+                                    existing_flights_map[key] = []
+                                existing_flights_map[key].append(flight)
+
+                    # Now process each flight with cached data
                     for flight_data in batch:
                         try:
-                            # Get or create airports
-                            origin_airport = await self._get_or_create_airport(
-                                db,
-                                flight_data.get("origin_airport", ""),
-                                flight_data.get("origin_city", ""),
-                            )
-                            destination_airport = await self._get_or_create_airport(
-                                db,
-                                flight_data.get("destination_airport", ""),
-                                flight_data.get("destination_city", ""),
-                            )
+                            # Get airports from cache
+                            origin_code = flight_data.get("origin_airport", "").upper()
+                            dest_code = flight_data.get("destination_airport", "").upper()
+
+                            origin_airport = airport_cache.get(origin_code)
+                            destination_airport = airport_cache.get(dest_code)
 
                             if not origin_airport or not destination_airport:
                                 logger.warning(
@@ -785,15 +888,35 @@ class FlightOrchestrator:
                                 context=f"return_time for DB save {origin_airport.iata_code}->{destination_airport.iata_code}"
                             )
 
-                            # Check for existing flight (within 2-hour window)
-                            existing_flight = await self._check_duplicate_flight(
-                                db,
+                            # Check for existing flight using cached data
+                            airline = flight_data.get("airline", "Unknown")
+                            lookup_key = (
                                 origin_airport.id,
                                 destination_airport.id,
-                                flight_data.get("airline", "Unknown"),
+                                airline,
                                 departure_date_obj,
-                                departure_time_obj,
                             )
+
+                            existing_flight = None
+                            candidates = existing_flights_map.get(lookup_key, [])
+
+                            # Check time window for candidates
+                            if departure_time_obj:
+                                time_lower = (
+                                    datetime.combine(departure_date_obj, departure_time_obj) - timedelta(hours=2)
+                                ).time()
+                                time_upper = (
+                                    datetime.combine(departure_date_obj, departure_time_obj) + timedelta(hours=2)
+                                ).time()
+
+                                for candidate in candidates:
+                                    if candidate.departure_time:
+                                        if time_lower <= candidate.departure_time <= time_upper:
+                                            existing_flight = candidate
+                                            break
+                            elif candidates:
+                                # No time specified, take first candidate
+                                existing_flight = candidates[0]
 
                             # Get price (handle both price_per_person and total_price)
                             price_per_person = flight_data.get("price_per_person")
@@ -827,7 +950,7 @@ class FlightOrchestrator:
                                 new_flight = Flight(
                                     origin_airport_id=origin_airport.id,
                                     destination_airport_id=destination_airport.id,
-                                    airline=flight_data.get("airline", "Unknown"),
+                                    airline=airline,
                                     departure_date=departure_date_obj,
                                     departure_time=departure_time_obj,
                                     return_date=return_date_obj,

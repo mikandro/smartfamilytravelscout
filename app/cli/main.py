@@ -1415,20 +1415,22 @@ def kiwi_status():
     """
     console.print("\n[bold]Kiwi.com API Status[/bold]\n", style="blue")
 
-    from app.scrapers.kiwi_scraper import RateLimiter
+    from app.utils.rate_limiter import get_kiwi_rate_limiter
 
-    rate_limiter = RateLimiter()
-    remaining = rate_limiter.get_remaining_calls()
-    used = 100 - remaining
+    rate_limiter = get_kiwi_rate_limiter()
+    remaining = rate_limiter.get_remaining()
+    status = rate_limiter.get_status()
+    used = status['current_count']
+    max_requests = status['max_requests']
 
     # Create table
     table = Table(show_header=True, header_style="bold magenta")
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="green")
 
-    table.add_row("API calls used (this month)", f"{used}/100")
-    table.add_row("Remaining calls", f"{remaining}/100")
-    table.add_row("Usage", f"{(used/100)*100:.1f}%")
+    table.add_row("API calls used (this month)", f"{used}/{max_requests}")
+    table.add_row("Remaining calls", f"{remaining}/{max_requests}")
+    table.add_row("Usage", f"{(used/max_requests)*100:.1f}%")
 
     console.print(table)
     console.print()
