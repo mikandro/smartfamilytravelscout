@@ -221,9 +221,18 @@ async def _run_scrape(
         )
 
         # Run each scraper
-        for scraper in scrapers_to_use:
+        for idx, scraper in enumerate(scrapers_to_use):
             try:
-                progress.update(task, description=f"[yellow]Running {scraper}...")
+                progress.update(
+                    task,
+                    description=f"[yellow]Running {scraper.title()} ({idx+1}/{len(scrapers_to_use)})..."
+                )
+
+                # Log start
+                console.print(
+                    f"[dim cyan]⟳ Starting {scraper.title()} scraper for "
+                    f"{origin.upper()}→{destination.upper()}...[/dim cyan]"
+                )
 
                 if scraper == "skyscanner":
                     from app.scrapers.skyscanner_scraper import SkyscannerScraper
@@ -267,12 +276,21 @@ async def _run_scrape(
 
                 else:
                     warning(f"Unknown scraper: {scraper}")
+                    progress.update(task, advance=1)
+                    continue
+
+                # Log completion
+                console.print(
+                    f"[dim green]✓ {scraper.title()} completed: {len(results)} flights found[/dim green]"
+                )
 
                 progress.update(task, advance=1)
 
             except Exception as e:
                 logger.error(f"Scraper {scraper} failed: {e}")
-                warning(f"{scraper.title()} scraper failed: {str(e)}")
+                console.print(
+                    f"[dim red]✗ {scraper.title()} failed: {str(e)}[/dim red]"
+                )
                 progress.update(task, advance=1)
                 continue
 
@@ -488,29 +506,67 @@ async def _run_pipeline(
 
         # Step 7: AI analysis
         if analyze and stats["packages"] > 0:
-            task7 = progress.add_task("[magenta]Running AI analysis...", total=stats["packages"])
-
             from app.ai.deal_scorer import DealScorer
+            from app.models.trip_package import TripPackage
 
-            scorer = DealScorer()
             async with get_async_session_context() as db:
-                from app.models.trip_package import TripPackage
-
                 result = await db.execute(
                     select(TripPackage).where(TripPackage.ai_score.is_(None))
                 )
                 unscored = result.scalars().all()
 
-                for idx, package in enumerate(unscored[:50]):  # Limit to 50 for cost control
+                # Limit to 50 for cost control
+                packages_to_score = unscored[:50]
+
+                task7 = progress.add_task(
+                    "[magenta]Running AI analysis...",
+                    total=len(packages_to_score)
+                )
+
+                scorer = DealScorer()
+
+                for idx, package in enumerate(packages_to_score):
                     try:
+                        # Update progress with current package being analyzed
+                        progress.update(
+                            task7,
+                            description=f"[magenta]Analyzing {package.destination_city} "
+                            f"({idx+1}/{len(packages_to_score)})...",
+                        )
+
+                        # Log start of analysis
+                        console.print(
+                            f"[dim magenta]⟳ Scoring package {package.id}: "
+                            f"{package.destination_city}, €{package.total_price}[/dim magenta]"
+                        )
+
                         score_data = await scorer.score_trip(package)
-                        package.ai_score = score_data["score"]
-                        package.ai_reasoning = score_data["reasoning"]
-                        await db.commit()
-                        stats["analyzed"] += 1
+
+                        if score_data:
+                            package.ai_score = score_data["score"]
+                            package.ai_reasoning = score_data["reasoning"]
+                            await db.commit()
+                            stats["analyzed"] += 1
+
+                            # Log completion with score
+                            console.print(
+                                f"[dim green]✓ Package {package.id}: "
+                                f"Score {score_data['score']}/100 "
+                                f"({score_data.get('recommendation', 'N/A')})[/dim green]"
+                            )
+                        else:
+                            console.print(
+                                f"[dim yellow]⚠ Package {package.id}: Skipped (over price threshold)[/dim yellow]"
+                            )
+
                         progress.update(task7, advance=1)
+
                     except Exception as e:
                         logger.error(f"Failed to score package {package.id}: {e}")
+                        console.print(
+                            f"[dim red]✗ Package {package.id}: Failed - {str(e)}[/dim red]"
+                        )
+                        progress.update(task7, advance=1)
                         continue
 
             success(f"Analyzed {stats['analyzed']} packages")
@@ -1383,6 +1439,160 @@ def kiwi_status():
         console.print(f"[yellow]⚠ Only {remaining} API calls remaining this month[/yellow]\n")
     else:
         console.print("[red]✗ Monthly rate limit exceeded![/red]\n")
+
+
+# ============================================================================
+# Model Pricing Management Commands
+# ============================================================================
+
+@db_app.command("pricing-list")
+def db_pricing_list(
+    service: Optional[str] = typer.Option(None, help="Filter by service (e.g., 'claude')"),
+    model: Optional[str] = typer.Option(None, help="Filter by model name"),
+):
+    """
+    List model pricing configurations from the database.
+    """
+    console.print("\n")
+    console.print(Panel(
+        "[bold]Model Pricing Configuration[/bold]\n\n"
+        "Current pricing for AI models",
+        border_style="blue",
+    ))
+
+    try:
+        from app.models import ModelPricing
+        from sqlalchemy import and_
+
+        db = get_sync_session()
+
+        # Build query with optional filters
+        filters = []
+        if service:
+            filters.append(ModelPricing.service == service)
+        if model:
+            filters.append(ModelPricing.model == model)
+
+        if filters:
+            query = db.query(ModelPricing).filter(and_(*filters)).order_by(
+                ModelPricing.service, ModelPricing.model, ModelPricing.effective_date.desc()
+            )
+        else:
+            query = db.query(ModelPricing).order_by(
+                ModelPricing.service, ModelPricing.model, ModelPricing.effective_date.desc()
+            )
+
+        pricing_list = query.all()
+
+        if not pricing_list:
+            warning("No pricing configurations found")
+            return
+
+        # Create table
+        table = Table(title="Model Pricing", show_header=True, header_style="bold magenta")
+        table.add_column("Service", style="cyan")
+        table.add_column("Model", style="blue")
+        table.add_column("Input ($/M)", style="green", justify="right")
+        table.add_column("Output ($/M)", style="green", justify="right")
+        table.add_column("Effective Date", style="yellow")
+        table.add_column("Notes", style="dim")
+
+        for pricing in pricing_list:
+            table.add_row(
+                pricing.service,
+                pricing.model,
+                f"${pricing.input_cost_per_million:.2f}",
+                f"${pricing.output_cost_per_million:.2f}",
+                pricing.effective_date.strftime("%Y-%m-%d"),
+                (pricing.notes[:50] + "...") if pricing.notes and len(pricing.notes) > 50 else (pricing.notes or ""),
+            )
+
+        console.print(table)
+        console.print()
+        success(f"Found {len(pricing_list)} pricing configuration(s)")
+
+    except Exception as e:
+        handle_error(e, "Failed to list pricing configurations")
+
+
+@db_app.command("pricing-add")
+def db_pricing_add(
+    service: str = typer.Option(..., help="Service name (e.g., 'claude')"),
+    model: str = typer.Option(..., help="Model name (e.g., 'claude-sonnet-4-5-20250929')"),
+    input_cost: float = typer.Option(..., help="Input cost per million tokens (USD)"),
+    output_cost: float = typer.Option(..., help="Output cost per million tokens (USD)"),
+    effective_date: str = typer.Option(
+        None,
+        help="Effective date (YYYY-MM-DD format, defaults to today)",
+    ),
+    notes: Optional[str] = typer.Option(None, help="Additional notes"),
+):
+    """
+    Add or update model pricing configuration.
+    """
+    console.print("\n")
+    console.print(Panel(
+        f"[bold]Add Model Pricing[/bold]\n\n"
+        f"Service: {service}\n"
+        f"Model: {model}\n"
+        f"Input: ${input_cost}/M tokens\n"
+        f"Output: ${output_cost}/M tokens",
+        border_style="blue",
+    ))
+
+    try:
+        from app.models import ModelPricing
+
+        # Parse effective date
+        if effective_date:
+            eff_date = datetime.strptime(effective_date, "%Y-%m-%d")
+        else:
+            eff_date = datetime.now()
+
+        db = get_sync_session()
+
+        # Check if pricing already exists for this service/model/date
+        existing = db.query(ModelPricing).filter_by(
+            service=service,
+            model=model,
+            effective_date=eff_date,
+        ).first()
+
+        if existing:
+            console.print(f"\n[yellow]Pricing already exists for {service}/{model} on {eff_date.date()}[/yellow]")
+            update = typer.confirm("Do you want to update it?")
+            if not update:
+                warning("Operation cancelled")
+                return
+
+            existing.input_cost_per_million = input_cost
+            existing.output_cost_per_million = output_cost
+            if notes:
+                existing.notes = notes
+            db.commit()
+            success(f"Updated pricing for {service}/{model}")
+        else:
+            # Create new pricing
+            new_pricing = ModelPricing(
+                service=service,
+                model=model,
+                input_cost_per_million=input_cost,
+                output_cost_per_million=output_cost,
+                effective_date=eff_date,
+                notes=notes,
+            )
+            db.add(new_pricing)
+            db.commit()
+            success(f"Added pricing for {service}/{model}")
+
+        console.print(f"\n[green]✓ Pricing configured:[/green]")
+        console.print(f"  Input: ${input_cost}/M tokens")
+        console.print(f"  Output: ${output_cost}/M tokens")
+        console.print(f"  Effective: {eff_date.date()}")
+        console.print()
+
+    except Exception as e:
+        handle_error(e, "Failed to add pricing configuration")
 
 
 @app.command()

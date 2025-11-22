@@ -166,7 +166,7 @@ class FlightOrchestrator:
             f"\n[bold cyan]Starting {len(tasks)} scraping tasks in parallel...[/bold cyan]\n"
         )
 
-        # Run all tasks concurrently with progress tracking
+        # Run all tasks concurrently with real-time progress tracking
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -175,12 +175,20 @@ class FlightOrchestrator:
             TimeElapsedColumn(),
             console=console,
         ) as progress:
-            task_id = progress.add_task("[cyan]Scraping flights...", total=len(tasks))
+            # Create individual progress tasks for each scraper type
+            scraper_tasks = {}
+            for scraper in ["Kiwi", "Skyscanner", "Ryanair", "WizzAir"]:
+                scraper_count = sum(1 for t in task_metadata if t.startswith(scraper))
+                if scraper_count > 0:
+                    scraper_tasks[scraper] = progress.add_task(
+                        f"[yellow]{scraper}: Starting...", total=scraper_count
+                    )
 
             # Gather results with return_exceptions=True to handle failures gracefully
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            progress.update(task_id, completed=len(tasks))
+            # We'll track completion in real-time using task callbacks
+            results = await self._gather_with_progress(
+                tasks, task_metadata, progress, scraper_tasks
+            )
 
         # Process results and collect statistics
         all_flights = []
@@ -269,6 +277,77 @@ class FlightOrchestrator:
         console.print(table)
         console.print(f"\n[dim]Time elapsed: {elapsed_time:.2f}s[/dim]\n")
 
+    async def _gather_with_progress(
+        self,
+        tasks: List,
+        task_metadata: List[str],
+        progress: Progress,
+        scraper_tasks: Dict,
+    ) -> List:
+        """
+        Execute tasks with real-time progress updates.
+
+        This method wraps asyncio.gather to provide real-time feedback as each
+        scraper completes, updating the progress bars and showing immediate results.
+
+        Args:
+            tasks: List of coroutines to execute
+            task_metadata: List of task descriptions matching tasks
+            progress: Rich Progress instance
+            scraper_tasks: Dict mapping scraper names to progress task IDs
+
+        Returns:
+            List of results from all tasks (with exceptions for failures)
+        """
+        results = [None] * len(tasks)
+        pending_tasks = {
+            asyncio.create_task(task): (idx, task_metadata[idx])
+            for idx, task in enumerate(tasks)
+        }
+
+        # Process tasks as they complete
+        while pending_tasks:
+            done, pending = await asyncio.wait(
+                pending_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+            )
+
+            for task in done:
+                idx, metadata = pending_tasks.pop(task)
+                scraper_name = metadata.split(":")[0].strip()
+                route = metadata.split(":")[1].strip() if ":" in metadata else ""
+
+                try:
+                    result = task.result()
+                    results[idx] = result
+                    flight_count = len(result) if isinstance(result, list) else 0
+
+                    # Update progress for this scraper
+                    if scraper_name in scraper_tasks:
+                        progress.update(
+                            scraper_tasks[scraper_name],
+                            advance=1,
+                            description=f"[green]{scraper_name}: {route} ({flight_count} flights)",
+                        )
+
+                    # Log completion
+                    logger.info(f"✓ {scraper_name} completed {route}: {flight_count} flights found")
+
+                except Exception as e:
+                    results[idx] = e
+
+                    # Update progress to show failure
+                    if scraper_name in scraper_tasks:
+                        progress.update(
+                            scraper_tasks[scraper_name],
+                            advance=1,
+                            description=f"[red]{scraper_name}: {route} (failed)",
+                        )
+
+                    # Log error
+                    logger.error(f"✗ {scraper_name} failed {route}: {str(e)}")
+
+        return results
+
     async def scrape_source(
         self,
         scraper,
@@ -295,10 +374,13 @@ class FlightOrchestrator:
         """
         departure_date, return_date = dates
 
-        logger.info(
-            f"[{scraper_name}] Scraping {origin} → {destination}, "
+        # Log start of scraping with console output for immediate feedback
+        log_msg = (
+            f"[{scraper_name}] Starting scrape: {origin} → {destination}, "
             f"{departure_date} to {return_date}"
         )
+        logger.info(log_msg)
+        console.print(f"[dim cyan]⟳ {log_msg}[/dim cyan]")
 
         try:
             # Call appropriate scraper method based on type
@@ -401,14 +483,18 @@ class FlightOrchestrator:
                 logger.error(f"Unknown scraper: {scraper_name}")
                 return []
 
-            logger.info(f"[{scraper_name}] Found {len(flights)} flights")
+            # Log completion with console output for immediate feedback
+            success_msg = f"[{scraper_name}] Completed: {len(flights)} flights found"
+            logger.info(success_msg)
+            console.print(f"[dim green]✓ {success_msg}[/dim green]")
             return flights
 
         except Exception as e:
-            logger.error(
-                f"[{scraper_name}] Scraping failed for {origin}→{destination}: {e}",
-                exc_info=True,
-            )
+            # Log error with console output for immediate user feedback
+            error_msg = f"[{scraper_name}] Scraping failed for {origin}→{destination}: {e}"
+            logger.error(error_msg, exc_info=True)
+            console.print(f"[dim red]✗ {error_msg}[/dim red]")
+
             # Re-raise exception to let scrape_all handle it via return_exceptions=True
             # This allows proper failure tracking and threshold checking
             raise
