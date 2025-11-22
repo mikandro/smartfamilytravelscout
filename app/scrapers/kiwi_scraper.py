@@ -21,121 +21,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_async_session_context
+from app.exceptions import APIKeyMissingError
 from app.models.airport import Airport
 from app.models.flight import Flight
+from app.utils.rate_limiter import (
+    RedisRateLimiter,
+    RateLimitExceededError,
+    get_kiwi_rate_limiter,
+)
 
 logger = logging.getLogger(__name__)
-
-
-class RateLimitExceededError(Exception):
-    """Raised when API rate limit is exceeded."""
-
-    pass
 
 
 class KiwiAPIError(Exception):
     """Base exception for Kiwi API errors."""
 
     pass
-
-
-class RateLimiter:
-    """
-    Simple file-based rate limiter for tracking API calls.
-
-    Tracks API calls per month and ensures we don't exceed the free tier limit
-    of 100 calls/month (~3 per day).
-    """
-
-    def __init__(self, limit_per_month: int = 100, storage_file: str = "/tmp/kiwi_api_calls.txt"):
-        """
-        Initialize rate limiter.
-
-        Args:
-            limit_per_month: Maximum API calls allowed per month (default: 100)
-            storage_file: File path to store API call timestamps
-        """
-        self.limit_per_month = limit_per_month
-        self.storage_file = storage_file
-        self.logger = logging.getLogger(f"{__name__}.RateLimiter")
-
-    def _read_calls(self) -> List[datetime]:
-        """Read API call timestamps from storage file."""
-        try:
-            with open(self.storage_file, "r") as f:
-                timestamps = [
-                    datetime.fromisoformat(line.strip())
-                    for line in f
-                    if line.strip()
-                ]
-                return timestamps
-        except FileNotFoundError:
-            return []
-        except Exception as e:
-            self.logger.warning(f"Error reading rate limit file: {e}")
-            return []
-
-    def _write_calls(self, timestamps: List[datetime]) -> None:
-        """Write API call timestamps to storage file."""
-        try:
-            with open(self.storage_file, "w") as f:
-                for ts in timestamps:
-                    f.write(f"{ts.isoformat()}\n")
-        except Exception as e:
-            self.logger.error(f"Error writing rate limit file: {e}")
-
-    def _filter_recent_calls(self, timestamps: List[datetime]) -> List[datetime]:
-        """Filter timestamps to only include calls from current month."""
-        now = datetime.now()
-        # Get first day of current month
-        month_start = datetime(now.year, now.month, 1)
-        return [ts for ts in timestamps if ts >= month_start]
-
-    def check_limit(self) -> bool:
-        """
-        Check if we're within rate limit.
-
-        Returns:
-            bool: True if within limit, False otherwise
-        """
-        timestamps = self._read_calls()
-        recent_calls = self._filter_recent_calls(timestamps)
-
-        if len(recent_calls) >= self.limit_per_month:
-            self.logger.warning(
-                f"Rate limit exceeded: {len(recent_calls)}/{self.limit_per_month} calls this month"
-            )
-            return False
-
-        return True
-
-    def record_call(self) -> None:
-        """Record a new API call."""
-        timestamps = self._read_calls()
-        recent_calls = self._filter_recent_calls(timestamps)
-        recent_calls.append(datetime.now())
-        self._write_calls(recent_calls)
-
-        self.logger.info(
-            f"API call recorded: {len(recent_calls)}/{self.limit_per_month} calls this month"
-        )
-
-    def get_remaining_calls(self) -> int:
-        """
-        Get number of remaining API calls for this month.
-
-        Returns:
-            int: Number of calls remaining
-        """
-        timestamps = self._read_calls()
-        recent_calls = self._filter_recent_calls(timestamps)
-        remaining = max(0, self.limit_per_month - len(recent_calls))
-        return remaining
-
-    def reset(self) -> None:
-        """Reset all API call tracking (useful for testing)."""
-        self._write_calls([])
-        self.logger.info("Rate limiter reset")
 
 
 class KiwiClient:
@@ -158,7 +59,7 @@ class KiwiClient:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        rate_limiter: Optional[RateLimiter] = None,
+        rate_limiter: Optional[RedisRateLimiter] = None,
         timeout: int = 30,
     ):
         """
@@ -171,9 +72,20 @@ class KiwiClient:
         """
         self.api_key = api_key or settings.kiwi_api_key
         if not self.api_key:
-            raise ValueError("Kiwi API key is required. Set KIWI_API_KEY environment variable.")
+            raise APIKeyMissingError(
+                service="Kiwi.com API",
+                env_var="KIWI_API_KEY",
+                optional=True,
+                fallback_info=(
+                    "Get a free API key (100 requests/month) at: https://tequila.kiwi.com/portal/login\n\n"
+                    "You can also use the default scrapers instead:\n"
+                    "  - Skyscanner (playwright-based, no API key)\n"
+                    "  - Ryanair (playwright-based, no API key)\n"
+                    "  - WizzAir (API-based, no API key)"
+                )
+            )
 
-        self.rate_limiter = rate_limiter or RateLimiter()
+        self.rate_limiter = rate_limiter or get_kiwi_rate_limiter()
         self.timeout = timeout
         self.logger = logging.getLogger(f"{__name__}.KiwiClient")
 
@@ -198,8 +110,8 @@ class KiwiClient:
             aiohttp.ClientError: If network request fails after retries
         """
         # Check rate limit
-        if not self.rate_limiter.check_limit():
-            remaining = self.rate_limiter.get_remaining_calls()
+        if not self.rate_limiter.is_allowed():
+            remaining = self.rate_limiter.get_remaining()
             raise RateLimitExceededError(
                 f"Monthly rate limit exceeded. {remaining} calls remaining this month."
             )
@@ -218,7 +130,7 @@ class KiwiClient:
                         timeout=aiohttp.ClientTimeout(total=self.timeout),
                     ) as response:
                         # Record successful API call
-                        self.rate_limiter.record_call()
+                        self.rate_limiter.record_request()
 
                         # Log request details
                         query_string = urlencode(params)

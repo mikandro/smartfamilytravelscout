@@ -2,9 +2,10 @@
 User preferences model for customizing trip recommendations.
 """
 
+import secrets
 from typing import List, Optional
 
-from sqlalchemy import ARRAY, Integer, Numeric, String
+from sqlalchemy import ARRAY, Boolean, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -53,12 +54,49 @@ class UserPreference(Base, TimestampMixin):
         comment="List of interests, e.g., ['wine', 'museums', 'beaches', 'hiking']",
     )
 
-    # Notification settings
+    # Email and notification settings
+    email: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+        comment="User's email address for notifications",
+    )
+    enable_notifications: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        comment="Master switch for all email notifications",
+    )
+    enable_daily_digest: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        comment="Receive daily digest emails with top deals",
+    )
+    enable_instant_alerts: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        comment="Receive instant alerts for exceptional deals",
+    )
+    enable_parent_escape_digest: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        comment="Receive weekly parent escape recommendations",
+    )
     notification_threshold: Mapped[float] = mapped_column(
         Numeric(5, 2),
         nullable=False,
         default=70.0,
         comment="Minimum AI score to trigger notifications",
+    )
+    unsubscribe_token: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        unique=True,
+        index=True,
+        comment="Unique token for unsubscribe links",
     )
 
     # Parent escape settings
@@ -89,3 +127,16 @@ class UserPreference(Base, TimestampMixin):
         if self.interests:
             return ", ".join(self.interests)
         return "None"
+
+    def generate_unsubscribe_token(self) -> str:
+        """Generate a unique unsubscribe token."""
+        self.unsubscribe_token = secrets.token_urlsafe(32)
+        return self.unsubscribe_token
+
+    def should_receive_notifications(self) -> bool:
+        """Check if user should receive any notifications."""
+        return bool(
+            self.enable_notifications
+            and self.email
+            and (self.enable_daily_digest or self.enable_instant_alerts or self.enable_parent_escape_digest)
+        )
