@@ -230,11 +230,28 @@ async def health_check() -> Dict[str, Any]:
 
 # API root endpoint (moved to /api)
 @app.get("/api", tags=["Root"])
-async def api_root() -> Dict[str, str]:
-    """API root endpoint."""
+async def api_root() -> Dict[str, Any]:
+    """API root endpoint with version information."""
     return {
         "name": settings.app_name,
         "version": settings.app_version,
+        "api_versions": {
+            "v1": {
+                "status": "stable",
+                "prefix": "/api/v1",
+                "endpoints": {
+                    "version": "/api/v1/version",
+                    "health": "/api/v1/health",
+                    "deals": "/api/v1/deals",
+                    "flights": "/api/v1/flights",
+                    "packages": "/api/v1/packages",
+                    "search": "/api/v1/search",
+                    "stats": "/api/v1/stats",
+                    "parent_escape": "/api/v1/parent-escape",
+                    "price_history": "/api/v1/price-history",
+                },
+            },
+        },
         "docs": "/docs",
         "health": "/health",
     }
@@ -243,12 +260,16 @@ async def api_root() -> Dict[str, str]:
 # Import and include routers
 from app.api.routes import web, notifications, parent_escape, price_history
 from app.api.routes import api_deals, api_flights, api_packages, api_search, api_stats
+from app.api.routes.v1 import router as v1_router
 
 # Include web dashboard routes (handles /, /deals, /preferences, /stats)
 app.include_router(web.router, tags=["Web Dashboard"])
 
 # Include notification routes (unsubscribe, preferences)
 app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
+
+# Include API v1 versioning routes (version info, health check)
+app.include_router(v1_router, prefix="/api/v1", tags=["API v1"])
 
 # API routes for programmatic access
 app.include_router(api_deals.router, prefix="/api/v1", tags=["API - Deals"])
