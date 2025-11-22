@@ -24,6 +24,7 @@ class TestClaudeClient:
         redis.setex = AsyncMock()
         redis.delete = AsyncMock(return_value=0)
         redis.scan_iter = AsyncMock()
+        redis.ping = AsyncMock(return_value=True)
         return redis
 
     @pytest.fixture
@@ -353,6 +354,7 @@ class TestClaudeClient:
 
         assert stats["cached_responses"] == 5
         assert stats["cache_ttl"] == claude_client.cache_ttl
+        assert stats["cache_enabled"] is True
 
     def test_pricing_constants(self):
         """Test that default pricing constants are set correctly."""
@@ -373,6 +375,123 @@ class TestClaudeClient:
         formatted_prompt = call_args[0]
         assert "Paris" in formatted_prompt
         assert "4" in formatted_prompt
+
+    def test_initialization_with_cache_enabled(self, claude_client):
+        """Test that cache is enabled after successful initialization."""
+        assert claude_client._cache_enabled is True
+
+    async def test_check_redis_health_success(self, claude_client, mock_redis):
+        """Test Redis health check with successful connection."""
+        mock_redis.ping.return_value = True
+
+        result = await claude_client._check_redis_health()
+
+        assert result is True
+        assert claude_client._cache_enabled is True
+        mock_redis.ping.assert_called_once()
+
+    async def test_check_redis_health_failure(self, claude_client, mock_redis):
+        """Test Redis health check with failed connection."""
+        # Simulate Redis connection failure
+        mock_redis.ping.side_effect = Exception("Connection refused")
+
+        result = await claude_client._check_redis_health()
+
+        assert result is False
+        assert claude_client._cache_enabled is False
+
+    async def test_get_cached_response_redis_unavailable(
+        self, claude_client, mock_redis
+    ):
+        """Test cache retrieval when Redis is unavailable."""
+        # Simulate Redis being down
+        mock_redis.ping.side_effect = Exception("Connection refused")
+
+        result = await claude_client._get_cached_response("test_key")
+
+        assert result is None
+        # Redis get should not be called if health check fails
+        mock_redis.get.assert_not_called()
+
+    async def test_cache_response_redis_unavailable(self, claude_client, mock_redis):
+        """Test cache storage when Redis is unavailable."""
+        # Simulate Redis being down
+        mock_redis.ping.side_effect = Exception("Connection refused")
+        response = {"score": 85, "rating": "good"}
+
+        await claude_client._cache_response("test_key", response)
+
+        # Redis setex should not be called if health check fails
+        mock_redis.setex.assert_not_called()
+
+    async def test_clear_cache_redis_unavailable(self, claude_client, mock_redis):
+        """Test clear_cache when Redis is unavailable."""
+        # Simulate Redis being down
+        mock_redis.ping.side_effect = Exception("Connection refused")
+
+        deleted = await claude_client.clear_cache()
+
+        assert deleted == 0
+        # scan_iter should not be called if health check fails
+        mock_redis.scan_iter.assert_not_called()
+
+    async def test_get_cache_stats_redis_unavailable(self, claude_client, mock_redis):
+        """Test get_cache_stats when Redis is unavailable."""
+        # Simulate Redis being down
+        mock_redis.ping.side_effect = Exception("Connection refused")
+
+        stats = await claude_client.get_cache_stats()
+
+        assert stats["cached_responses"] == 0
+        assert stats["cache_enabled"] is False
+        # scan_iter should not be called if health check fails
+        mock_redis.scan_iter.assert_not_called()
+
+    async def test_get_cache_stats_redis_available(self, claude_client, mock_redis):
+        """Test get_cache_stats when Redis is available."""
+        # Mock successful ping
+        mock_redis.ping.return_value = True
+
+        # Mock scan_iter to return some keys
+        async def async_gen():
+            for _ in range(3):
+                yield b"claude:response:key"
+
+        # scan_iter is called as a method, so it should return the generator
+        mock_redis.scan_iter = MagicMock(return_value=async_gen())
+
+        stats = await claude_client.get_cache_stats()
+
+        assert stats["cached_responses"] == 3
+        assert stats["cache_enabled"] is True
+
+    async def test_analyze_continues_without_cache(
+        self, claude_client, mock_redis, mock_api_response
+    ):
+        """Test that analyze continues to work even when Redis is down."""
+        # Simulate Redis being down
+        mock_redis.ping.side_effect = Exception("Connection refused")
+
+        # Mock the API call
+        claude_client._call_api_with_retry = AsyncMock(return_value=mock_api_response)
+
+        # Should still work without caching
+        result = await claude_client.analyze(
+            prompt="Test prompt",
+            data={},
+            response_format="json",
+        )
+
+        # Verify result structure
+        assert "score" in result
+        assert "_cost" in result
+
+        # Verify API was called (no cache hit)
+        claude_client._call_api_with_retry.assert_called_once()
+
+        # Verify cache operations were not attempted
+        mock_redis.get.assert_not_called()
+        mock_redis.setex.assert_not_called()
 
     async def test_load_pricing_from_database(self, claude_client, mock_db_session):
         """Test loading pricing from database."""
@@ -411,7 +530,7 @@ class TestClaudeClient:
 
     async def test_load_pricing_without_db_session(self, mock_redis):
         """Test loading pricing without database session uses defaults."""
-        with patch("app.ai.claude_client.Anthropic"):
+        with patch("app.ai.claude_client.AsyncAnthropic"):
             client = ClaudeClient(
                 api_key="test-api-key",
                 redis_client=mock_redis,

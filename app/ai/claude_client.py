@@ -84,6 +84,10 @@ class ClaudeClient:
         self.model = model
         self.cache_ttl = cache_ttl
         self.db_session = db_session
+        self._cache_enabled = False
+
+        # Validate Redis connection
+        self._validate_redis_connection()
 
         # Pricing will be loaded from database on first use
         self.input_cost_per_million: Optional[float] = None
@@ -91,6 +95,47 @@ class ClaudeClient:
         self._pricing_loaded = False
 
         logger.info(f"Initialized ClaudeClient with model: {model}")
+
+    def _validate_redis_connection(self) -> None:
+        """
+        Validate Redis connection during initialization.
+
+        If Redis is unavailable, logs a warning and disables caching.
+        The client will continue to function without caching capabilities.
+        """
+        try:
+            # Note: We can't use async ping() in __init__, so we'll mark caching
+            # as enabled and let the actual cache operations handle failures
+            # gracefully. The _cache_enabled flag will be checked in async methods.
+            self._cache_enabled = True
+            logger.info("Redis client initialized - caching enabled")
+        except Exception as e:
+            self._cache_enabled = False
+            logger.warning(
+                f"Redis connection validation skipped (sync context). "
+                f"Cache operations will validate connection lazily. Error: {e}"
+            )
+
+    async def _check_redis_health(self) -> bool:
+        """
+        Check if Redis is healthy and available.
+
+        Returns:
+            True if Redis is available, False otherwise
+        """
+        if not self._cache_enabled:
+            return False
+
+        try:
+            await self.redis.ping()
+            return True
+        except Exception as e:
+            if self._cache_enabled:
+                logger.warning(
+                    f"Redis connection lost: {e}. Disabling cache operations."
+                )
+                self._cache_enabled = False
+            return False
 
     async def _load_pricing(self) -> None:
         """
@@ -321,12 +366,17 @@ class ClaudeClient:
         Returns:
             Cached response dict or None if not found
         """
+        # Check if caching is enabled and Redis is healthy
+        if not await self._check_redis_health():
+            return None
+
         try:
             cached_data = await self.redis.get(cache_key)
             if cached_data:
                 return json.loads(cached_data)
         except Exception as e:
-            logger.warning(f"Cache retrieval failed: {e}")
+            logger.warning(f"Cache retrieval failed: {e}. Disabling cache.")
+            self._cache_enabled = False
         return None
 
     async def _cache_response(self, cache_key: str, response: Dict[str, Any]) -> None:
@@ -337,13 +387,18 @@ class ClaudeClient:
             cache_key: Redis cache key
             response: Response dict to cache
         """
+        # Check if caching is enabled and Redis is healthy
+        if not await self._check_redis_health():
+            return
+
         try:
             await self.redis.setex(
                 cache_key, self.cache_ttl, json.dumps(response, default=str)
             )
             logger.debug(f"Cached response with key: {cache_key[:32]}...")
         except Exception as e:
-            logger.warning(f"Cache storage failed: {e}")
+            logger.warning(f"Cache storage failed: {e}. Disabling cache.")
+            self._cache_enabled = False
 
     def parse_json_response(self, response_text: str) -> Dict[str, Any]:
         """
@@ -501,6 +556,11 @@ class ClaudeClient:
         Returns:
             Number of keys deleted
         """
+        # Check if caching is enabled and Redis is healthy
+        if not await self._check_redis_health():
+            logger.warning("Cannot clear cache: Redis is unavailable")
+            return 0
+
         try:
             keys = []
             async for key in self.redis.scan_iter(match=pattern):
@@ -513,6 +573,7 @@ class ClaudeClient:
             return 0
         except Exception as e:
             logger.error(f"Failed to clear cache: {e}")
+            self._cache_enabled = False
             return 0
 
     async def get_cache_stats(self) -> Dict[str, int]:
@@ -520,8 +581,16 @@ class ClaudeClient:
         Get statistics about cached responses.
 
         Returns:
-            Dictionary with cache statistics
+            Dictionary with cache statistics including cache availability
         """
+        # Check if caching is enabled and Redis is healthy
+        if not await self._check_redis_health():
+            return {
+                "cached_responses": 0,
+                "cache_ttl": self.cache_ttl,
+                "cache_enabled": False,
+            }
+
         try:
             count = 0
             async for _ in self.redis.scan_iter(match="claude:response:*"):
@@ -530,7 +599,13 @@ class ClaudeClient:
             return {
                 "cached_responses": count,
                 "cache_ttl": self.cache_ttl,
+                "cache_enabled": True,
             }
         except Exception as e:
             logger.error(f"Failed to get cache stats: {e}")
-            return {"cached_responses": 0, "cache_ttl": self.cache_ttl}
+            self._cache_enabled = False
+            return {
+                "cached_responses": 0,
+                "cache_ttl": self.cache_ttl,
+                "cache_enabled": False,
+            }
