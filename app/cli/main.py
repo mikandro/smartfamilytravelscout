@@ -132,7 +132,7 @@ def scrape(
     ),
     scraper: Optional[str] = typer.Option(
         None,
-        help="Specific scraper to use: 'skyscanner', 'ryanair', 'wizzair', or 'all' for all free scrapers",
+        help="Specific scraper to use: 'skyscanner', 'ryanair', 'wizzair', 'kiwi', or 'all' for all scrapers",
     ),
     region: str = typer.Option(
         "Bavaria",
@@ -144,19 +144,25 @@ def scrape(
     ),
 ):
     """
-    Quick flight search using default (free, no API key) scrapers.
+    Quick flight search using available scrapers.
 
-    This command uses Skyscanner, Ryanair, and WizzAir scrapers which don't
-    require API keys. Perfect for getting started without configuration!
+    Default scrapers (NO API KEY needed):
+    - Skyscanner: Web scraper using Playwright
+    - Ryanair: Web scraper using Playwright
+    - WizzAir: Unofficial API scraper
+
+    Optional scrapers (API KEY required):
+    - Kiwi: Kiwi.com API (set KIWI_API_KEY env variable)
 
     Examples:
-        scout scrape --origin MUC --destination LIS
+        scout scrape --origin MUC --destination LIS                    # All free scrapers
         scout scrape --origin VIE --destination BCN --scraper skyscanner
-        scout scrape --origin MUC --destination PRG --departure 2025-12-20 --return 2025-12-27
-        scout scrape --origin MUC --destination LIS --region Berlin
+        scout scrape --origin MUC --destination PRG --scraper kiwi     # Requires API key
+        scout scrape --origin MUC --destination LIS --departure 2025-12-20 --return 2025-12-27
+        scout scrape --origin MUC --destination LIS --region Berlin    # Use Berlin school holidays
     """
     console.print(Panel(
-        "[bold]Quick Flight Scrape (No API Key Required)[/bold]",
+        "[bold]Quick Flight Search[/bold]",
         border_style="green",
     ))
 
@@ -205,9 +211,10 @@ async def _run_scrape(
         scrapers_to_use = [scraper_name.lower()]
         table.add_row("Scraper", scraper_name.title())
     else:
-        # Use all default (free) scrapers
+        # Use all default (free) scrapers only
         scrapers_to_use = ["skyscanner", "ryanair", "wizzair"]
         table.add_row("Scrapers", "All free scrapers (Skyscanner, Ryanair, WizzAir)")
+        table.add_row("Note", "Use --scraper kiwi for Kiwi.com API (requires API key)")
 
     table.add_row("Save to DB", "Yes" if save else "No")
 
@@ -282,6 +289,25 @@ async def _run_scrape(
                     )
                     all_results.extend(results)
 
+                elif scraper == "kiwi":
+                    # Check for API key
+                    if not settings.kiwi_api_key:
+                        warning("Kiwi scraper requires KIWI_API_KEY environment variable")
+                        progress.update(task, advance=1)
+                        continue
+
+                    from app.scrapers.kiwi_scraper import KiwiClient
+                    kiwi_client = KiwiClient()
+                    results = await kiwi_client.search_flights(
+                        origin=origin.upper(),
+                        destination=destination.upper(),
+                        departure_date=dep_date,
+                        return_date=ret_date,
+                        adults=2,
+                        children=2,
+                    )
+                    all_results.extend(results)
+
                 else:
                     warning(f"Unknown scraper: {scraper}")
                     progress.update(task, advance=1)
@@ -345,8 +371,62 @@ async def _run_scrape(
 
 
 # ============================================================================
-# RUN Command - Main Pipeline
+# PIPELINE Command - Main Pipeline (formerly 'run')
 # ============================================================================
+
+@app.command()
+def pipeline(
+    destinations: str = typer.Option(
+        "all",
+        help="Destinations to search (comma-separated IATA codes or 'all')",
+    ),
+    dates: str = typer.Option(
+        "next-3-months",
+        help="Date range: 'next-3-months', 'next-6-months', or specific dates",
+    ),
+    region: str = typer.Option(
+        "Bavaria",
+        help="German state for school holiday calendar (e.g., Bavaria, Berlin, Hamburg)",
+    ),
+    analyze: bool = typer.Option(
+        True,
+        help="Run AI analysis on results",
+    ),
+    max_price: Optional[float] = typer.Option(
+        None,
+        help="Maximum price per person in EUR",
+    ),
+):
+    """
+    Run the complete travel search pipeline (end-to-end automation).
+
+    This command executes a comprehensive travel deal search:
+    1. Scrape flights from all available sources (Kiwi, Skyscanner, Ryanair, WizzAir)
+    2. Scrape accommodations (Booking.com, Airbnb)
+    3. Discover local events (city tourism APIs, Eventbrite)
+    4. Generate trip packages by matching flights + accommodations + events
+    5. Score packages with AI analysis (value, family-friendliness, recommendations)
+    6. Send email notifications for high-scoring deals
+
+    Use this for automated, hands-free deal discovery. For quick manual searches,
+    use 'scout scrape' instead.
+
+    Examples:
+        scout pipeline                                    # Search all destinations
+        scout pipeline --destinations LIS,BCN,PRG         # Specific destinations
+        scout pipeline --max-price 150 --no-analyze      # Budget filter, skip AI
+        scout pipeline --region Berlin                   # Use Berlin school holidays
+    """
+    console.print(Panel(
+        "[bold]Starting Complete Travel Search Pipeline[/bold]",
+        border_style="green",
+    ))
+
+    try:
+        asyncio.run(_run_pipeline(destinations, dates, region, analyze, max_price))
+    except Exception as e:
+        handle_error(e, "Pipeline execution failed")
+
 
 @app.command()
 def run(
@@ -372,26 +452,12 @@ def run(
     ),
 ):
     """
-    Run the full SmartFamilyTravelScout pipeline.
+    [DEPRECATED] Use 'scout pipeline' instead.
 
-    This command executes:
-    1. Flight scraping from all sources
-    2. Accommodation scraping
-    3. Event discovery
-    4. Package generation
-    5. AI analysis and scoring
-    6. Notification sending
-
-    Examples:
-        scout run
-        scout run --destinations LIS,BCN,PRG --dates next-3-months
-        scout run --max-price 150 --no-analyze
-        scout run --region Berlin --destinations LIS,BCN
+    This is an alias for backward compatibility. It will be removed in a future version.
     """
-    console.print(Panel(
-        "[bold]Starting SmartFamilyTravelScout Pipeline[/bold]",
-        border_style="green",
-    ))
+    warning("⚠ 'scout run' is deprecated. Use 'scout pipeline' instead.")
+    console.print("")
 
     try:
         asyncio.run(_run_pipeline(destinations, dates, region, analyze, max_price))
@@ -648,7 +714,7 @@ async def _run_pipeline(
 
 
 # ============================================================================
-# DEALS Command - View Top Deals
+# DEALS Command - View Top Deals (High-Scoring AI Recommendations)
 # ============================================================================
 
 @app.command()
@@ -675,18 +741,71 @@ def deals(
     ),
 ):
     """
-    Show top travel deals based on AI scoring.
+    View top-rated travel deals (AI-scored packages with score >= 70).
+
+    Shows trip packages that have been analyzed and scored by AI for value
+    and family-friendliness. Only displays packages meeting minimum score threshold.
+
+    Use this to find the BEST deals that have been vetted by AI.
+    For viewing ALL packages (including unscored), use 'scout packages'.
 
     Examples:
-        scout deals
-        scout deals --min-score 80 --limit 20
-        scout deals --destination lisbon --type family
-        scout deals --format json
+        scout deals                                    # Top 10 deals (score >= 70)
+        scout deals --min-score 80 --limit 20          # Top 20 excellent deals
+        scout deals --destination lisbon --type family # Family deals to Lisbon
+        scout deals --format json                      # JSON output for scripts
     """
     try:
         asyncio.run(_show_deals(min_score, destination, limit, package_type, format))
     except Exception as e:
         handle_error(e, "Failed to retrieve deals")
+
+
+@app.command()
+def packages(
+    destination: Optional[str] = typer.Option(
+        None,
+        help="Filter by destination city",
+    ),
+    limit: int = typer.Option(
+        20,
+        help="Number of packages to show",
+    ),
+    package_type: Optional[str] = typer.Option(
+        None,
+        help="Package type: 'family' or 'parent_escape'",
+    ),
+    format: str = typer.Option(
+        "table",
+        help="Output format: 'table' or 'json'",
+    ),
+    scored_only: bool = typer.Option(
+        False,
+        help="Show only AI-scored packages",
+    ),
+):
+    """
+    View all trip packages (flights + accommodations + events).
+
+    Shows ALL generated trip packages, including those not yet scored by AI.
+    This gives you a complete view of available travel options.
+
+    Use 'scout deals' to see only the BEST packages (AI-scored, high ratings).
+    Use 'scout packages' to see ALL packages (broader search results).
+
+    Examples:
+        scout packages                              # All packages (last 20)
+        scout packages --destination barcelona      # All Barcelona packages
+        scout packages --scored-only                # Only AI-analyzed packages
+        scout packages --limit 50                   # Show 50 packages
+    """
+    # Show all packages by setting min_score to 0 (unless scored_only is True)
+    min_score = 1 if scored_only else 0
+
+    try:
+        asyncio.run(_show_deals(min_score, destination, limit, package_type, format))
+    except Exception as e:
+        handle_error(e, "Failed to retrieve packages")
 
 
 async def _show_deals(
@@ -1853,13 +1972,17 @@ def kiwi_search(
     save: bool = typer.Option(True, help="Save results to database"),
 ):
     """
-    Search for flights using Kiwi.com API.
+    [DEPRECATED] Use 'scout scrape --scraper kiwi' instead.
 
-    Examples:
-        scout kiwi-search --origin MUC --destination LIS
-        scout kiwi-search --origin MUC
-        scout kiwi-search --origin MUC --destination BCN --departure 2025-12-20 --return 2025-12-27
+    This command is deprecated and will be removed in a future version.
+    Use the unified 'scout scrape' command with --scraper kiwi option instead.
+
+    Examples (new syntax):
+        scout scrape --origin MUC --destination LIS --scraper kiwi
+        scout scrape --origin MUC --destination BCN --scraper kiwi --departure 2025-12-20 --return 2025-12-27
     """
+    warning("⚠ 'scout kiwi-search' is deprecated. Use 'scout scrape --scraper kiwi' instead.")
+    console.print("")
     console.print("\n[bold]Kiwi.com Flight Search[/bold]\n", style="blue")
 
     from datetime import date, timedelta
