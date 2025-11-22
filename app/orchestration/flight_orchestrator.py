@@ -20,6 +20,7 @@ from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple
 
+from redis.asyncio import Redis
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich.table import Table
@@ -38,6 +39,7 @@ from app.scrapers.ryanair_scraper import RyanairScraper
 from app.scrapers.skyscanner_scraper import SkyscannerScraper
 from app.scrapers.wizzair_scraper import WizzAirScraper
 from app.utils.date_utils import parse_time
+from app.utils.flight_cache import FlightDeduplicationCache
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -66,8 +68,14 @@ class FlightOrchestrator:
         wizzair: WizzAir API scraper
     """
 
-    def __init__(self):
-        """Initialize enabled flight scrapers based on configuration."""
+    def __init__(self, redis_client: Optional[Redis] = None):
+        """
+        Initialize enabled flight scrapers based on configuration.
+
+        Args:
+            redis_client: Optional Redis client for caching. If not provided,
+                         caching will be disabled and all flights will be deduplicated.
+        """
         self.enabled_scrapers = settings.get_available_scrapers()
 
         # Initialize only enabled scrapers
@@ -77,6 +85,21 @@ class FlightOrchestrator:
         )
         self.ryanair = RyanairScraper() if "ryanair" in self.enabled_scrapers else None
         self.wizzair = WizzAirScraper() if "wizzair" in self.enabled_scrapers else None
+
+        # Initialize flight cache if Redis is available
+        self.cache = None
+        if redis_client:
+            self.cache = FlightDeduplicationCache(
+                redis_client=redis_client,
+                ttl=settings.cache_ttl_flights,  # Use configured TTL (default: 3600s)
+            )
+            logger.info(
+                f"FlightOrchestrator initialized with Redis cache (TTL: {settings.cache_ttl_flights}s)"
+            )
+        else:
+            logger.warning(
+                "FlightOrchestrator initialized without Redis cache - deduplication will be slower"
+            )
 
         logger.info(
             f"FlightOrchestrator initialized with {len(self.enabled_scrapers)} scrapers: "
@@ -239,9 +262,9 @@ class FlightOrchestrator:
         # Print statistics table
         self._print_stats_table(scraper_stats, elapsed_time)
 
-        # Deduplicate flights
+        # Deduplicate flights (with caching if available)
         console.print(f"\n[bold yellow]Deduplicating {len(all_flights)} flights...[/bold yellow]")
-        unique_flights = self.deduplicate(all_flights)
+        unique_flights = await self.deduplicate(all_flights)
 
         console.print(
             f"[bold green]✓ Found {len(unique_flights)} unique flights "
@@ -500,9 +523,9 @@ class FlightOrchestrator:
             # This allows proper failure tracking and threshold checking
             raise
 
-    def deduplicate(self, flights: List[Dict]) -> List[Dict]:
+    async def deduplicate(self, flights: List[Dict]) -> List[Dict]:
         """
-        Remove duplicate flights across sources.
+        Remove duplicate flights across sources with Redis caching.
 
         Flights are considered duplicates if they have:
         - Same origin + destination
@@ -514,6 +537,11 @@ class FlightOrchestrator:
         - Keep the one with the lowest price
         - Merge booking_url fields (keep all sources for user choice)
 
+        Redis Caching:
+        - Before deduplication, filters out flights already in cache
+        - After deduplication, caches unique flights
+        - Dramatically reduces CPU usage for repeated queries
+
         Args:
             flights: List of flight dictionaries from all sources
 
@@ -522,13 +550,37 @@ class FlightOrchestrator:
 
         Example:
             >>> all_flights = [...]  # Flights from multiple sources
-            >>> unique = orchestrator.deduplicate(all_flights)
+            >>> unique = await orchestrator.deduplicate(all_flights)
             >>> print(f"Reduced from {len(all_flights)} to {len(unique)} flights")
         """
         if not flights:
             return []
 
         logger.info(f"Deduplicating {len(flights)} flights...")
+
+        # Filter out cached flights if cache is available
+        flights_to_process = flights
+        cached_count = 0
+
+        if self.cache:
+            logger.info("Checking flight cache to skip already-processed flights...")
+            flights_to_process = await self.cache.filter_uncached_flights(flights)
+            cached_count = len(flights) - len(flights_to_process)
+
+            if cached_count > 0:
+                logger.info(
+                    f"Cache hit: {cached_count} flights already processed, "
+                    f"{len(flights_to_process)} need deduplication"
+                )
+                console.print(
+                    f"[dim]  → Cache hit: {cached_count} flights already seen, "
+                    f"processing {len(flights_to_process)} new flights[/dim]"
+                )
+
+        # If all flights are cached, return empty list (they've all been processed before)
+        if not flights_to_process:
+            logger.info("All flights found in cache - no deduplication needed")
+            return []
 
         # Group flights by route + airline + approximate time
         grouped = defaultdict(list)
@@ -657,11 +709,17 @@ class FlightOrchestrator:
                 logger.warning(f"Error selecting best flight from group: {e}", exc_info=True)
                 continue
 
-        duplicates_removed = len(flights) - len(unique_flights)
+        duplicates_removed = len(flights_to_process) - len(unique_flights)
         logger.info(
             f"Deduplication complete: {len(unique_flights)} unique flights "
-            f"({duplicates_removed} duplicates removed)"
+            f"({duplicates_removed} duplicates removed from {len(flights_to_process)} processed)"
         )
+
+        # Cache the unique flights for future queries
+        if self.cache and unique_flights:
+            logger.info(f"Caching {len(unique_flights)} unique flights...")
+            cached_count = await self.cache.cache_multiple_flights(unique_flights)
+            logger.info(f"Successfully cached {cached_count} flights (TTL: {self.cache.ttl}s)")
 
         return unique_flights
 
