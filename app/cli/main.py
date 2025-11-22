@@ -134,6 +134,10 @@ def scrape(
         None,
         help="Specific scraper to use: 'skyscanner', 'ryanair', 'wizzair', or 'all' for all free scrapers",
     ),
+    region: str = typer.Option(
+        "Bavaria",
+        help="German state for school holiday calendar (e.g., Bavaria, Berlin, Hamburg)",
+    ),
     save: bool = typer.Option(
         True,
         help="Save results to database",
@@ -149,6 +153,7 @@ def scrape(
         scout scrape --origin MUC --destination LIS
         scout scrape --origin VIE --destination BCN --scraper skyscanner
         scout scrape --origin MUC --destination PRG --departure 2025-12-20 --return 2025-12-27
+        scout scrape --origin MUC --destination LIS --region Berlin
     """
     console.print(Panel(
         "[bold]Quick Flight Scrape (No API Key Required)[/bold]",
@@ -156,7 +161,7 @@ def scrape(
     ))
 
     try:
-        asyncio.run(_run_scrape(origin, destination, departure_date, return_date, scraper, save))
+        asyncio.run(_run_scrape(origin, destination, departure_date, return_date, scraper, region, save))
     except Exception as e:
         handle_error(e, "Scraping failed")
 
@@ -167,6 +172,7 @@ async def _run_scrape(
     departure_date_str: Optional[str],
     return_date_str: Optional[str],
     scraper_name: Optional[str],
+    region: str,
     save: bool,
 ):
     """Execute quick scrape with default scrapers."""
@@ -192,6 +198,7 @@ async def _run_scrape(
     table.add_row("Destination", destination.upper())
     table.add_row("Departure", dep_date.strftime("%Y-%m-%d"))
     table.add_row("Return", ret_date.strftime("%Y-%m-%d"))
+    table.add_row("Region", region)
 
     # Determine which scrapers to use
     if scraper_name and scraper_name != "all":
@@ -351,6 +358,10 @@ def run(
         "next-3-months",
         help="Date range: 'next-3-months', 'next-6-months', or specific dates",
     ),
+    region: str = typer.Option(
+        "Bavaria",
+        help="German state for school holiday calendar (e.g., Bavaria, Berlin, Hamburg)",
+    ),
     analyze: bool = typer.Option(
         True,
         help="Run AI analysis on results",
@@ -375,6 +386,7 @@ def run(
         scout run
         scout run --destinations LIS,BCN,PRG --dates next-3-months
         scout run --max-price 150 --no-analyze
+        scout run --region Berlin --destinations LIS,BCN
     """
     console.print(Panel(
         "[bold]Starting SmartFamilyTravelScout Pipeline[/bold]",
@@ -382,7 +394,7 @@ def run(
     ))
 
     try:
-        asyncio.run(_run_pipeline(destinations, dates, analyze, max_price))
+        asyncio.run(_run_pipeline(destinations, dates, region, analyze, max_price))
     except Exception as e:
         handle_error(e, "Pipeline execution failed")
 
@@ -390,6 +402,7 @@ def run(
 async def _run_pipeline(
     destinations: str,
     dates: str,
+    region: str,
     analyze: bool,
     max_price: Optional[float],
 ):
@@ -437,6 +450,7 @@ async def _run_pipeline(
         progress.update(task1, completed=1)
         info(f"Origins: {', '.join(origin_codes)}")
         info(f"Destinations: {', '.join(dest_codes)}")
+        info(f"Region: {region}")
 
         # Step 2: Determine date ranges
         task2 = progress.add_task("[cyan]Calculating date ranges...", total=1)
@@ -451,6 +465,7 @@ async def _run_pipeline(
         date_ranges = get_school_holiday_periods(
             start_date=date.today(),
             end_date=end_date,
+            region=region,
         )
 
         progress.update(task2, completed=1)
