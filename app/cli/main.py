@@ -1344,6 +1344,317 @@ async def _show_stats(period: str, scraper: Optional[str]):
 
 
 # ============================================================================
+# PRICE-HISTORY Command
+# ============================================================================
+
+@app.command("price-history")
+def price_history(
+    route: Optional[str] = typer.Option(
+        None,
+        help="Route code (e.g., 'MUC-LIS')",
+    ),
+    origin: Optional[str] = typer.Option(
+        None,
+        help="Origin airport IATA code",
+    ),
+    destination: Optional[str] = typer.Option(
+        None,
+        help="Destination airport IATA code",
+    ),
+    source: Optional[str] = typer.Option(
+        None,
+        help="Filter by source (kiwi, skyscanner, ryanair, wizzair)",
+    ),
+    days: int = typer.Option(
+        30,
+        help="Number of days to look back",
+    ),
+    show_chart: bool = typer.Option(
+        False,
+        help="Show price trend chart",
+    ),
+):
+    """
+    View price history for flight routes.
+
+    Examples:
+        scout price-history --route MUC-LIS
+        scout price-history --origin MUC --destination BCN --days 60
+        scout price-history --origin MUC --destination LIS --source kiwi
+        scout price-history --route MUC-PRG --show-chart
+    """
+    try:
+        asyncio.run(_show_price_history(route, origin, destination, source, days, show_chart))
+    except Exception as e:
+        handle_error(e, "Failed to retrieve price history")
+
+
+async def _show_price_history(
+    route: Optional[str],
+    origin: Optional[str],
+    destination: Optional[str],
+    source: Optional[str],
+    days: int,
+    show_chart: bool,
+):
+    """Display price history."""
+    from app.services.price_history_service import PriceHistoryService
+
+    # Validate inputs
+    if not route and not (origin and destination):
+        console.print("[red]Error: Must provide either --route or both --origin and --destination[/red]\n")
+        raise typer.Exit(code=1)
+
+    # Build route string
+    if route:
+        route_str = route.upper()
+    else:
+        route_str = f"{origin.upper()}-{destination.upper()}"
+
+    console.print("\n")
+    console.print(Panel(
+        f"[bold]Price History: {route_str}[/bold]\n"
+        f"Last {days} days" + (f" - {source.upper()}" if source else " - All sources"),
+        border_style="blue",
+    ))
+
+    async with get_async_session_context() as db:
+        # Get price history
+        history = await PriceHistoryService.get_price_history(
+            db=db,
+            route=route_str,
+            source=source,
+            days=days,
+            limit=100,
+        )
+
+        if not history:
+            warning(f"No price history found for {route_str}")
+            return
+
+        # Get price trends
+        trends = await PriceHistoryService.get_price_trends(
+            db=db,
+            route=route_str,
+            source=source,
+            days=days,
+        )
+
+        # Display summary statistics
+        stats_table = Table(title="📊 Price Statistics", show_header=True, header_style="bold magenta")
+        stats_table.add_column("Metric", style="cyan")
+        stats_table.add_column("Value", style="green", justify="right")
+
+        stats_table.add_row("Current Price", f"€{trends.get('current_price', 0):.2f}")
+        stats_table.add_row("Average Price", f"€{trends.get('avg_price', 0):.2f}")
+        stats_table.add_row("Minimum Price", f"€{trends.get('min_price', 0):.2f}")
+        stats_table.add_row("Maximum Price", f"€{trends.get('max_price', 0):.2f}")
+
+        trend_emoji = {
+            "increasing": "📈",
+            "decreasing": "📉",
+            "stable": "➡️",
+            "insufficient_data": "❓"
+        }
+        trend_value = trends.get('trend', 'unknown')
+        stats_table.add_row("Trend", f"{trend_emoji.get(trend_value, '?')} {trend_value.title()}")
+        stats_table.add_row("Data Points", str(trends.get('data_points', 0)))
+
+        console.print("\n")
+        console.print(stats_table)
+        console.print("\n")
+
+        # Get booking recommendation
+        recommendation = await PriceHistoryService.get_best_booking_time(
+            db=db,
+            route=route_str,
+            days=days,
+        )
+
+        if "error" not in recommendation:
+            # Display recommendation
+            rec_color = "green" if "Book now" in recommendation['recommendation'] else "yellow"
+            console.print(Panel(
+                f"[bold {rec_color}]{recommendation['recommendation']}[/bold {rec_color}]\n\n"
+                f"Current price: €{recommendation['current_price']:.2f}\n"
+                f"vs Average: {recommendation['price_vs_avg_percent']:+.1f}%\n"
+                f"vs Minimum: {recommendation['price_vs_min_percent']:+.1f}%\n"
+                f"Confidence: {recommendation['confidence'].upper()}",
+                title="💡 Booking Recommendation",
+                border_style=rec_color,
+            ))
+            console.print("\n")
+
+        # Display price history table
+        history_table = Table(
+            title=f"📅 Recent Price History ({len(history[:20])} of {len(history)} records)",
+            show_header=True,
+            header_style="bold magenta"
+        )
+        history_table.add_column("Date", style="cyan")
+        history_table.add_column("Time", style="blue")
+        history_table.add_column("Price", style="green", justify="right")
+        history_table.add_column("Source", style="yellow")
+        history_table.add_column("Change", style="white", justify="right")
+
+        # Sort by date (most recent first)
+        sorted_history = sorted(history, key=lambda x: x.scraped_at, reverse=True)
+
+        prev_price = None
+        for record in sorted_history[:20]:  # Show last 20 records
+            price = float(record.price)
+
+            # Calculate change from previous
+            if prev_price is not None:
+                change = price - prev_price
+                change_str = f"{change:+.2f} €"
+                if change < 0:
+                    change_str = f"[green]{change_str}[/green]"
+                elif change > 0:
+                    change_str = f"[red]{change_str}[/red]"
+                else:
+                    change_str = "[dim]0.00 €[/dim]"
+            else:
+                change_str = "-"
+
+            history_table.add_row(
+                record.scraped_at.strftime("%Y-%m-%d"),
+                record.scraped_at.strftime("%H:%M"),
+                f"€{price:.2f}",
+                record.source,
+                change_str,
+            )
+
+            prev_price = price
+
+        console.print(history_table)
+        console.print("\n")
+
+        # Show simple ASCII chart if requested
+        if show_chart and len(history) > 2:
+            console.print(Panel("[bold]Price Trend Chart[/bold]", border_style="blue"))
+            _draw_ascii_chart(sorted_history[:30])  # Show chart for last 30 points
+            console.print("\n")
+
+        success(f"Displayed {len(history)} price history records")
+
+
+def _draw_ascii_chart(history: List):
+    """Draw a simple ASCII chart of prices."""
+    if not history:
+        return
+
+    prices = [float(r.price) for r in reversed(history)]  # Oldest to newest
+    min_price = min(prices)
+    max_price = max(prices)
+
+    # Normalize prices to 0-20 range for chart height
+    chart_height = 15
+    if max_price > min_price:
+        normalized = [int((p - min_price) / (max_price - min_price) * chart_height) for p in prices]
+    else:
+        normalized = [chart_height // 2] * len(prices)
+
+    # Draw chart
+    for row in range(chart_height, -1, -1):
+        line = ""
+        for val in normalized:
+            if val == row:
+                line += "●"
+            elif val > row:
+                line += "│"
+            else:
+                line += " "
+
+        # Add price labels
+        if row == chart_height:
+            line += f"  €{max_price:.0f}"
+        elif row == 0:
+            line += f"  €{min_price:.0f}"
+
+        console.print(f"  {line}")
+
+    # Draw x-axis
+    console.print(f"  {'─' * len(prices)}")
+    console.print(f"  {history[-1].scraped_at.strftime('%b %d')} → {history[0].scraped_at.strftime('%b %d')}")
+
+
+@app.command("price-drops")
+def price_drops(
+    threshold: float = typer.Option(
+        10.0,
+        help="Minimum price drop percentage to show",
+    ),
+    days: int = typer.Option(
+        7,
+        help="Number of days to compare against",
+    ),
+):
+    """
+    Detect significant price drops across all routes.
+
+    Examples:
+        scout price-drops
+        scout price-drops --threshold 15 --days 14
+    """
+    try:
+        asyncio.run(_show_price_drops(threshold, days))
+    except Exception as e:
+        handle_error(e, "Failed to detect price drops")
+
+
+async def _show_price_drops(threshold: float, days: int):
+    """Display detected price drops."""
+    from app.services.price_history_service import PriceHistoryService
+
+    console.print("\n")
+    console.print(Panel(
+        f"[bold]Price Drop Detection[/bold]\n"
+        f"Threshold: {threshold}% | Comparison period: {days} days",
+        border_style="green",
+    ))
+
+    async with get_async_session_context() as db:
+        drops = await PriceHistoryService.detect_price_drops(
+            db=db,
+            threshold_percent=threshold,
+            days=days,
+        )
+
+        if not drops:
+            warning(f"No price drops of {threshold}% or more detected")
+            return
+
+        # Display drops table
+        table = Table(
+            title=f"🎯 {len(drops)} Price Drops Detected",
+            show_header=True,
+            header_style="bold magenta"
+        )
+        table.add_column("Route", style="cyan")
+        table.add_column("Source", style="yellow")
+        table.add_column("Current", style="green", justify="right")
+        table.add_column("Was", style="white", justify="right")
+        table.add_column("Drop", style="red", justify="right")
+        table.add_column("Savings", style="green", justify="right")
+
+        for drop in drops:
+            table.add_row(
+                drop["route"],
+                drop["source"],
+                f"€{drop['current_price']:.0f}",
+                f"€{drop['previous_avg_price']:.0f}",
+                f"{drop['drop_percent']:.1f}%",
+                f"€{drop['drop_amount']:.0f}",
+            )
+
+        console.print("\n")
+        console.print(table)
+        console.print("\n")
+        success(f"Found {len(drops)} significant price drops")
+
+
+# ============================================================================
 # DB Commands - Database Management
 # ============================================================================
 
