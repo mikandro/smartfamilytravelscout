@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import typer
+from redis.asyncio import Redis
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -221,9 +222,18 @@ async def _run_scrape(
         )
 
         # Run each scraper
-        for scraper in scrapers_to_use:
+        for idx, scraper in enumerate(scrapers_to_use):
             try:
-                progress.update(task, description=f"[yellow]Running {scraper}...")
+                progress.update(
+                    task,
+                    description=f"[yellow]Running {scraper.title()} ({idx+1}/{len(scrapers_to_use)})..."
+                )
+
+                # Log start
+                console.print(
+                    f"[dim cyan]⟳ Starting {scraper.title()} scraper for "
+                    f"{origin.upper()}→{destination.upper()}...[/dim cyan]"
+                )
 
                 if scraper == "skyscanner":
                     from app.scrapers.skyscanner_scraper import SkyscannerScraper
@@ -267,12 +277,21 @@ async def _run_scrape(
 
                 else:
                     warning(f"Unknown scraper: {scraper}")
+                    progress.update(task, advance=1)
+                    continue
+
+                # Log completion
+                console.print(
+                    f"[dim green]✓ {scraper.title()} completed: {len(results)} flights found[/dim green]"
+                )
 
                 progress.update(task, advance=1)
 
             except Exception as e:
                 logger.error(f"Scraper {scraper} failed: {e}")
-                warning(f"{scraper.title()} scraper failed: {str(e)}")
+                console.print(
+                    f"[dim red]✗ {scraper.title()} failed: {str(e)}[/dim red]"
+                )
                 progress.update(task, advance=1)
                 continue
 
@@ -440,12 +459,26 @@ async def _run_pipeline(
         # Step 3: Scrape flights
         task3 = progress.add_task("[yellow]Scraping flights...", total=None)
 
-        orchestrator = FlightOrchestrator()
+        # Initialize Redis client for caching
+        redis_client = None
+        try:
+            redis_client = await Redis.from_url(str(settings.redis_url))
+            await redis_client.ping()
+            logger.info("Redis connection established for flight caching")
+        except Exception as e:
+            logger.warning(f"Redis connection failed, caching will be disabled: {e}")
+            redis_client = None
+
+        orchestrator = FlightOrchestrator(redis_client=redis_client)
         flights = await orchestrator.scrape_all(
             origins=origin_codes,
             destinations=dest_codes,
             date_ranges=date_ranges,
         )
+
+        # Close Redis connection
+        if redis_client:
+            await redis_client.close()
 
         stats["flights"] = len(flights)
         progress.update(task3, completed=1)
@@ -454,17 +487,46 @@ async def _run_pipeline(
         # Step 4: Scrape accommodations
         task4 = progress.add_task("[yellow]Scraping accommodations...", total=len(dest_codes))
 
-        # TODO: Implement accommodation scraping
-        # For now, we'll query existing accommodations
-        async with get_async_session_context() as db:
-            from app.models.accommodation import Accommodation
-            result = await db.execute(
-                select(func.count(Accommodation.id))
-            )
-            stats["accommodations"] = result.scalar() or 0
+        from app.orchestration.accommodation_orchestrator import AccommodationOrchestrator
 
-        progress.update(task4, completed=len(dest_codes))
-        info(f"Available accommodations: {stats['accommodations']}")
+        acc_orchestrator = AccommodationOrchestrator()
+        all_accommodations = []
+
+        for dest_code in dest_codes:
+            try:
+                # Get city name for destination
+                async with get_async_session_context() as db:
+                    result = await db.execute(
+                        select(Airport).where(Airport.iata_code == dest_code)
+                    )
+                    dest_airport = result.scalar_one_or_none()
+                    city_name = dest_airport.city if dest_airport else dest_code
+
+                # Use first date range for accommodation search
+                if date_ranges:
+                    check_in, check_out = date_ranges[0]
+
+                    accommodations = await acc_orchestrator.search_all_sources(
+                        city=city_name,
+                        check_in=check_in,
+                        check_out=check_out,
+                        adults=2,
+                        children=2,
+                    )
+
+                    if accommodations:
+                        save_stats = await acc_orchestrator.save_to_database(accommodations)
+                        all_accommodations.extend(accommodations)
+                        stats["accommodations"] += save_stats["inserted"] + save_stats["updated"]
+
+                progress.update(task4, advance=1)
+
+            except Exception as e:
+                logger.error(f"Error scraping accommodations for {dest_code}: {e}")
+                progress.update(task4, advance=1)
+                continue
+
+        info(f"Found {stats['accommodations']} accommodations")
 
         # Step 5: Match packages
         task5 = progress.add_task("[cyan]Generating trip packages...", total=None)
@@ -488,29 +550,67 @@ async def _run_pipeline(
 
         # Step 7: AI analysis
         if analyze and stats["packages"] > 0:
-            task7 = progress.add_task("[magenta]Running AI analysis...", total=stats["packages"])
-
             from app.ai.deal_scorer import DealScorer
+            from app.models.trip_package import TripPackage
 
-            scorer = DealScorer()
             async with get_async_session_context() as db:
-                from app.models.trip_package import TripPackage
-
                 result = await db.execute(
                     select(TripPackage).where(TripPackage.ai_score.is_(None))
                 )
                 unscored = result.scalars().all()
 
-                for idx, package in enumerate(unscored[:50]):  # Limit to 50 for cost control
+                # Limit to 50 for cost control
+                packages_to_score = unscored[:50]
+
+                task7 = progress.add_task(
+                    "[magenta]Running AI analysis...",
+                    total=len(packages_to_score)
+                )
+
+                scorer = DealScorer()
+
+                for idx, package in enumerate(packages_to_score):
                     try:
+                        # Update progress with current package being analyzed
+                        progress.update(
+                            task7,
+                            description=f"[magenta]Analyzing {package.destination_city} "
+                            f"({idx+1}/{len(packages_to_score)})...",
+                        )
+
+                        # Log start of analysis
+                        console.print(
+                            f"[dim magenta]⟳ Scoring package {package.id}: "
+                            f"{package.destination_city}, €{package.total_price}[/dim magenta]"
+                        )
+
                         score_data = await scorer.score_trip(package)
-                        package.ai_score = score_data["score"]
-                        package.ai_reasoning = score_data["reasoning"]
-                        await db.commit()
-                        stats["analyzed"] += 1
+
+                        if score_data:
+                            package.ai_score = score_data["score"]
+                            package.ai_reasoning = score_data["reasoning"]
+                            await db.commit()
+                            stats["analyzed"] += 1
+
+                            # Log completion with score
+                            console.print(
+                                f"[dim green]✓ Package {package.id}: "
+                                f"Score {score_data['score']}/100 "
+                                f"({score_data.get('recommendation', 'N/A')})[/dim green]"
+                            )
+                        else:
+                            console.print(
+                                f"[dim yellow]⚠ Package {package.id}: Skipped (over price threshold)[/dim yellow]"
+                            )
+
                         progress.update(task7, advance=1)
+
                     except Exception as e:
                         logger.error(f"Failed to score package {package.id}: {e}")
+                        console.print(
+                            f"[dim red]✗ Package {package.id}: Failed - {str(e)}[/dim red]"
+                        )
+                        progress.update(task7, advance=1)
                         continue
 
             success(f"Analyzed {stats['analyzed']} packages")
@@ -778,19 +878,164 @@ def config_set(
 # TEST-SCRAPER Command
 # ============================================================================
 
+@app.command("scrape-accommodations")
+def scrape_accommodations(
+    city: str = typer.Option(
+        ...,
+        help="Destination city (e.g., Barcelona, Lisbon)",
+    ),
+    check_in: Optional[str] = typer.Option(
+        None,
+        help="Check-in date (YYYY-MM-DD). Default: 60 days from today",
+    ),
+    check_out: Optional[str] = typer.Option(
+        None,
+        help="Check-out date (YYYY-MM-DD). Default: 7 days after check-in",
+    ),
+    adults: int = typer.Option(
+        2,
+        help="Number of adults",
+    ),
+    children: int = typer.Option(
+        2,
+        help="Number of children",
+    ),
+    save: bool = typer.Option(
+        True,
+        help="Save results to database",
+    ),
+):
+    """
+    Search for accommodations using all available scrapers (Booking.com, Airbnb).
+
+    Examples:
+        scout scrape-accommodations --city Barcelona
+        scout scrape-accommodations --city Lisbon --check-in 2025-07-01 --check-out 2025-07-08
+        scout scrape-accommodations --city Prague --adults 2 --children 2
+    """
+    console.print(Panel(
+        "[bold]Accommodation Search (All Sources)[/bold]",
+        border_style="green",
+    ))
+
+    try:
+        asyncio.run(_run_accommodation_scrape(city, check_in, check_out, adults, children, save))
+    except Exception as e:
+        handle_error(e, "Accommodation scraping failed")
+
+
+async def _run_accommodation_scrape(
+    city: str,
+    check_in_str: Optional[str],
+    check_out_str: Optional[str],
+    adults: int,
+    children: int,
+    save: bool,
+):
+    """Execute accommodation scraping."""
+    from datetime import date, timedelta
+    from app.orchestration.accommodation_orchestrator import AccommodationOrchestrator
+
+    # Parse dates
+    if check_in_str:
+        check_in_date = datetime.strptime(check_in_str, "%Y-%m-%d").date()
+    else:
+        check_in_date = date.today() + timedelta(days=60)
+
+    if check_out_str:
+        check_out_date = datetime.strptime(check_out_str, "%Y-%m-%d").date()
+    else:
+        check_out_date = check_in_date + timedelta(days=7)
+
+    # Display search parameters
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Parameter", style="cyan")
+    table.add_column("Value", style="green")
+
+    table.add_row("City", city.title())
+    table.add_row("Check-in", check_in_date.strftime("%Y-%m-%d"))
+    table.add_row("Check-out", check_out_date.strftime("%Y-%m-%d"))
+    table.add_row("Adults", str(adults))
+    table.add_row("Children", str(children))
+    table.add_row("Save to DB", "Yes" if save else "No")
+
+    console.print("\n")
+    console.print(table)
+    console.print("\n")
+
+    # Run orchestrator
+    orchestrator = AccommodationOrchestrator()
+    accommodations = await orchestrator.search_all_sources(
+        city=city,
+        check_in=check_in_date,
+        check_out=check_out_date,
+        adults=adults,
+        children=children,
+    )
+
+    # Display results
+    if accommodations:
+        success(f"Found {len(accommodations)} accommodations")
+
+        # Create results table
+        results_table = Table(show_header=True, header_style="bold magenta")
+        results_table.add_column("Name", style="cyan", no_wrap=False, max_width=40)
+        results_table.add_column("Type", style="yellow")
+        results_table.add_column("Price/Night", style="green", justify="right")
+        results_table.add_column("Rating", style="magenta", justify="right")
+        results_table.add_column("Bedrooms", style="blue", justify="center")
+        results_table.add_column("Source", style="white")
+
+        # Sort by price
+        sorted_accommodations = sorted(
+            accommodations,
+            key=lambda x: x.get("price_per_night", 9999)
+        )
+
+        for acc in sorted_accommodations[:15]:  # Show top 15
+            price = acc.get("price_per_night", 0)
+            rating = acc.get("rating")
+            rating_str = f"{rating:.1f}" if rating else "N/A"
+            bedrooms = acc.get("bedrooms")
+            bedrooms_str = str(bedrooms) if bedrooms else "N/A"
+
+            results_table.add_row(
+                acc.get("name", "Unknown")[:40],
+                acc.get("type", "hotel").title(),
+                f"€{price:.0f}",
+                rating_str,
+                bedrooms_str,
+                acc.get("source", "unknown"),
+            )
+
+        console.print("\n")
+        console.print(results_table)
+        console.print("\n")
+
+        if save:
+            info("Saving results to database...")
+            stats = await orchestrator.save_to_database(accommodations)
+            success(
+                f"Database save complete: {stats['inserted']} inserted, "
+                f"{stats['updated']} updated, {stats['skipped']} skipped"
+            )
+    else:
+        warning("No accommodations found")
+
+
 @app.command("test-scraper")
 def test_scraper(
     scraper: str = typer.Argument(
         ...,
-        help="Scraper name: 'kiwi', 'skyscanner', 'ryanair', 'wizzair', 'booking'",
+        help="Scraper name: 'kiwi', 'skyscanner', 'ryanair', 'wizzair', 'booking', 'airbnb'",
     ),
     origin: str = typer.Option(
         "MUC",
-        help="Origin airport IATA code",
+        help="Origin airport IATA code (for flight scrapers)",
     ),
     dest: str = typer.Option(
         "LIS",
-        help="Destination airport IATA code",
+        help="Destination airport IATA code or city name",
     ),
     save: bool = typer.Option(
         False,
@@ -804,6 +1049,8 @@ def test_scraper(
         scout test-scraper kiwi --origin MUC --dest LIS
         scout test-scraper ryanair --save
         scout test-scraper skyscanner --origin VIE --dest BCN
+        scout test-scraper booking --dest Barcelona
+        scout test-scraper airbnb --dest Lisbon
     """
     console.print(Panel(
         f"[bold]Testing {scraper.upper()} Scraper[/bold]",
@@ -869,9 +1116,33 @@ async def _test_scraper(scraper: str, origin: str, dest: str, save: bool):
                 departure_date=dep_date,
                 return_date=ret_date,
             )
+        elif scraper.lower() == "booking":
+            from app.scrapers.booking_scraper import BookingClient
+            async with BookingClient(headless=True) as scraper_instance:
+                results = await scraper_instance.search(
+                    city=dest,  # dest is the city name for accommodation scrapers
+                    check_in=dep_date,
+                    check_out=ret_date,
+                    adults=2,
+                    children_ages=[3, 6],
+                    limit=20,
+                )
+                results = scraper_instance.filter_family_friendly(results)
+        elif scraper.lower() == "airbnb":
+            from app.scrapers.airbnb_scraper import AirbnbClient
+            scraper_instance = AirbnbClient()
+            results = await scraper_instance.search(
+                city=dest,  # dest is the city name for accommodation scrapers
+                check_in=dep_date,
+                check_out=ret_date,
+                adults=2,
+                children=2,
+                max_listings=20,
+            )
+            results = scraper_instance.filter_family_suitable(results)
         else:
             console.print(f"[red]Unknown scraper: {scraper}[/red]")
-            console.print("[yellow]Available scrapers: kiwi, skyscanner, ryanair, wizzair[/yellow]")
+            console.print("[yellow]Available scrapers: kiwi, skyscanner, ryanair, wizzair, booking, airbnb[/yellow]")
             raise typer.Exit(code=1)
 
         progress.update(task, completed=1)
@@ -880,19 +1151,42 @@ async def _test_scraper(scraper: str, origin: str, dest: str, save: bool):
     if results:
         success(f"Found {len(results)} results")
 
-        table = Table(show_header=True, header_style="bold magenta")
-        table.add_column("Route", style="cyan")
-        table.add_column("Airline", style="yellow")
-        table.add_column("Price/Person", style="green", justify="right")
-        table.add_column("Direct", style="magenta")
+        # Check if results are flights or accommodations
+        is_accommodation = scraper.lower() in ["booking", "airbnb"]
 
-        for result in results[:10]:
-            table.add_row(
-                f"{result.get('origin_airport', origin)} → {result.get('destination_airport', dest)}",
-                result.get("airline", "N/A"),
-                f"€{result.get('price_per_person', 0):.0f}",
-                "✓" if result.get("direct_flight", False) else "✗",
-            )
+        if is_accommodation:
+            # Display accommodation results
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Name", style="cyan", max_width=40)
+            table.add_column("Type", style="yellow")
+            table.add_column("Price/Night", style="green", justify="right")
+            table.add_column("Rating", style="magenta", justify="right")
+
+            for result in results[:10]:
+                rating = result.get("rating")
+                rating_str = f"{rating:.1f}" if rating else "N/A"
+
+                table.add_row(
+                    result.get("name", "Unknown")[:40],
+                    result.get("type", "hotel").title(),
+                    f"€{result.get('price_per_night', 0):.0f}",
+                    rating_str,
+                )
+        else:
+            # Display flight results
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Route", style="cyan")
+            table.add_column("Airline", style="yellow")
+            table.add_column("Price/Person", style="green", justify="right")
+            table.add_column("Direct", style="magenta")
+
+            for result in results[:10]:
+                table.add_row(
+                    f"{result.get('origin_airport', origin)} → {result.get('destination_airport', dest)}",
+                    result.get("airline", "N/A"),
+                    f"€{result.get('price_per_person', 0):.0f}",
+                    "✓" if result.get("direct_flight", False) else "✗",
+                )
 
         console.print("\n")
         console.print(table)
@@ -1359,20 +1653,22 @@ def kiwi_status():
     """
     console.print("\n[bold]Kiwi.com API Status[/bold]\n", style="blue")
 
-    from app.scrapers.kiwi_scraper import RateLimiter
+    from app.utils.rate_limiter import get_kiwi_rate_limiter
 
-    rate_limiter = RateLimiter()
-    remaining = rate_limiter.get_remaining_calls()
-    used = 100 - remaining
+    rate_limiter = get_kiwi_rate_limiter()
+    remaining = rate_limiter.get_remaining()
+    status = rate_limiter.get_status()
+    used = status['current_count']
+    max_requests = status['max_requests']
 
     # Create table
     table = Table(show_header=True, header_style="bold magenta")
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="green")
 
-    table.add_row("API calls used (this month)", f"{used}/100")
-    table.add_row("Remaining calls", f"{remaining}/100")
-    table.add_row("Usage", f"{(used/100)*100:.1f}%")
+    table.add_row("API calls used (this month)", f"{used}/{max_requests}")
+    table.add_row("Remaining calls", f"{remaining}/{max_requests}")
+    table.add_row("Usage", f"{(used/max_requests)*100:.1f}%")
 
     console.print(table)
     console.print()
@@ -1383,6 +1679,160 @@ def kiwi_status():
         console.print(f"[yellow]⚠ Only {remaining} API calls remaining this month[/yellow]\n")
     else:
         console.print("[red]✗ Monthly rate limit exceeded![/red]\n")
+
+
+# ============================================================================
+# Model Pricing Management Commands
+# ============================================================================
+
+@db_app.command("pricing-list")
+def db_pricing_list(
+    service: Optional[str] = typer.Option(None, help="Filter by service (e.g., 'claude')"),
+    model: Optional[str] = typer.Option(None, help="Filter by model name"),
+):
+    """
+    List model pricing configurations from the database.
+    """
+    console.print("\n")
+    console.print(Panel(
+        "[bold]Model Pricing Configuration[/bold]\n\n"
+        "Current pricing for AI models",
+        border_style="blue",
+    ))
+
+    try:
+        from app.models import ModelPricing
+        from sqlalchemy import and_
+
+        db = get_sync_session()
+
+        # Build query with optional filters
+        filters = []
+        if service:
+            filters.append(ModelPricing.service == service)
+        if model:
+            filters.append(ModelPricing.model == model)
+
+        if filters:
+            query = db.query(ModelPricing).filter(and_(*filters)).order_by(
+                ModelPricing.service, ModelPricing.model, ModelPricing.effective_date.desc()
+            )
+        else:
+            query = db.query(ModelPricing).order_by(
+                ModelPricing.service, ModelPricing.model, ModelPricing.effective_date.desc()
+            )
+
+        pricing_list = query.all()
+
+        if not pricing_list:
+            warning("No pricing configurations found")
+            return
+
+        # Create table
+        table = Table(title="Model Pricing", show_header=True, header_style="bold magenta")
+        table.add_column("Service", style="cyan")
+        table.add_column("Model", style="blue")
+        table.add_column("Input ($/M)", style="green", justify="right")
+        table.add_column("Output ($/M)", style="green", justify="right")
+        table.add_column("Effective Date", style="yellow")
+        table.add_column("Notes", style="dim")
+
+        for pricing in pricing_list:
+            table.add_row(
+                pricing.service,
+                pricing.model,
+                f"${pricing.input_cost_per_million:.2f}",
+                f"${pricing.output_cost_per_million:.2f}",
+                pricing.effective_date.strftime("%Y-%m-%d"),
+                (pricing.notes[:50] + "...") if pricing.notes and len(pricing.notes) > 50 else (pricing.notes or ""),
+            )
+
+        console.print(table)
+        console.print()
+        success(f"Found {len(pricing_list)} pricing configuration(s)")
+
+    except Exception as e:
+        handle_error(e, "Failed to list pricing configurations")
+
+
+@db_app.command("pricing-add")
+def db_pricing_add(
+    service: str = typer.Option(..., help="Service name (e.g., 'claude')"),
+    model: str = typer.Option(..., help="Model name (e.g., 'claude-sonnet-4-5-20250929')"),
+    input_cost: float = typer.Option(..., help="Input cost per million tokens (USD)"),
+    output_cost: float = typer.Option(..., help="Output cost per million tokens (USD)"),
+    effective_date: str = typer.Option(
+        None,
+        help="Effective date (YYYY-MM-DD format, defaults to today)",
+    ),
+    notes: Optional[str] = typer.Option(None, help="Additional notes"),
+):
+    """
+    Add or update model pricing configuration.
+    """
+    console.print("\n")
+    console.print(Panel(
+        f"[bold]Add Model Pricing[/bold]\n\n"
+        f"Service: {service}\n"
+        f"Model: {model}\n"
+        f"Input: ${input_cost}/M tokens\n"
+        f"Output: ${output_cost}/M tokens",
+        border_style="blue",
+    ))
+
+    try:
+        from app.models import ModelPricing
+
+        # Parse effective date
+        if effective_date:
+            eff_date = datetime.strptime(effective_date, "%Y-%m-%d")
+        else:
+            eff_date = datetime.now()
+
+        db = get_sync_session()
+
+        # Check if pricing already exists for this service/model/date
+        existing = db.query(ModelPricing).filter_by(
+            service=service,
+            model=model,
+            effective_date=eff_date,
+        ).first()
+
+        if existing:
+            console.print(f"\n[yellow]Pricing already exists for {service}/{model} on {eff_date.date()}[/yellow]")
+            update = typer.confirm("Do you want to update it?")
+            if not update:
+                warning("Operation cancelled")
+                return
+
+            existing.input_cost_per_million = input_cost
+            existing.output_cost_per_million = output_cost
+            if notes:
+                existing.notes = notes
+            db.commit()
+            success(f"Updated pricing for {service}/{model}")
+        else:
+            # Create new pricing
+            new_pricing = ModelPricing(
+                service=service,
+                model=model,
+                input_cost_per_million=input_cost,
+                output_cost_per_million=output_cost,
+                effective_date=eff_date,
+                notes=notes,
+            )
+            db.add(new_pricing)
+            db.commit()
+            success(f"Added pricing for {service}/{model}")
+
+        console.print(f"\n[green]✓ Pricing configured:[/green]")
+        console.print(f"  Input: ${input_cost}/M tokens")
+        console.print(f"  Output: ${output_cost}/M tokens")
+        console.print(f"  Effective: {eff_date.date()}")
+        console.print()
+
+    except Exception as e:
+        handle_error(e, "Failed to add pricing configuration")
 
 
 @app.command()
@@ -1417,6 +1867,212 @@ def beat():
         "beat",
         "--loglevel=info",
     ])
+
+
+# ============================================================================
+# PARENT-ESCAPE Command - Find Romantic Getaway Opportunities
+# ============================================================================
+
+@app.command("parent-escape")
+def parent_escape(
+    start_date: Optional[str] = typer.Option(
+        None,
+        help="Start date for search (YYYY-MM-DD). Default: today",
+    ),
+    end_date: Optional[str] = typer.Option(
+        None,
+        help="End date for search (YYYY-MM-DD). Default: 3 months from start",
+    ),
+    max_budget: float = typer.Option(
+        1200.0,
+        help="Maximum total trip budget in EUR (for 2 people)",
+    ),
+    min_nights: int = typer.Option(
+        2,
+        help="Minimum trip duration in nights",
+    ),
+    max_nights: int = typer.Option(
+        3,
+        help="Maximum trip duration in nights",
+    ),
+    max_train_hours: float = typer.Option(
+        6.0,
+        help="Maximum train travel time in hours",
+    ),
+    limit: int = typer.Option(
+        10,
+        help="Number of top opportunities to display",
+    ),
+    format: str = typer.Option(
+        "table",
+        help="Output format: 'table' or 'json'",
+    ),
+):
+    """
+    Find romantic getaway opportunities for parents.
+
+    Searches for train-accessible destinations from Munich with romantic features
+    like wine regions, spa hotels, and cultural events. Perfect for 2-3 night
+    weekend escapes!
+
+    Examples:
+        scout parent-escape
+        scout parent-escape --max-budget 1000 --min-nights 2 --max-nights 2
+        scout parent-escape --start-date 2025-04-01 --end-date 2025-06-30
+        scout parent-escape --max-train-hours 4.0 --limit 15
+        scout parent-escape --format json
+    """
+    console.print(Panel(
+        "[bold]🌹 Parent Escape Opportunity Finder[/bold]\n\n"
+        "Finding romantic getaways for parents...\n"
+        "Train-accessible destinations with wine, spa, and culture!",
+        border_style="magenta",
+    ))
+
+    try:
+        asyncio.run(_find_parent_escapes(
+            start_date,
+            end_date,
+            max_budget,
+            min_nights,
+            max_nights,
+            max_train_hours,
+            limit,
+            format,
+        ))
+    except Exception as e:
+        handle_error(e, "Parent escape search failed")
+
+
+async def _find_parent_escapes(
+    start_date_str: Optional[str],
+    end_date_str: Optional[str],
+    max_budget: float,
+    min_nights: int,
+    max_nights: int,
+    max_train_hours: float,
+    limit: int,
+    format: str,
+):
+    """Execute parent escape search."""
+    from app.ai.parent_escape_analyzer import ParentEscapeAnalyzer
+    from app.ai.claude_client import ClaudeClient
+
+    # Parse dates
+    if start_date_str:
+        start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+    else:
+        start = date.today()
+
+    if end_date_str:
+        end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+    else:
+        end = start + timedelta(days=90)
+
+    # Display search parameters
+    params_table = Table(show_header=True, header_style="bold magenta")
+    params_table.add_column("Parameter", style="cyan")
+    params_table.add_column("Value", style="green")
+
+    params_table.add_row("Date Range", f"{start} to {end}")
+    params_table.add_row("Max Budget", f"€{max_budget:.0f}")
+    params_table.add_row("Trip Duration", f"{min_nights}-{max_nights} nights")
+    params_table.add_row("Max Train Travel", f"{max_train_hours}h")
+    params_table.add_row("Results to Show", str(limit))
+
+    console.print("\n")
+    console.print(params_table)
+    console.print("\n")
+
+    # Initialize analyzer
+    claude_client = ClaudeClient()
+    analyzer = ParentEscapeAnalyzer(claude_client)
+
+    # Find opportunities
+    async with get_async_session_context() as db:
+        packages = await analyzer.find_escape_opportunities(
+            db=db,
+            date_range=(start, end),
+            max_budget=max_budget,
+            min_nights=min_nights,
+            max_nights=max_nights,
+            max_train_hours=max_train_hours,
+        )
+
+    if not packages:
+        warning("No parent escape opportunities found matching your criteria")
+        info("Try adjusting the date range, budget, or max train hours")
+        return
+
+    # Sort by AI score
+    sorted_packages = sorted(
+        packages,
+        key=lambda p: p.ai_score if p.ai_score else 0,
+        reverse=True
+    )
+
+    if format == "json":
+        # JSON output
+        escapes_data = []
+        for pkg in sorted_packages[:limit]:
+            escape_data = {
+                "destination": pkg.destination_city,
+                "country": pkg.flights_json.get("details", {}).get("country", "Unknown"),
+                "departure_date": pkg.departure_date.isoformat(),
+                "return_date": pkg.return_date.isoformat(),
+                "nights": pkg.num_nights,
+                "total_cost": float(pkg.total_price),
+                "escape_score": float(pkg.ai_score) if pkg.ai_score else None,
+                "romantic_appeal": pkg.itinerary_json.get("romantic_appeal") if pkg.itinerary_json else None,
+                "highlights": pkg.itinerary_json.get("highlights", []) if pkg.itinerary_json else [],
+                "recommended_experiences": pkg.itinerary_json.get("recommended_experiences", []) if pkg.itinerary_json else [],
+                "childcare_suggestions": pkg.itinerary_json.get("childcare_suggestions", []) if pkg.itinerary_json else [],
+            }
+            escapes_data.append(escape_data)
+
+        console.print(json.dumps(escapes_data, indent=2))
+    else:
+        # Table output
+        await analyzer.print_escape_summary(sorted_packages, show_top=limit)
+
+        # Show detailed information for top result
+        if sorted_packages:
+            top_package = sorted_packages[0]
+            console.print("\n")
+            console.print(Panel(
+                f"[bold cyan]🏆 Top Recommendation: {top_package.destination_city}[/bold cyan]\n\n"
+                f"[white]{top_package.ai_reasoning}[/white]",
+                border_style="cyan",
+                title="Best Romantic Getaway",
+            ))
+
+            # Show highlights if available
+            if top_package.itinerary_json and "highlights" in top_package.itinerary_json:
+                highlights = top_package.itinerary_json["highlights"]
+                if highlights:
+                    console.print("\n[bold magenta]Highlights:[/bold magenta]")
+                    for highlight in highlights[:3]:
+                        console.print(f"  • {highlight}")
+
+            # Show recommended experiences
+            if top_package.itinerary_json and "recommended_experiences" in top_package.itinerary_json:
+                experiences = top_package.itinerary_json["recommended_experiences"]
+                if experiences:
+                    console.print("\n[bold magenta]Recommended Experiences:[/bold magenta]")
+                    for exp in experiences[:3]:
+                        console.print(f"  • {exp}")
+
+            # Show childcare suggestions
+            if top_package.itinerary_json and "childcare_suggestions" in top_package.itinerary_json:
+                childcare = top_package.itinerary_json["childcare_suggestions"]
+                if childcare:
+                    console.print("\n[bold magenta]Childcare Options:[/bold magenta]")
+                    for option in childcare[:2]:
+                        console.print(f"  • {option}")
+
+            console.print("\n")
+
+    success(f"Found {len(packages)} parent escape opportunities!")
 
 
 if __name__ == "__main__":

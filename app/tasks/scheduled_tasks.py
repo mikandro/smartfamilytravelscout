@@ -101,20 +101,118 @@ def search_accommodations(self):
     Daily task to search for accommodations.
 
     Runs every day at 7 AM UTC.
-    Searches for family-friendly accommodations.
+    Searches for family-friendly accommodations in destinations with upcoming flights.
+    Uses AccommodationOrchestrator to coordinate multiple sources (Booking.com, Airbnb).
     """
     logger.info("Starting daily accommodation search task")
 
     try:
-        # TODO: Implement accommodation search logic
-        # Example:
-        # destinations = get_destinations_with_flights()
-        # for destination in destinations:
-        #     search_booking_com.delay(destination)
-        #     search_airbnb.delay(destination)
+        import asyncio
+        from datetime import date, timedelta
+        from sqlalchemy import and_
+        from app.orchestration.accommodation_orchestrator import AccommodationOrchestrator
+        from app.database import get_sync_session
+        from app.models.airport import Airport
+        from app.models.flight import Flight
+        from app.utils.date_utils import get_school_holiday_periods
 
-        logger.info("Daily accommodation search task completed successfully")
-        return {"status": "success", "task_id": self.request.id}
+        db = get_sync_session()
+        try:
+            # Get unique destination cities from flights in the next 6 months
+            future_date = datetime.now().date()
+            end_date = future_date + timedelta(days=180)
+
+            destinations_query = db.query(Flight.destination_airport_id).filter(
+                and_(
+                    Flight.departure_date >= future_date,
+                    Flight.departure_date <= end_date
+                )
+            ).distinct()
+
+            # Get actual destination cities
+            destinations = []
+            for (dest_airport_id,) in destinations_query:
+                airport = db.query(Airport).get(dest_airport_id)
+                if airport and airport.city:
+                    city = airport.city
+                    if city not in destinations:
+                        destinations.append(city)
+
+            logger.info(f"Found {len(destinations)} destination cities with flights")
+
+            if not destinations:
+                logger.info("No destinations found, using default list")
+                destinations = ["Barcelona", "Lisbon", "Prague"]
+
+            # Get upcoming school holiday periods for check-in dates
+            holiday_periods = get_school_holiday_periods(
+                start_date=future_date,
+                end_date=end_date
+            )
+
+            if not holiday_periods:
+                # Fallback: use next weekend
+                next_saturday = future_date + timedelta(days=(5 - future_date.weekday()) % 7)
+                holiday_periods = [(next_saturday, next_saturday + timedelta(days=7))]
+
+            # Limit to first 3 periods to avoid excessive scraping
+            holiday_periods = holiday_periods[:3]
+
+            logger.info(f"Will search accommodations for {len(holiday_periods)} date periods")
+
+            # Run async orchestrator in sync context
+            async def run_search():
+                orchestrator = AccommodationOrchestrator()
+                total_accommodations = 0
+                accommodations_by_city = {}
+
+                # Limit to 5 cities to avoid excessive load
+                for city in destinations[:5]:
+                    city_total = 0
+                    for check_in, check_out in holiday_periods:
+                        try:
+                            logger.info(f"Searching accommodations for {city}, {check_in} to {check_out}")
+                            accommodations = await orchestrator.search_all_sources(
+                                city=city,
+                                check_in=check_in,
+                                check_out=check_out,
+                                adults=2,
+                                children=2,
+                            )
+
+                            # Save to database
+                            if accommodations:
+                                stats = await orchestrator.save_to_database(accommodations)
+                                period_total = stats["inserted"] + stats["updated"]
+                                city_total += period_total
+                                total_accommodations += period_total
+                                logger.info(
+                                    f"Saved {stats['inserted']} new and updated {stats['updated']} "
+                                    f"accommodations for {city} ({check_in} to {check_out})"
+                                )
+
+                        except Exception as e:
+                            logger.error(f"Error searching accommodations for {city}: {e}", exc_info=True)
+                            continue
+
+                    accommodations_by_city[city] = city_total
+
+                return total_accommodations, accommodations_by_city
+
+            total, accommodations_by_city = asyncio.run(run_search())
+
+            logger.info(f"Daily accommodation search task completed successfully. Total: {total} accommodations")
+            return {
+                "status": "success",
+                "task_id": self.request.id,
+                "total_accommodations": total,
+                "accommodations_by_city": accommodations_by_city,
+                "destinations_searched": len(destinations[:5]),
+                "date_periods": len(holiday_periods),
+            }
+
+        finally:
+            db.close()
 
     except Exception as e:
         logger.error(f"Error in accommodation search task: {e}", exc_info=True)
