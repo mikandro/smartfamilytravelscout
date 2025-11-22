@@ -487,17 +487,46 @@ async def _run_pipeline(
         # Step 4: Scrape accommodations
         task4 = progress.add_task("[yellow]Scraping accommodations...", total=len(dest_codes))
 
-        # TODO: Implement accommodation scraping
-        # For now, we'll query existing accommodations
-        async with get_async_session_context() as db:
-            from app.models.accommodation import Accommodation
-            result = await db.execute(
-                select(func.count(Accommodation.id))
-            )
-            stats["accommodations"] = result.scalar() or 0
+        from app.orchestration.accommodation_orchestrator import AccommodationOrchestrator
 
-        progress.update(task4, completed=len(dest_codes))
-        info(f"Available accommodations: {stats['accommodations']}")
+        acc_orchestrator = AccommodationOrchestrator()
+        all_accommodations = []
+
+        for dest_code in dest_codes:
+            try:
+                # Get city name for destination
+                async with get_async_session_context() as db:
+                    result = await db.execute(
+                        select(Airport).where(Airport.iata_code == dest_code)
+                    )
+                    dest_airport = result.scalar_one_or_none()
+                    city_name = dest_airport.city if dest_airport else dest_code
+
+                # Use first date range for accommodation search
+                if date_ranges:
+                    check_in, check_out = date_ranges[0]
+
+                    accommodations = await acc_orchestrator.search_all_sources(
+                        city=city_name,
+                        check_in=check_in,
+                        check_out=check_out,
+                        adults=2,
+                        children=2,
+                    )
+
+                    if accommodations:
+                        save_stats = await acc_orchestrator.save_to_database(accommodations)
+                        all_accommodations.extend(accommodations)
+                        stats["accommodations"] += save_stats["inserted"] + save_stats["updated"]
+
+                progress.update(task4, advance=1)
+
+            except Exception as e:
+                logger.error(f"Error scraping accommodations for {dest_code}: {e}")
+                progress.update(task4, advance=1)
+                continue
+
+        info(f"Found {stats['accommodations']} accommodations")
 
         # Step 5: Match packages
         task5 = progress.add_task("[cyan]Generating trip packages...", total=None)
@@ -849,19 +878,164 @@ def config_set(
 # TEST-SCRAPER Command
 # ============================================================================
 
+@app.command("scrape-accommodations")
+def scrape_accommodations(
+    city: str = typer.Option(
+        ...,
+        help="Destination city (e.g., Barcelona, Lisbon)",
+    ),
+    check_in: Optional[str] = typer.Option(
+        None,
+        help="Check-in date (YYYY-MM-DD). Default: 60 days from today",
+    ),
+    check_out: Optional[str] = typer.Option(
+        None,
+        help="Check-out date (YYYY-MM-DD). Default: 7 days after check-in",
+    ),
+    adults: int = typer.Option(
+        2,
+        help="Number of adults",
+    ),
+    children: int = typer.Option(
+        2,
+        help="Number of children",
+    ),
+    save: bool = typer.Option(
+        True,
+        help="Save results to database",
+    ),
+):
+    """
+    Search for accommodations using all available scrapers (Booking.com, Airbnb).
+
+    Examples:
+        scout scrape-accommodations --city Barcelona
+        scout scrape-accommodations --city Lisbon --check-in 2025-07-01 --check-out 2025-07-08
+        scout scrape-accommodations --city Prague --adults 2 --children 2
+    """
+    console.print(Panel(
+        "[bold]Accommodation Search (All Sources)[/bold]",
+        border_style="green",
+    ))
+
+    try:
+        asyncio.run(_run_accommodation_scrape(city, check_in, check_out, adults, children, save))
+    except Exception as e:
+        handle_error(e, "Accommodation scraping failed")
+
+
+async def _run_accommodation_scrape(
+    city: str,
+    check_in_str: Optional[str],
+    check_out_str: Optional[str],
+    adults: int,
+    children: int,
+    save: bool,
+):
+    """Execute accommodation scraping."""
+    from datetime import date, timedelta
+    from app.orchestration.accommodation_orchestrator import AccommodationOrchestrator
+
+    # Parse dates
+    if check_in_str:
+        check_in_date = datetime.strptime(check_in_str, "%Y-%m-%d").date()
+    else:
+        check_in_date = date.today() + timedelta(days=60)
+
+    if check_out_str:
+        check_out_date = datetime.strptime(check_out_str, "%Y-%m-%d").date()
+    else:
+        check_out_date = check_in_date + timedelta(days=7)
+
+    # Display search parameters
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Parameter", style="cyan")
+    table.add_column("Value", style="green")
+
+    table.add_row("City", city.title())
+    table.add_row("Check-in", check_in_date.strftime("%Y-%m-%d"))
+    table.add_row("Check-out", check_out_date.strftime("%Y-%m-%d"))
+    table.add_row("Adults", str(adults))
+    table.add_row("Children", str(children))
+    table.add_row("Save to DB", "Yes" if save else "No")
+
+    console.print("\n")
+    console.print(table)
+    console.print("\n")
+
+    # Run orchestrator
+    orchestrator = AccommodationOrchestrator()
+    accommodations = await orchestrator.search_all_sources(
+        city=city,
+        check_in=check_in_date,
+        check_out=check_out_date,
+        adults=adults,
+        children=children,
+    )
+
+    # Display results
+    if accommodations:
+        success(f"Found {len(accommodations)} accommodations")
+
+        # Create results table
+        results_table = Table(show_header=True, header_style="bold magenta")
+        results_table.add_column("Name", style="cyan", no_wrap=False, max_width=40)
+        results_table.add_column("Type", style="yellow")
+        results_table.add_column("Price/Night", style="green", justify="right")
+        results_table.add_column("Rating", style="magenta", justify="right")
+        results_table.add_column("Bedrooms", style="blue", justify="center")
+        results_table.add_column("Source", style="white")
+
+        # Sort by price
+        sorted_accommodations = sorted(
+            accommodations,
+            key=lambda x: x.get("price_per_night", 9999)
+        )
+
+        for acc in sorted_accommodations[:15]:  # Show top 15
+            price = acc.get("price_per_night", 0)
+            rating = acc.get("rating")
+            rating_str = f"{rating:.1f}" if rating else "N/A"
+            bedrooms = acc.get("bedrooms")
+            bedrooms_str = str(bedrooms) if bedrooms else "N/A"
+
+            results_table.add_row(
+                acc.get("name", "Unknown")[:40],
+                acc.get("type", "hotel").title(),
+                f"€{price:.0f}",
+                rating_str,
+                bedrooms_str,
+                acc.get("source", "unknown"),
+            )
+
+        console.print("\n")
+        console.print(results_table)
+        console.print("\n")
+
+        if save:
+            info("Saving results to database...")
+            stats = await orchestrator.save_to_database(accommodations)
+            success(
+                f"Database save complete: {stats['inserted']} inserted, "
+                f"{stats['updated']} updated, {stats['skipped']} skipped"
+            )
+    else:
+        warning("No accommodations found")
+
+
 @app.command("test-scraper")
 def test_scraper(
     scraper: str = typer.Argument(
         ...,
-        help="Scraper name: 'kiwi', 'skyscanner', 'ryanair', 'wizzair', 'booking'",
+        help="Scraper name: 'kiwi', 'skyscanner', 'ryanair', 'wizzair', 'booking', 'airbnb'",
     ),
     origin: str = typer.Option(
         "MUC",
-        help="Origin airport IATA code",
+        help="Origin airport IATA code (for flight scrapers)",
     ),
     dest: str = typer.Option(
         "LIS",
-        help="Destination airport IATA code",
+        help="Destination airport IATA code or city name",
     ),
     save: bool = typer.Option(
         False,
@@ -875,6 +1049,8 @@ def test_scraper(
         scout test-scraper kiwi --origin MUC --dest LIS
         scout test-scraper ryanair --save
         scout test-scraper skyscanner --origin VIE --dest BCN
+        scout test-scraper booking --dest Barcelona
+        scout test-scraper airbnb --dest Lisbon
     """
     console.print(Panel(
         f"[bold]Testing {scraper.upper()} Scraper[/bold]",
@@ -940,9 +1116,33 @@ async def _test_scraper(scraper: str, origin: str, dest: str, save: bool):
                 departure_date=dep_date,
                 return_date=ret_date,
             )
+        elif scraper.lower() == "booking":
+            from app.scrapers.booking_scraper import BookingClient
+            async with BookingClient(headless=True) as scraper_instance:
+                results = await scraper_instance.search(
+                    city=dest,  # dest is the city name for accommodation scrapers
+                    check_in=dep_date,
+                    check_out=ret_date,
+                    adults=2,
+                    children_ages=[3, 6],
+                    limit=20,
+                )
+                results = scraper_instance.filter_family_friendly(results)
+        elif scraper.lower() == "airbnb":
+            from app.scrapers.airbnb_scraper import AirbnbClient
+            scraper_instance = AirbnbClient()
+            results = await scraper_instance.search(
+                city=dest,  # dest is the city name for accommodation scrapers
+                check_in=dep_date,
+                check_out=ret_date,
+                adults=2,
+                children=2,
+                max_listings=20,
+            )
+            results = scraper_instance.filter_family_suitable(results)
         else:
             console.print(f"[red]Unknown scraper: {scraper}[/red]")
-            console.print("[yellow]Available scrapers: kiwi, skyscanner, ryanair, wizzair[/yellow]")
+            console.print("[yellow]Available scrapers: kiwi, skyscanner, ryanair, wizzair, booking, airbnb[/yellow]")
             raise typer.Exit(code=1)
 
         progress.update(task, completed=1)
@@ -951,19 +1151,42 @@ async def _test_scraper(scraper: str, origin: str, dest: str, save: bool):
     if results:
         success(f"Found {len(results)} results")
 
-        table = Table(show_header=True, header_style="bold magenta")
-        table.add_column("Route", style="cyan")
-        table.add_column("Airline", style="yellow")
-        table.add_column("Price/Person", style="green", justify="right")
-        table.add_column("Direct", style="magenta")
+        # Check if results are flights or accommodations
+        is_accommodation = scraper.lower() in ["booking", "airbnb"]
 
-        for result in results[:10]:
-            table.add_row(
-                f"{result.get('origin_airport', origin)} → {result.get('destination_airport', dest)}",
-                result.get("airline", "N/A"),
-                f"€{result.get('price_per_person', 0):.0f}",
-                "✓" if result.get("direct_flight", False) else "✗",
-            )
+        if is_accommodation:
+            # Display accommodation results
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Name", style="cyan", max_width=40)
+            table.add_column("Type", style="yellow")
+            table.add_column("Price/Night", style="green", justify="right")
+            table.add_column("Rating", style="magenta", justify="right")
+
+            for result in results[:10]:
+                rating = result.get("rating")
+                rating_str = f"{rating:.1f}" if rating else "N/A"
+
+                table.add_row(
+                    result.get("name", "Unknown")[:40],
+                    result.get("type", "hotel").title(),
+                    f"€{result.get('price_per_night', 0):.0f}",
+                    rating_str,
+                )
+        else:
+            # Display flight results
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Route", style="cyan")
+            table.add_column("Airline", style="yellow")
+            table.add_column("Price/Person", style="green", justify="right")
+            table.add_column("Direct", style="magenta")
+
+            for result in results[:10]:
+                table.add_row(
+                    f"{result.get('origin_airport', origin)} → {result.get('destination_airport', dest)}",
+                    result.get("airline", "N/A"),
+                    f"€{result.get('price_per_person', 0):.0f}",
+                    "✓" if result.get("direct_flight", False) else "✗",
+                )
 
         console.print("\n")
         console.print(table)
