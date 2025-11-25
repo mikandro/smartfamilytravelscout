@@ -24,6 +24,7 @@ from tenacity import (
 
 from app.models.api_cost import ApiCost
 from app.models.model_pricing import ModelPricing
+from app.utils.retry import redis_retry
 
 logger = logging.getLogger(__name__)
 
@@ -356,9 +357,10 @@ class ClaudeClient:
         cache_hash = hashlib.sha256(cache_input.encode()).hexdigest()
         return f"claude:response:{cache_hash}"
 
+    @redis_retry(max_attempts=3, min_wait_seconds=1, max_wait_seconds=5)
     async def _get_cached_response(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """
-        Retrieve a cached response from Redis.
+        Retrieve a cached response from Redis with automatic retry logic.
 
         Args:
             cache_key: Redis cache key
@@ -379,9 +381,10 @@ class ClaudeClient:
             self._cache_enabled = False
         return None
 
+    @redis_retry(max_attempts=3, min_wait_seconds=1, max_wait_seconds=5)
     async def _cache_response(self, cache_key: str, response: Dict[str, Any]) -> None:
         """
-        Store a response in Redis cache.
+        Store a response in Redis cache with automatic retry logic.
 
         Args:
             cache_key: Redis cache key
@@ -546,9 +549,10 @@ class ClaudeClient:
                 logger.warning(f"Failed to log API error: {e}")
                 await self.db_session.rollback()
 
+    @redis_retry(max_attempts=3, min_wait_seconds=1, max_wait_seconds=5)
     async def clear_cache(self, pattern: str = "claude:response:*") -> int:
         """
-        Clear cached responses matching a pattern.
+        Clear cached responses matching a pattern with automatic retry logic.
 
         Args:
             pattern: Redis key pattern to match (default: all Claude responses)
@@ -576,9 +580,10 @@ class ClaudeClient:
             self._cache_enabled = False
             return 0
 
+    @redis_retry(max_attempts=3, min_wait_seconds=1, max_wait_seconds=5)
     async def get_cache_stats(self) -> Dict[str, int]:
         """
-        Get statistics about cached responses.
+        Get statistics about cached responses with automatic retry logic.
 
         Returns:
             Dictionary with cache statistics including cache availability

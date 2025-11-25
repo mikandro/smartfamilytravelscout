@@ -29,6 +29,7 @@ from app.utils.rate_limiter import (
     RateLimitExceededError,
     get_kiwi_rate_limiter,
 )
+from app.utils.retry import api_retry
 
 logger = logging.getLogger(__name__)
 
@@ -89,17 +90,16 @@ class KiwiClient:
         self.timeout = timeout
         self.logger = logging.getLogger(f"{__name__}.KiwiClient")
 
+    @api_retry(max_attempts=3, min_wait_seconds=2, max_wait_seconds=10)
     async def _make_request(
         self,
         params: Dict[str, any],
-        max_retries: int = 3,
     ) -> Dict:
         """
-        Make HTTP request to Kiwi API with retry logic.
+        Make HTTP request to Kiwi API with automatic retry logic.
 
         Args:
             params: Query parameters for the API request
-            max_retries: Maximum number of retry attempts (default: 3)
 
         Returns:
             Dict: Parsed JSON response
@@ -119,63 +119,42 @@ class KiwiClient:
         url = f"{self.BASE_URL}{self.SEARCH_ENDPOINT}"
         headers = {"apikey": self.api_key}
 
-        # Retry logic with exponential backoff
-        for attempt in range(1, max_retries + 1):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        url,
-                        params=params,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout),
-                    ) as response:
-                        # Record successful API call
-                        self.rate_limiter.record_request()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+            ) as response:
+                # Record successful API call
+                self.rate_limiter.record_request()
 
-                        # Log request details
-                        query_string = urlencode(params)
-                        self.logger.info(
-                            f"API request: {url}?{query_string} (attempt {attempt}/{max_retries})"
-                        )
+                # Log request details
+                query_string = urlencode(params)
+                self.logger.info(f"API request: {url}?{query_string}")
 
-                        if response.status == 200:
-                            data = await response.json()
-                            self.logger.info(
-                                f"API response: {len(data.get('data', []))} flights found"
-                            )
-                            return data
-                        elif response.status == 400:
-                            error_msg = await response.text()
-                            self.logger.error(f"Bad request (400): {error_msg}")
-                            raise KiwiAPIError(f"Bad request: {error_msg}")
-                        elif response.status == 401:
-                            raise KiwiAPIError("Unauthorized: Invalid API key")
-                        elif response.status == 429:
-                            raise RateLimitExceededError("API rate limit exceeded by server")
-                        else:
-                            error_msg = await response.text()
-                            self.logger.warning(
-                                f"API error (status {response.status}): {error_msg}"
-                            )
-                            raise KiwiAPIError(
-                                f"API request failed with status {response.status}: {error_msg}"
-                            )
-
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                if attempt >= max_retries:
-                    self.logger.error(
-                        f"Request failed after {max_retries} attempts: {e}",
-                        exc_info=True,
+                if response.status == 200:
+                    data = await response.json()
+                    self.logger.info(
+                        f"API response: {len(data.get('data', []))} flights found"
                     )
-                    raise
-
-                # Exponential backoff: 2s, 4s, 8s
-                wait_time = 2 ** attempt
-                self.logger.warning(
-                    f"Request failed (attempt {attempt}/{max_retries}): {e}. "
-                    f"Retrying in {wait_time}s..."
-                )
-                await asyncio.sleep(wait_time)
+                    return data
+                elif response.status == 400:
+                    error_msg = await response.text()
+                    self.logger.error(f"Bad request (400): {error_msg}")
+                    raise KiwiAPIError(f"Bad request: {error_msg}")
+                elif response.status == 401:
+                    raise KiwiAPIError("Unauthorized: Invalid API key")
+                elif response.status == 429:
+                    raise RateLimitExceededError("API rate limit exceeded by server")
+                else:
+                    error_msg = await response.text()
+                    self.logger.warning(
+                        f"API error (status {response.status}): {error_msg}"
+                    )
+                    raise KiwiAPIError(
+                        f"API request failed with status {response.status}: {error_msg}"
+                    )
 
     async def search_flights(
         self,

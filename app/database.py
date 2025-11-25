@@ -20,6 +20,7 @@ from tenacity import (
 
 from app.config import settings
 from app.exceptions import DatabaseConnectionError
+from app.utils.retry import database_retry
 
 # Import Base from models to ensure all models are registered
 from app.models.base import Base  # noqa: F401
@@ -218,7 +219,7 @@ def reset_db_sync() -> None:
 )
 async def check_db_connection() -> bool:
     """
-    Check if database connection is healthy.
+    Check if database connection is healthy with automatic retry logic.
 
     Retries up to 5 times with exponential backoff (2-10 seconds).
     This helps handle race conditions during container startup when
