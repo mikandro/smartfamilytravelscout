@@ -25,6 +25,80 @@ poetry run scout test-scraper ryanair --origin MUC --dest PRG
 
 The default scrapers work out of the box - no configuration needed!
 
+<<<<<<< HEAD
+## Controlling Scrapers
+
+You can enable or disable specific scrapers both via configuration and at runtime:
+
+### Configuration-based Control (Persistent)
+
+Set environment variables in your `.env` file:
+
+```bash
+# Enable/disable specific scrapers (default: all enabled)
+USE_KIWI_SCRAPER=false        # Disable Kiwi.com (requires API key anyway)
+USE_SKYSCANNER_SCRAPER=true   # Enable Skyscanner (free)
+USE_RYANAIR_SCRAPER=true      # Enable Ryanair (free)
+USE_WIZZAIR_SCRAPER=false     # Disable WizzAir
+
+# Or use CLI
+poetry run scout config set use_wizzair_scraper false
+```
+
+### Runtime Control (Temporary)
+
+Override configuration for a single command:
+
+```bash
+# Disable specific scrapers for this run only
+poetry run scout scrape --origin MUC --destination LIS --disable-scraper wizzair
+
+# Disable multiple scrapers
+poetry run scout run --disable-scraper wizzair --disable-scraper ryanair
+
+# Enable a normally-disabled scraper (if you have API key)
+poetry run scout scrape --origin MUC --destination BCN --enable-scraper kiwi
+
+# Mix enable and disable
+poetry run scout run --enable-scraper kiwi --disable-scraper skyscanner
+```
+
+### Check Scraper Status
+
+```bash
+# View which scrapers are currently enabled
+poetry run scout config show
+```
+
+This feature is useful when:
+- A scraper is temporarily broken or rate-limited
+- You want to test specific scrapers in isolation
+- You need to reduce scraping time by using fewer sources
+- You want to avoid API costs from premium scrapers
+=======
+## CLI Command Structure
+
+SmartFamilyTravelScout uses a clear, hierarchical command structure:
+
+**Primary Commands:**
+- `scout scrape` - Quick flight searches (supports all scrapers: skyscanner, ryanair, wizzair, kiwi)
+- `scout pipeline` - Complete end-to-end travel search pipeline (scrape → match → score → notify)
+- `scout deals` - View top AI-scored travel deals (high-value recommendations, score >= 70)
+- `scout packages` - View all trip packages (broader results, includes unscored packages)
+- `scout stats` - View system statistics and scraping history
+- `scout health` - Check application health and configuration
+
+**Deprecated Commands (backward compatibility, will be removed in future versions):**
+- `scout run` → Use `scout pipeline` instead
+- `scout kiwi-search` → Use `scout scrape --scraper kiwi` instead
+
+**Command Philosophy:**
+- `scrape` = quick manual searches for specific routes
+- `pipeline` = automated full-stack deal discovery
+- `deals` = BEST packages (AI-vetted, high scores)
+- `packages` = ALL packages (complete view, includes pending AI analysis)
+>>>>>>> origin/main
+
 ## Development Commands
 
 ### Setup & Installation
@@ -58,14 +132,23 @@ docker-compose up -d
 # CLI commands (using 'scout')
 poetry run scout health          # Check system health
 poetry run scout scrape --origin MUC --destination LIS  # Quick scrape (no API key needed!)
-poetry run scout run             # Run full pipeline
-poetry run scout deals           # View top deals
+poetry run scout scrape-accommodations --city Barcelona  # Scrape accommodations
+poetry run scout pipeline        # Run complete end-to-end pipeline
+poetry run scout deals           # View top AI-scored deals (score >= 70)
+poetry run scout packages        # View all trip packages
 poetry run scout stats           # Show statistics
 
 # Quick start with default (free) scrapers - NO API KEY NEEDED:
 poetry run scout scrape --origin MUC --destination BCN
 poetry run scout scrape --origin VIE --destination LIS --scraper skyscanner
+poetry run scout scrape --origin MUC --destination PRG --scraper kiwi  # Requires KIWI_API_KEY
 poetry run scout test-scraper skyscanner --origin MUC --dest PRG
+
+# Accommodation scraping:
+poetry run scout scrape-accommodations --city Lisbon
+poetry run scout scrape-accommodations --city Barcelona --check-in 2025-07-01 --check-out 2025-07-08
+poetry run scout test-scraper booking --dest Barcelona
+poetry run scout test-scraper airbnb --dest Lisbon
 ```
 
 ### Testing
@@ -131,7 +214,22 @@ poetry run ruff check app/
 
 # Type checking
 poetry run mypy app/
+
+# Pre-commit hooks (run automatically on git commit)
+poetry run pre-commit install          # Install hooks (one-time setup)
+poetry run pre-commit run --all-files  # Run manually on all files
+poetry run pre-commit run              # Run on staged files only
+
+# Security scanning
+poetry run bandit -r app/
 ```
+
+**Pre-commit Hook Enforcement:**
+- All TODOs must reference a GitHub issue: `# TODO(#123): description`
+- Code is auto-formatted with Black and Ruff
+- Security vulnerabilities are detected with Bandit
+- YAML/JSON/TOML files are validated
+- Trailing whitespace and line endings are fixed
 
 ## Architecture Overview
 
@@ -156,7 +254,10 @@ poetry run mypy app/
 - Tourism scrapers: Barcelona, Prague, Lisbon city events
 
 **Orchestration** (`app/orchestration/`): Coordinates multiple scrapers and data sources
-- `flight_orchestrator.py`: Runs all flight scrapers in parallel, deduplicates results
+- `flight_orchestrator.py`: Runs all flight scrapers in parallel, deduplicates results, tracks failures
+  - **Failure Threshold**: Raises `ScraperFailureThresholdExceeded` if >50% (configurable) of scrapers fail
+  - Prevents silent failures that mask critical system issues
+- `accommodation_orchestrator.py`: Runs all accommodation scrapers in parallel, deduplicates results
 - `accommodation_matcher.py`: Matches accommodations to flights, generates trip packages
 - `event_matcher.py`: Matches local events to trip packages
 
@@ -178,7 +279,13 @@ poetry run mypy app/
 
 **API** (`app/api/`): FastAPI REST endpoints
 - `main.py`: FastAPI app with lifespan management
-- `routes/web.py`: Web dashboard routes
+- `routes/web.py`: Web dashboard routes (HTML/Jinja2)
+- `routes/v1/`: API v1 endpoints (JSON REST API)
+  - `version.py`: API version information
+  - `health.py`: Health check endpoints
+  - `deals.py`: Deal listing and details
+  - `stats.py`: Statistics endpoints
+- **API Versioning**: URL-based versioning (`/api/v1/...`). See `docs/API_VERSIONING.md`
 
 **Notifications** (`app/notifications/`): Email notifications
 - `email_sender.py`: SMTP email sender with HTML templates
@@ -222,6 +329,9 @@ Use `PromptLoader` to load templates: `load_prompt("deal_analysis")`
 All settings use Pydantic Settings in `app/config.py`:
 - Required: `DATABASE_URL`, `REDIS_URL`, `ANTHROPIC_API_KEY`, `SECRET_KEY`
 - Optional: `KIWI_API_KEY`, `EVENTBRITE_API_KEY`, SMTP config, feature flags
+- Scraper settings:
+  - `SCRAPER_FAILURE_THRESHOLD` (default: 0.5 = 50%): Maximum allowed scraper failure rate before aborting
+  - Set to 0.0 to abort on any failure, 1.0 to never abort
 - Access via: `from app.config import settings`
 
 ## Important Implementation Details
@@ -250,14 +360,244 @@ def celery_task():
         db.close()
 ```
 
+### Database Session Management
+
+**CRITICAL: Always use proper session management patterns to prevent connection pool exhaustion and resource leaks.**
+
+The codebase provides three standardized session management approaches depending on the context:
+
+#### 1. FastAPI Routes: Dependency Injection
+
+**ALWAYS use FastAPI's `Depends` mechanism for automatic session lifecycle management:**
+
+```python
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_async_session
+
+@router.get("/deals")
+async def get_deals(db: AsyncSession = Depends(get_async_session)):
+    """FastAPI handles session creation, commit, and cleanup automatically."""
+    result = await db.execute(select(TripPackage))
+    deals = result.scalars().all()
+    return deals
+```
+
+**Benefits:**
+- Automatic session creation and cleanup
+- Auto-commit on success, auto-rollback on exception
+- No manual session management needed
+- Prevents connection leaks
+
+**❌ NEVER do this in FastAPI routes:**
+```python
+# WRONG - Manual session creation in routes
+async with AsyncSessionLocal() as db:  # Don't do this!
+    ...
+```
+
+#### 2. CLI Commands & Background Tasks: Async Context Managers
+
+**Use `get_async_session_context()` for explicit session lifecycle control:**
+
+```python
+from app.database import get_async_session_context
+
+async def cli_command():
+    """CLI commands should use context manager for proper cleanup."""
+    async with get_async_session_context() as db:
+        # Query data
+        flights = await db.execute(select(Flight))
+
+        # Modify data
+        package = TripPackage(...)
+        db.add(package)
+
+        # Auto-commit on success, auto-rollback on exception
+    # Session automatically closed here
+```
+
+**Benefits:**
+- Explicit session lifecycle (clear ownership)
+- Guaranteed cleanup even on exceptions
+- Auto-commit/rollback handling
+
+**❌ NEVER do this in CLI/tasks:**
+```python
+# WRONG - Sync session in async context
+async with SessionLocal() as db:  # SessionLocal is SYNC, not ASYNC!
+    ...
+
+# WRONG - Direct instantiation without context manager
+db = AsyncSessionLocal()  # Risk of connection leaks!
+try:
+    ...
+finally:
+    await db.close()  # Manual cleanup is error-prone
+```
+
+#### 3. Utility Functions & Services: Require Session Parameter
+
+**Utility functions should NEVER create sessions internally. Always accept session as a parameter:**
+
+```python
+async def save_flights(
+    flights: List[Dict],
+    db: AsyncSession,  # ✓ REQUIRED parameter
+) -> int:
+    """
+    Save flights to database.
+
+    Args:
+        flights: List of flight dictionaries
+        db: Database session (caller owns lifecycle)
+
+    Returns:
+        Number of flights saved
+    """
+    for flight_data in flights:
+        flight = Flight(**flight_data)
+        db.add(flight)
+
+    await db.commit()
+    return len(flights)
+
+# Usage in CLI
+async with get_async_session_context() as db:
+    count = await save_flights(flights, db)
+
+# Usage in FastAPI route
+@router.post("/flights")
+async def create_flights(
+    flights: List[Dict],
+    db: AsyncSession = Depends(get_async_session)
+):
+    count = await save_flights(flights, db)
+    return {"saved": count}
+```
+
+**Benefits:**
+- Clear ownership (caller controls session lifecycle)
+- Easier testing (can inject mock sessions)
+- Prevents nested session creation
+- No hidden resource management
+
+**❌ NEVER do this in utility functions:**
+```python
+# WRONG - Creating session internally
+async def save_flights(flights: List[Dict]) -> int:
+    async with AsyncSessionLocal() as db:  # Hidden session creation!
+        ...
+    # Caller has no control over session lifecycle
+```
+
+**✓ Acceptable compromise (for backward compatibility):**
+```python
+async def save_flights(
+    flights: List[Dict],
+    db: Optional[AsyncSession] = None,  # Optional for convenience
+) -> int:
+    """If no session provided, create one with proper context manager."""
+    if db is not None:
+        # Use provided session
+        return await _save_flights_impl(flights, db)
+
+    # Create session using context manager (not direct instantiation)
+    from app.database import get_async_session_context
+    async with get_async_session_context() as session:
+        return await _save_flights_impl(flights, session)
+```
+
+#### Session Management Anti-Patterns
+
+**❌ NEVER:**
+1. Use `SessionLocal()` (sync) in `async` context
+2. Create sessions with direct `AsyncSessionLocal()` instantiation (use context managers)
+3. Create sessions inside utility functions (accept as parameter)
+4. Forget to close sessions (use context managers or dependency injection)
+5. Mix sync and async sessions in the same code path
+
+**✓ ALWAYS:**
+1. Use `Depends(get_async_session)` in FastAPI routes
+2. Use `async with get_async_session_context()` in CLI/tasks
+3. Accept `db: AsyncSession` as parameter in utility functions
+4. Let context managers or FastAPI handle commits/rollbacks
+5. Use async sessions for async code, sync sessions for sync code (Celery/Alembic)
+
+#### Common Patterns
+
+**Pattern: Multiple operations in a transaction**
+```python
+async with get_async_session_context() as db:
+    # All operations in single transaction
+    flight = Flight(...)
+    db.add(flight)
+
+    package = TripPackage(...)
+    db.add(package)
+
+    # Auto-commit on success
+```
+
+**Pattern: Conditional session creation**
+```python
+async def process_data(data: List[Dict], db: Optional[AsyncSession] = None):
+    """Prefer accepting session, but create if needed."""
+    if db is not None:
+        return await _process_impl(data, db)
+
+    async with get_async_session_context() as session:
+        return await _process_impl(data, session)
+```
+
+**Pattern: FastAPI route with multiple DB calls**
+```python
+@router.get("/dashboard")
+async def dashboard(db: AsyncSession = Depends(get_async_session)):
+    # Single session for all queries in this request
+    flights = await db.execute(select(Flight))
+    packages = await db.execute(select(TripPackage))
+
+    # FastAPI commits and closes session automatically
+    return {"flights": flights, "packages": packages}
+```
+
 ### Scraper Design Pattern
 
 All scrapers follow this pattern:
 1. Inherit from base or implement `scrape_flights()` / `scrape_accommodations()`
 2. Return list of dicts with standardized fields
 3. Handle retries with `@retry` decorator from `app.utils.retry`
-4. Log all errors but don't raise (fail gracefully)
+4. **Exception Handling**: Log errors and re-raise exceptions (orchestrator handles failure tracking)
+   - The `FlightOrchestrator` tracks failures via `asyncio.gather(..., return_exceptions=True)`
+   - Raises `ScraperFailureThresholdExceeded` if failure rate exceeds configured threshold
 5. Track scraping job status in `scraping_jobs` table
+
+### TODO Policy
+
+All TODO comments must reference a GitHub issue to prevent technical debt accumulation:
+
+**Format:** `# TODO(#123): Brief description of what needs to be done`
+
+**Example:**
+```python
+# TODO(#59): Implement price update logic
+# tracked_flights = get_tracked_flights()
+```
+
+**Enforcement:**
+- Pre-commit hooks automatically reject TODOs without issue references
+- This ensures all incomplete features are tracked and prioritized
+- Obsolete TODOs should be removed, not left in code
+
+### Exception Handling
+
+**Custom Exceptions** (`app/exceptions.py`):
+- `ScraperFailureThresholdExceeded`: Raised when too many scrapers fail during orchestration
+  - Contains failure statistics: `total_scrapers`, `failed_scrapers`, `failure_rate`, `threshold`
+  - Signals critical system issues requiring immediate attention
+- `ScraperException`: Base exception for scraper-related errors
+- Other domain-specific exceptions: `ConfigurationException`, `DatabaseException`, `AIServiceException`
 
 ### Cost Tracking
 

@@ -156,6 +156,12 @@ class AccommodationMatcher:
                 # Get destination city from first flight
                 destination_city = flights[0].destination_airport.city
 
+                # Update progress with current city
+                progress.update(
+                    task_id,
+                    description=f"[cyan]Processing {destination_city}... ({len(flights)} flights)",
+                )
+
                 # Get accommodations in this city
                 accom_stmt = select(Accommodation).where(
                     Accommodation.destination_city == destination_city
@@ -165,6 +171,9 @@ class AccommodationMatcher:
 
                 if not accommodations:
                     logger.debug(f"No accommodations found for {destination_city}")
+                    console.print(
+                        f"[dim yellow]⚠ {destination_city}: No accommodations available[/dim yellow]"
+                    )
                     progress.update(task_id, advance=1)
                     continue
 
@@ -173,7 +182,14 @@ class AccommodationMatcher:
                     db, accommodations
                 )
 
+                # Log start of matching for this city
+                logger.info(
+                    f"Matching {len(flights)} flights with {len(accommodations)} "
+                    f"accommodations in {destination_city}"
+                )
+
                 # Create all valid combinations
+                packages_for_city = 0
                 for flight in flights:
                     num_nights = (flight.return_date - flight.departure_date).days
 
@@ -191,6 +207,13 @@ class AccommodationMatcher:
                         # Create package
                         package = self.create_trip_package(flight, accommodation, cost)
                         packages.append(package)
+                        packages_for_city += 1
+
+                # Log completion for this city
+                logger.info(f"✓ {destination_city}: Created {packages_for_city} packages")
+                console.print(
+                    f"[dim green]✓ {destination_city}: {packages_for_city} packages created[/dim green]"
+                )
 
                 progress.update(task_id, advance=1)
 

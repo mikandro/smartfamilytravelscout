@@ -7,11 +7,20 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from sqlalchemy import create_engine, event, pool
+from sqlalchemy import create_engine, event, pool, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
 
 from app.config import settings
+from app.exceptions import DatabaseConnectionError
+from app.utils.retry import database_retry
 
 # Import Base from models to ensure all models are registered
 from app.models.base import Base  # noqa: F401
@@ -201,21 +210,37 @@ def reset_db_sync() -> None:
     logger.info("Database reset complete (sync)")
 
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(Exception),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 async def check_db_connection() -> bool:
     """
-    Check if database connection is healthy.
+    Check if database connection is healthy with automatic retry logic.
+
+    Retries up to 5 times with exponential backoff (2-10 seconds).
+    This helps handle race conditions during container startup when
+    PostgreSQL might not be ready yet.
 
     Returns:
         bool: True if connection is healthy, False otherwise
+
+    Raises:
+        Exception: If all retry attempts fail
     """
     try:
         async with async_engine.connect() as conn:
-            await conn.execute("SELECT 1")
+            await conn.execute(text("SELECT 1"))
         logger.info("Database connection is healthy")
         return True
     except Exception as e:
-        logger.error(f"Database connection failed: {e}")
-        return False
+        # Enhanced logging with masked credentials (Issue #57)
+        logger.error(f"Database connection check failed: {e}", exc_info=True)
+        logger.error(f"Database URL (masked): {settings.database_url.replace(settings.database_url.password or '', '***')}")
+        raise  # Re-raise to trigger retry
 
 
 async def close_db_connections() -> None:
@@ -246,7 +271,10 @@ async def lifespan_db():
             logger.info("Database is ready")
         else:
             logger.error("Database connection failed during startup")
-            raise RuntimeError("Database connection failed")
+            raise DatabaseConnectionError(
+                connection_type="async (asyncpg)",
+                error_details="Failed to connect during application startup"
+            )
 
         yield
 

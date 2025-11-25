@@ -20,14 +20,17 @@ from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple
 
+from redis.asyncio import Redis
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich.table import Table
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_async_session_context
+from app.exceptions import ScraperFailureThresholdExceeded
 from app.models.airport import Airport
 from app.models.flight import Flight
 from app.models.scraping_job import ScrapingJob
@@ -35,6 +38,9 @@ from app.scrapers.kiwi_scraper import KiwiClient
 from app.scrapers.ryanair_scraper import RyanairScraper
 from app.scrapers.skyscanner_scraper import SkyscannerScraper
 from app.scrapers.wizzair_scraper import WizzAirScraper
+from app.services.price_history_service import PriceHistoryService
+from app.utils.date_utils import parse_time
+from app.utils.flight_cache import FlightDeduplicationCache
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -63,9 +69,21 @@ class FlightOrchestrator:
         wizzair: WizzAir API scraper
     """
 
-    def __init__(self):
-        """Initialize enabled flight scrapers based on configuration."""
-        self.enabled_scrapers = settings.get_available_scrapers()
+    def __init__(self, enabled_scrapers: Optional[List[str]] = None, redis_client: Optional[Redis] = None):
+        """
+        Initialize enabled flight scrapers based on configuration.
+
+        Args:
+            enabled_scrapers: Optional list of scrapers to enable (overrides config).
+                            Valid values: 'kiwi', 'skyscanner', 'ryanair', 'wizzair'
+            redis_client: Optional Redis client for caching. If not provided,
+                        a new connection will be created.
+        """
+        # Use provided scrapers or fall back to configuration
+        if enabled_scrapers is not None:
+            self.enabled_scrapers = enabled_scrapers
+        else:
+            self.enabled_scrapers = settings.get_available_scrapers()
 
         # Initialize only enabled scrapers
         self.kiwi = KiwiClient() if "kiwi" in self.enabled_scrapers else None
@@ -74,6 +92,21 @@ class FlightOrchestrator:
         )
         self.ryanair = RyanairScraper() if "ryanair" in self.enabled_scrapers else None
         self.wizzair = WizzAirScraper() if "wizzair" in self.enabled_scrapers else None
+
+        # Initialize flight cache if Redis is available
+        self.cache = None
+        if redis_client:
+            self.cache = FlightDeduplicationCache(
+                redis_client=redis_client,
+                ttl=settings.cache_ttl_flights,  # Use configured TTL (default: 3600s)
+            )
+            logger.info(
+                f"FlightOrchestrator initialized with Redis cache (TTL: {settings.cache_ttl_flights}s)"
+            )
+        else:
+            logger.warning(
+                "FlightOrchestrator initialized without Redis cache - deduplication will be slower"
+            )
 
         logger.info(
             f"FlightOrchestrator initialized with {len(self.enabled_scrapers)} scrapers: "
@@ -164,7 +197,7 @@ class FlightOrchestrator:
             f"\n[bold cyan]Starting {len(tasks)} scraping tasks in parallel...[/bold cyan]\n"
         )
 
-        # Run all tasks concurrently with progress tracking
+        # Run all tasks concurrently with real-time progress tracking
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -173,12 +206,20 @@ class FlightOrchestrator:
             TimeElapsedColumn(),
             console=console,
         ) as progress:
-            task_id = progress.add_task("[cyan]Scraping flights...", total=len(tasks))
+            # Create individual progress tasks for each scraper type
+            scraper_tasks = {}
+            for scraper in ["Kiwi", "Skyscanner", "Ryanair", "WizzAir"]:
+                scraper_count = sum(1 for t in task_metadata if t.startswith(scraper))
+                if scraper_count > 0:
+                    scraper_tasks[scraper] = progress.add_task(
+                        f"[yellow]{scraper}: Starting...", total=scraper_count
+                    )
 
             # Gather results with return_exceptions=True to handle failures gracefully
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            progress.update(task_id, completed=len(tasks))
+            # We'll track completion in real-time using task callbacks
+            results = await self._gather_with_progress(
+                tasks, task_metadata, progress, scraper_tasks
+            )
 
         # Process results and collect statistics
         all_flights = []
@@ -206,12 +247,31 @@ class FlightOrchestrator:
             f"{len(all_flights)} total flights, {elapsed_time:.2f}s elapsed"
         )
 
+        # Check failure threshold
+        total_scrapers = successful_scrapers + failed_scrapers
+        if total_scrapers > 0:
+            failure_rate = failed_scrapers / total_scrapers
+            threshold = settings.scraper_failure_threshold
+
+            if failure_rate > threshold:
+                logger.critical(
+                    f"CRITICAL: Scraper failure threshold exceeded! "
+                    f"{failed_scrapers}/{total_scrapers} scrapers failed "
+                    f"({failure_rate:.1%} failure rate, threshold: {threshold:.1%})"
+                )
+                raise ScraperFailureThresholdExceeded(
+                    total_scrapers=total_scrapers,
+                    failed_scrapers=failed_scrapers,
+                    failure_rate=failure_rate,
+                    threshold=threshold,
+                )
+
         # Print statistics table
         self._print_stats_table(scraper_stats, elapsed_time)
 
-        # Deduplicate flights
+        # Deduplicate flights (with caching if available)
         console.print(f"\n[bold yellow]Deduplicating {len(all_flights)} flights...[/bold yellow]")
-        unique_flights = self.deduplicate(all_flights)
+        unique_flights = await self.deduplicate(all_flights)
 
         console.print(
             f"[bold green]✓ Found {len(unique_flights)} unique flights "
@@ -248,6 +308,77 @@ class FlightOrchestrator:
         console.print(table)
         console.print(f"\n[dim]Time elapsed: {elapsed_time:.2f}s[/dim]\n")
 
+    async def _gather_with_progress(
+        self,
+        tasks: List,
+        task_metadata: List[str],
+        progress: Progress,
+        scraper_tasks: Dict,
+    ) -> List:
+        """
+        Execute tasks with real-time progress updates.
+
+        This method wraps asyncio.gather to provide real-time feedback as each
+        scraper completes, updating the progress bars and showing immediate results.
+
+        Args:
+            tasks: List of coroutines to execute
+            task_metadata: List of task descriptions matching tasks
+            progress: Rich Progress instance
+            scraper_tasks: Dict mapping scraper names to progress task IDs
+
+        Returns:
+            List of results from all tasks (with exceptions for failures)
+        """
+        results = [None] * len(tasks)
+        pending_tasks = {
+            asyncio.create_task(task): (idx, task_metadata[idx])
+            for idx, task in enumerate(tasks)
+        }
+
+        # Process tasks as they complete
+        while pending_tasks:
+            done, pending = await asyncio.wait(
+                pending_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+            )
+
+            for task in done:
+                idx, metadata = pending_tasks.pop(task)
+                scraper_name = metadata.split(":")[0].strip()
+                route = metadata.split(":")[1].strip() if ":" in metadata else ""
+
+                try:
+                    result = task.result()
+                    results[idx] = result
+                    flight_count = len(result) if isinstance(result, list) else 0
+
+                    # Update progress for this scraper
+                    if scraper_name in scraper_tasks:
+                        progress.update(
+                            scraper_tasks[scraper_name],
+                            advance=1,
+                            description=f"[green]{scraper_name}: {route} ({flight_count} flights)",
+                        )
+
+                    # Log completion
+                    logger.info(f"✓ {scraper_name} completed {route}: {flight_count} flights found")
+
+                except Exception as e:
+                    results[idx] = e
+
+                    # Update progress to show failure
+                    if scraper_name in scraper_tasks:
+                        progress.update(
+                            scraper_tasks[scraper_name],
+                            advance=1,
+                            description=f"[red]{scraper_name}: {route} (failed)",
+                        )
+
+                    # Log error
+                    logger.error(f"✗ {scraper_name} failed {route}: {str(e)}")
+
+        return results
+
     async def scrape_source(
         self,
         scraper,
@@ -274,10 +405,13 @@ class FlightOrchestrator:
         """
         departure_date, return_date = dates
 
-        logger.info(
-            f"[{scraper_name}] Scraping {origin} → {destination}, "
+        # Log start of scraping with console output for immediate feedback
+        log_msg = (
+            f"[{scraper_name}] Starting scrape: {origin} → {destination}, "
             f"{departure_date} to {return_date}"
         )
+        logger.info(log_msg)
+        console.print(f"[dim cyan]⟳ {log_msg}[/dim cyan]")
 
         try:
             # Call appropriate scraper method based on type
@@ -380,19 +514,25 @@ class FlightOrchestrator:
                 logger.error(f"Unknown scraper: {scraper_name}")
                 return []
 
-            logger.info(f"[{scraper_name}] Found {len(flights)} flights")
+            # Log completion with console output for immediate feedback
+            success_msg = f"[{scraper_name}] Completed: {len(flights)} flights found"
+            logger.info(success_msg)
+            console.print(f"[dim green]✓ {success_msg}[/dim green]")
             return flights
 
         except Exception as e:
-            logger.error(
-                f"[{scraper_name}] Scraping failed for {origin}→{destination}: {e}",
-                exc_info=True,
-            )
-            return []
+            # Log error with console output for immediate user feedback
+            error_msg = f"[{scraper_name}] Scraping failed for {origin}→{destination}: {e}"
+            logger.error(error_msg, exc_info=True)
+            console.print(f"[dim red]✗ {error_msg}[/dim red]")
 
-    def deduplicate(self, flights: List[Dict]) -> List[Dict]:
+            # Re-raise exception to let scrape_all handle it via return_exceptions=True
+            # This allows proper failure tracking and threshold checking
+            raise
+
+    async def deduplicate(self, flights: List[Dict]) -> List[Dict]:
         """
-        Remove duplicate flights across sources.
+        Remove duplicate flights across sources with Redis caching.
 
         Flights are considered duplicates if they have:
         - Same origin + destination
@@ -404,6 +544,11 @@ class FlightOrchestrator:
         - Keep the one with the lowest price
         - Merge booking_url fields (keep all sources for user choice)
 
+        Redis Caching:
+        - Before deduplication, filters out flights already in cache
+        - After deduplication, caches unique flights
+        - Dramatically reduces CPU usage for repeated queries
+
         Args:
             flights: List of flight dictionaries from all sources
 
@@ -412,13 +557,37 @@ class FlightOrchestrator:
 
         Example:
             >>> all_flights = [...]  # Flights from multiple sources
-            >>> unique = orchestrator.deduplicate(all_flights)
+            >>> unique = await orchestrator.deduplicate(all_flights)
             >>> print(f"Reduced from {len(all_flights)} to {len(unique)} flights")
         """
         if not flights:
             return []
 
         logger.info(f"Deduplicating {len(flights)} flights...")
+
+        # Filter out cached flights if cache is available
+        flights_to_process = flights
+        cached_count = 0
+
+        if self.cache:
+            logger.info("Checking flight cache to skip already-processed flights...")
+            flights_to_process = await self.cache.filter_uncached_flights(flights)
+            cached_count = len(flights) - len(flights_to_process)
+
+            if cached_count > 0:
+                logger.info(
+                    f"Cache hit: {cached_count} flights already processed, "
+                    f"{len(flights_to_process)} need deduplication"
+                )
+                console.print(
+                    f"[dim]  → Cache hit: {cached_count} flights already seen, "
+                    f"processing {len(flights_to_process)} new flights[/dim]"
+                )
+
+        # If all flights are cached, return empty list (they've all been processed before)
+        if not flights_to_process:
+            logger.info("All flights found in cache - no deduplication needed")
+            return []
 
         # Group flights by route + airline + approximate time
         grouped = defaultdict(list)
@@ -440,15 +609,23 @@ class FlightOrchestrator:
                     logger.warning(f"Invalid departure_date format: {dep_date_str}")
                     continue
 
-                # Parse time (handle None or empty string)
-                if dep_time_str and dep_time_str != "None":
-                    try:
-                        dep_time = datetime.strptime(dep_time_str, "%H:%M").time()
-                        dep_datetime = datetime.combine(dep_date, dep_time)
-                    except (ValueError, TypeError):
-                        dep_datetime = datetime.combine(dep_date, time(12, 0))  # Default noon
+                # Parse time using robust parser
+                dep_time = parse_time(
+                    dep_time_str,
+                    context=f"departure_time for {flight.get('origin_airport')}->{flight.get('destination_airport')}"
+                )
+
+                # Use parsed time or default to noon if parsing failed
+                if dep_time is not None:
+                    dep_datetime = datetime.combine(dep_date, dep_time)
                 else:
-                    dep_datetime = datetime.combine(dep_date, time(12, 0))  # Default noon
+                    # Default to noon for grouping purposes when time is unavailable
+                    dep_datetime = datetime.combine(dep_date, time(12, 0))
+                    if dep_time_str:  # Only log if there was a value that failed to parse
+                        logger.debug(
+                            f"Using default noon for grouping (departure time unavailable): "
+                            f"{flight.get('origin_airport')}->{flight.get('destination_airport')} on {dep_date}"
+                        )
 
                 # Round departure time to 2-hour blocks for grouping
                 hour_block = (dep_datetime.hour // 2) * 2
@@ -462,14 +639,23 @@ class FlightOrchestrator:
                     try:
                         ret_date = datetime.strptime(ret_date_str, "%Y-%m-%d").date()
 
-                        if ret_time_str and ret_time_str != "None":
-                            try:
-                                ret_time = datetime.strptime(ret_time_str, "%H:%M").time()
-                                ret_datetime = datetime.combine(ret_date, ret_time)
-                            except (ValueError, TypeError):
-                                ret_datetime = datetime.combine(ret_date, time(12, 0))
+                        # Parse return time using robust parser
+                        ret_time = parse_time(
+                            ret_time_str,
+                            context=f"return_time for {flight.get('origin_airport')}->{flight.get('destination_airport')}"
+                        )
+
+                        # Use parsed time or default to noon if parsing failed
+                        if ret_time is not None:
+                            ret_datetime = datetime.combine(ret_date, ret_time)
                         else:
+                            # Default to noon for grouping purposes when time is unavailable
                             ret_datetime = datetime.combine(ret_date, time(12, 0))
+                            if ret_time_str:  # Only log if there was a value that failed to parse
+                                logger.debug(
+                                    f"Using default noon for grouping (return time unavailable): "
+                                    f"{flight.get('origin_airport')}->{flight.get('destination_airport')} on {ret_date}"
+                                )
 
                         ret_hour_block = (ret_datetime.hour // 2) * 2
                         rounded_ret_time = ret_datetime.replace(
@@ -530,11 +716,17 @@ class FlightOrchestrator:
                 logger.warning(f"Error selecting best flight from group: {e}", exc_info=True)
                 continue
 
-        duplicates_removed = len(flights) - len(unique_flights)
+        duplicates_removed = len(flights_to_process) - len(unique_flights)
         logger.info(
             f"Deduplication complete: {len(unique_flights)} unique flights "
-            f"({duplicates_removed} duplicates removed)"
+            f"({duplicates_removed} duplicates removed from {len(flights_to_process)} processed)"
         )
+
+        # Cache the unique flights for future queries
+        if self.cache and unique_flights:
+            logger.info(f"Caching {len(unique_flights)} unique flights...")
+            cached_count = await self.cache.cache_multiple_flights(unique_flights)
+            logger.info(f"Successfully cached {cached_count} flights (TTL: {self.cache.ttl}s)")
 
         return unique_flights
 
@@ -546,6 +738,10 @@ class FlightOrchestrator:
 
         Uses SQLAlchemy bulk operations for efficiency. Updates existing flights
         if price is cheaper, otherwise skips duplicates.
+
+        Optimized to avoid N+1 queries by:
+        - Batch loading all required airports upfront
+        - Batch loading potential duplicate flights upfront
 
         Args:
             flights: List of flight dictionaries to save
@@ -600,19 +796,117 @@ class FlightOrchestrator:
                 for i in range(0, len(flights), batch_size):
                     batch = flights[i : i + batch_size]
 
+                    # FIX N+1: Collect all unique airport IATA codes in this batch
+                    airport_codes = set()
+                    for flight_data in batch:
+                        origin = flight_data.get("origin_airport", "")
+                        destination = flight_data.get("destination_airport", "")
+                        if origin:
+                            airport_codes.add(origin.upper())
+                        if destination:
+                            airport_codes.add(destination.upper())
+
+                    # FIX N+1: Batch load all airports at once
+                    airport_stmt = select(Airport).where(Airport.iata_code.in_(airport_codes))
+                    airport_result = await db.execute(airport_stmt)
+                    airports_list = airport_result.scalars().all()
+
+                    # Build airport cache by IATA code
+                    airport_cache: Dict[str, Airport] = {
+                        airport.iata_code: airport for airport in airports_list
+                    }
+
+                    # FIX N+1: Create missing airports in batch
+                    missing_codes = airport_codes - set(airport_cache.keys())
+                    for iata_code in missing_codes:
+                        # Find the city name from flight data
+                        city = ""
+                        for flight_data in batch:
+                            if flight_data.get("origin_airport", "").upper() == iata_code:
+                                city = flight_data.get("origin_city", "")
+                                break
+                            elif flight_data.get("destination_airport", "").upper() == iata_code:
+                                city = flight_data.get("destination_city", "")
+                                break
+
+                        logger.info(f"Creating new airport: {iata_code} ({city})")
+                        new_airport = Airport(
+                            iata_code=iata_code,
+                            name=f"{city} Airport" if city else f"{iata_code} Airport",
+                            city=city or iata_code,
+                            distance_from_home=0,
+                            driving_time=0,
+                        )
+                        db.add(new_airport)
+                        airport_cache[iata_code] = new_airport
+
+                    # Flush to get IDs for new airports
+                    await db.flush()
+
+                    # FIX N+1: Collect all flight parameters for duplicate checking
+                    flight_params = []
+                    for flight_data in batch:
+                        dep_date_str = flight_data.get("departure_date", "")
+                        if not dep_date_str:
+                            continue
+
+                        try:
+                            departure_date_obj = datetime.strptime(dep_date_str, "%Y-%m-%d").date()
+                            origin_code = flight_data.get("origin_airport", "").upper()
+                            dest_code = flight_data.get("destination_airport", "").upper()
+
+                            if origin_code in airport_cache and dest_code in airport_cache:
+                                flight_params.append({
+                                    "origin_airport_id": airport_cache[origin_code].id,
+                                    "destination_airport_id": airport_cache[dest_code].id,
+                                    "airline": flight_data.get("airline", "Unknown"),
+                                    "departure_date": departure_date_obj,
+                                })
+                        except (ValueError, TypeError):
+                            continue
+
+                    # FIX N+1: Batch load all potential duplicate flights
+                    existing_flights_map = {}
+                    if flight_params:
+                        # Build query to find all potential duplicates
+                        duplicate_conditions = []
+                        for params in flight_params:
+                            duplicate_conditions.append(
+                                and_(
+                                    Flight.origin_airport_id == params["origin_airport_id"],
+                                    Flight.destination_airport_id == params["destination_airport_id"],
+                                    Flight.airline == params["airline"],
+                                    Flight.departure_date == params["departure_date"],
+                                )
+                            )
+
+                        if duplicate_conditions:
+                            from sqlalchemy import or_
+                            existing_stmt = select(Flight).where(or_(*duplicate_conditions))
+                            existing_result = await db.execute(existing_stmt)
+                            existing_flights = existing_result.scalars().all()
+
+                            # Build index for O(1) lookup
+                            for flight in existing_flights:
+                                key = (
+                                    flight.origin_airport_id,
+                                    flight.destination_airport_id,
+                                    flight.airline,
+                                    flight.departure_date,
+                                )
+                                if key not in existing_flights_map:
+                                    existing_flights_map[key] = []
+                                existing_flights_map[key].append(flight)
+
+                    # Now process each flight with cached data
                     for flight_data in batch:
                         try:
-                            # Get or create airports
-                            origin_airport = await self._get_or_create_airport(
-                                db,
-                                flight_data.get("origin_airport", ""),
-                                flight_data.get("origin_city", ""),
-                            )
-                            destination_airport = await self._get_or_create_airport(
-                                db,
-                                flight_data.get("destination_airport", ""),
-                                flight_data.get("destination_city", ""),
-                            )
+                            # Get airports from cache
+                            origin_code = flight_data.get("origin_airport", "").upper()
+                            dest_code = flight_data.get("destination_airport", "").upper()
+
+                            origin_airport = airport_cache.get(origin_code)
+                            destination_airport = airport_cache.get(dest_code)
 
                             if not origin_airport or not destination_airport:
                                 logger.warning(
@@ -634,19 +928,17 @@ class FlightOrchestrator:
                                 stats["skipped"] += 1
                                 continue
 
-                            # Parse departure time
-                            if dep_time_str and dep_time_str != "None":
-                                try:
-                                    departure_time_obj = datetime.strptime(dep_time_str, "%H:%M").time()
-                                except (ValueError, TypeError):
-                                    departure_time_obj = None
-                            else:
-                                departure_time_obj = None
+                            # Parse departure time using robust parser
+                            departure_time_obj = parse_time(
+                                dep_time_str,
+                                context=f"departure_time for DB save {origin_airport.iata_code}->{destination_airport.iata_code}"
+                            )
 
                             # Parse return date and time
                             ret_date_str = flight_data.get("return_date")
                             ret_time_str = flight_data.get("return_time")
 
+                            # Parse return date
                             if ret_date_str and ret_date_str != "None":
                                 try:
                                     return_date_obj = datetime.strptime(ret_date_str, "%Y-%m-%d").date()
@@ -655,23 +947,41 @@ class FlightOrchestrator:
                             else:
                                 return_date_obj = None
 
-                            if ret_time_str and ret_time_str != "None":
-                                try:
-                                    return_time_obj = datetime.strptime(ret_time_str, "%H:%M").time()
-                                except (ValueError, TypeError):
-                                    return_time_obj = None
-                            else:
-                                return_time_obj = None
+                            # Parse return time using robust parser
+                            return_time_obj = parse_time(
+                                ret_time_str,
+                                context=f"return_time for DB save {origin_airport.iata_code}->{destination_airport.iata_code}"
+                            )
 
-                            # Check for existing flight (within 2-hour window)
-                            existing_flight = await self._check_duplicate_flight(
-                                db,
+                            # Check for existing flight using cached data
+                            airline = flight_data.get("airline", "Unknown")
+                            lookup_key = (
                                 origin_airport.id,
                                 destination_airport.id,
-                                flight_data.get("airline", "Unknown"),
+                                airline,
                                 departure_date_obj,
-                                departure_time_obj,
                             )
+
+                            existing_flight = None
+                            candidates = existing_flights_map.get(lookup_key, [])
+
+                            # Check time window for candidates
+                            if departure_time_obj:
+                                time_lower = (
+                                    datetime.combine(departure_date_obj, departure_time_obj) - timedelta(hours=2)
+                                ).time()
+                                time_upper = (
+                                    datetime.combine(departure_date_obj, departure_time_obj) + timedelta(hours=2)
+                                ).time()
+
+                                for candidate in candidates:
+                                    if candidate.departure_time:
+                                        if time_lower <= candidate.departure_time <= time_upper:
+                                            existing_flight = candidate
+                                            break
+                            elif candidates:
+                                # No time specified, take first candidate
+                                existing_flight = candidates[0]
 
                             # Get price (handle both price_per_person and total_price)
                             price_per_person = flight_data.get("price_per_person")
@@ -687,6 +997,7 @@ class FlightOrchestrator:
                             if existing_flight:
                                 # Update if new price is cheaper
                                 if price_per_person < existing_flight.price_per_person:
+                                    old_price = existing_flight.price_per_person
                                     logger.info(
                                         f"Updating flight {existing_flight.id}: "
                                         f"€{existing_flight.price_per_person} → €{price_per_person}"
@@ -697,15 +1008,25 @@ class FlightOrchestrator:
                                         "booking_url", existing_flight.booking_url
                                     )
                                     existing_flight.scraped_at = datetime.now()
+
+                                    # Track price change
+                                    await PriceHistoryService.track_price_change(
+                                        db, existing_flight, old_price
+                                    )
+
                                     stats["updated"] += 1
                                 else:
+                                    # Track price even if not updating (for history)
+                                    await PriceHistoryService.track_price_change(
+                                        db, existing_flight, None
+                                    )
                                     stats["skipped"] += 1
                             else:
                                 # Insert new flight
                                 new_flight = Flight(
                                     origin_airport_id=origin_airport.id,
                                     destination_airport_id=destination_airport.id,
-                                    airline=flight_data.get("airline", "Unknown"),
+                                    airline=airline,
                                     departure_date=departure_date_obj,
                                     departure_time=departure_time_obj,
                                     return_date=return_date_obj,
@@ -719,6 +1040,13 @@ class FlightOrchestrator:
                                     scraped_at=datetime.now(),
                                 )
                                 db.add(new_flight)
+                                await db.flush()  # Get the flight ID and load relationships
+
+                                # Track initial price
+                                await PriceHistoryService.track_price_change(
+                                    db, new_flight, None
+                                )
+
                                 stats["inserted"] += 1
 
                         except Exception as e:

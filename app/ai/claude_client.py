@@ -11,8 +11,9 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from anthropic import Anthropic, APIError, RateLimitError, APIConnectionError
+from anthropic import AsyncAnthropic, APIError, RateLimitError, APIConnectionError
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenacity import (
     retry,
@@ -22,6 +23,8 @@ from tenacity import (
 )
 
 from app.models.api_cost import ApiCost
+from app.models.model_pricing import ModelPricing
+from app.utils.retry import redis_retry
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,7 @@ class ClaudeClient:
     - JSON response parsing with markdown code block handling
     - Retry logic for transient failures
     - Comprehensive error handling
+    - Dynamic pricing loaded from database with fallback to defaults
 
     Example:
         >>> client = ClaudeClient(api_key="sk-...", redis_client=redis)
@@ -53,9 +57,10 @@ class ClaudeClient:
         >>> print(response["score"])
     """
 
-    # Claude Sonnet 4.5 pricing (as of 2025)
-    INPUT_COST_PER_MILLION = 3.0  # $3 per 1M input tokens
-    OUTPUT_COST_PER_MILLION = 15.0  # $15 per 1M output tokens
+    # Default pricing fallback (Claude Sonnet 4.5 as of 2025-11-01)
+    # These are used if database pricing lookup fails
+    DEFAULT_INPUT_COST_PER_MILLION = 3.0  # $3 per 1M input tokens
+    DEFAULT_OUTPUT_COST_PER_MILLION = 15.0  # $15 per 1M output tokens
 
     def __init__(
         self,
@@ -75,13 +80,124 @@ class ClaudeClient:
             cache_ttl: Cache TTL in seconds (default: 86400 = 24 hours)
             db_session: Optional database session for cost tracking
         """
-        self.client = Anthropic(api_key=api_key)
+        self.client = AsyncAnthropic(api_key=api_key)
         self.redis = redis_client
         self.model = model
         self.cache_ttl = cache_ttl
         self.db_session = db_session
+        self._cache_enabled = False
+
+        # Validate Redis connection
+        self._validate_redis_connection()
+
+        # Pricing will be loaded from database on first use
+        self.input_cost_per_million: Optional[float] = None
+        self.output_cost_per_million: Optional[float] = None
+        self._pricing_loaded = False
 
         logger.info(f"Initialized ClaudeClient with model: {model}")
+
+    def _validate_redis_connection(self) -> None:
+        """
+        Validate Redis connection during initialization.
+
+        If Redis is unavailable, logs a warning and disables caching.
+        The client will continue to function without caching capabilities.
+        """
+        try:
+            # Note: We can't use async ping() in __init__, so we'll mark caching
+            # as enabled and let the actual cache operations handle failures
+            # gracefully. The _cache_enabled flag will be checked in async methods.
+            self._cache_enabled = True
+            logger.info("Redis client initialized - caching enabled")
+        except Exception as e:
+            self._cache_enabled = False
+            logger.warning(
+                f"Redis connection validation skipped (sync context). "
+                f"Cache operations will validate connection lazily. Error: {e}"
+            )
+
+    async def _check_redis_health(self) -> bool:
+        """
+        Check if Redis is healthy and available.
+
+        Returns:
+            True if Redis is available, False otherwise
+        """
+        if not self._cache_enabled:
+            return False
+
+        try:
+            await self.redis.ping()
+            return True
+        except Exception as e:
+            if self._cache_enabled:
+                logger.warning(
+                    f"Redis connection lost: {e}. Disabling cache operations."
+                )
+                self._cache_enabled = False
+            return False
+
+    async def _load_pricing(self) -> None:
+        """
+        Load pricing from database for the current model.
+
+        Falls back to default constants if pricing not found in database.
+        This is called automatically on first API call.
+        """
+        if self._pricing_loaded:
+            return
+
+        # If no database session, use defaults
+        if not self.db_session:
+            logger.warning(
+                f"No database session available, using default pricing for {self.model}"
+            )
+            self.input_cost_per_million = self.DEFAULT_INPUT_COST_PER_MILLION
+            self.output_cost_per_million = self.DEFAULT_OUTPUT_COST_PER_MILLION
+            self._pricing_loaded = True
+            return
+
+        try:
+            # Query for the most recent pricing for this model
+            stmt = (
+                select(ModelPricing)
+                .where(
+                    ModelPricing.service == "claude",
+                    ModelPricing.model == self.model,
+                    ModelPricing.effective_date <= datetime.now(),
+                )
+                .order_by(ModelPricing.effective_date.desc())
+                .limit(1)
+            )
+            result = await self.db_session.execute(stmt)
+            pricing = result.scalar_one_or_none()
+
+            if pricing:
+                self.input_cost_per_million = pricing.input_cost_per_million
+                self.output_cost_per_million = pricing.output_cost_per_million
+                logger.info(
+                    f"Loaded pricing from database for {self.model}: "
+                    f"${self.input_cost_per_million}/M input, "
+                    f"${self.output_cost_per_million}/M output "
+                    f"(effective {pricing.effective_date.date()})"
+                )
+            else:
+                # No pricing found in database, use defaults
+                logger.warning(
+                    f"No pricing found in database for {self.model}, using defaults"
+                )
+                self.input_cost_per_million = self.DEFAULT_INPUT_COST_PER_MILLION
+                self.output_cost_per_million = self.DEFAULT_OUTPUT_COST_PER_MILLION
+
+            self._pricing_loaded = True
+
+        except Exception as e:
+            logger.error(f"Error loading pricing from database: {e}")
+            # Fall back to defaults on error
+            self.input_cost_per_million = self.DEFAULT_INPUT_COST_PER_MILLION
+            self.output_cost_per_million = self.DEFAULT_OUTPUT_COST_PER_MILLION
+            self._pricing_loaded = True
 
     async def analyze(
         self,
@@ -114,6 +230,9 @@ class ClaudeClient:
             ClaudeAPIError: If the API call fails or response parsing fails
         """
         try:
+            # Load pricing from database if not already loaded
+            await self._load_pricing()
+
             # Format prompt with data
             if data:
                 full_prompt = prompt.format(**data)
@@ -212,7 +331,7 @@ class ClaudeClient:
             APIConnectionError: If connection fails after retries
             APIError: For other API errors
         """
-        return self.client.messages.create(
+        return await self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -238,9 +357,10 @@ class ClaudeClient:
         cache_hash = hashlib.sha256(cache_input.encode()).hexdigest()
         return f"claude:response:{cache_hash}"
 
+    @redis_retry(max_attempts=3, min_wait_seconds=1, max_wait_seconds=5)
     async def _get_cached_response(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """
-        Retrieve a cached response from Redis.
+        Retrieve a cached response from Redis with automatic retry logic.
 
         Args:
             cache_key: Redis cache key
@@ -248,29 +368,40 @@ class ClaudeClient:
         Returns:
             Cached response dict or None if not found
         """
+        # Check if caching is enabled and Redis is healthy
+        if not await self._check_redis_health():
+            return None
+
         try:
             cached_data = await self.redis.get(cache_key)
             if cached_data:
                 return json.loads(cached_data)
         except Exception as e:
-            logger.warning(f"Cache retrieval failed: {e}")
+            logger.warning(f"Cache retrieval failed: {e}. Disabling cache.")
+            self._cache_enabled = False
         return None
 
+    @redis_retry(max_attempts=3, min_wait_seconds=1, max_wait_seconds=5)
     async def _cache_response(self, cache_key: str, response: Dict[str, Any]) -> None:
         """
-        Store a response in Redis cache.
+        Store a response in Redis cache with automatic retry logic.
 
         Args:
             cache_key: Redis cache key
             response: Response dict to cache
         """
+        # Check if caching is enabled and Redis is healthy
+        if not await self._check_redis_health():
+            return
+
         try:
             await self.redis.setex(
                 cache_key, self.cache_ttl, json.dumps(response, default=str)
             )
             logger.debug(f"Cached response with key: {cache_key[:32]}...")
         except Exception as e:
-            logger.warning(f"Cache storage failed: {e}")
+            logger.warning(f"Cache storage failed: {e}. Disabling cache.")
+            self._cache_enabled = False
 
     def parse_json_response(self, response_text: str) -> Dict[str, Any]:
         """
@@ -324,6 +455,8 @@ class ClaudeClient:
         """
         Calculate API cost and log to database.
 
+        Uses pricing loaded from database, or defaults if not available.
+
         Args:
             input_tokens: Number of input tokens
             output_tokens: Number of output tokens
@@ -334,9 +467,12 @@ class ClaudeClient:
         Returns:
             Total cost in USD
         """
-        # Calculate cost
-        input_cost = (input_tokens / 1_000_000) * self.INPUT_COST_PER_MILLION
-        output_cost = (output_tokens / 1_000_000) * self.OUTPUT_COST_PER_MILLION
+        # Ensure pricing is loaded
+        await self._load_pricing()
+
+        # Calculate cost using loaded pricing
+        input_cost = (input_tokens / 1_000_000) * self.input_cost_per_million
+        output_cost = (output_tokens / 1_000_000) * self.output_cost_per_million
         total_cost = input_cost + output_cost
 
         logger.info(
@@ -413,9 +549,10 @@ class ClaudeClient:
                 logger.warning(f"Failed to log API error: {e}")
                 await self.db_session.rollback()
 
+    @redis_retry(max_attempts=3, min_wait_seconds=1, max_wait_seconds=5)
     async def clear_cache(self, pattern: str = "claude:response:*") -> int:
         """
-        Clear cached responses matching a pattern.
+        Clear cached responses matching a pattern with automatic retry logic.
 
         Args:
             pattern: Redis key pattern to match (default: all Claude responses)
@@ -423,6 +560,11 @@ class ClaudeClient:
         Returns:
             Number of keys deleted
         """
+        # Check if caching is enabled and Redis is healthy
+        if not await self._check_redis_health():
+            logger.warning("Cannot clear cache: Redis is unavailable")
+            return 0
+
         try:
             keys = []
             async for key in self.redis.scan_iter(match=pattern):
@@ -435,15 +577,25 @@ class ClaudeClient:
             return 0
         except Exception as e:
             logger.error(f"Failed to clear cache: {e}")
+            self._cache_enabled = False
             return 0
 
+    @redis_retry(max_attempts=3, min_wait_seconds=1, max_wait_seconds=5)
     async def get_cache_stats(self) -> Dict[str, int]:
         """
-        Get statistics about cached responses.
+        Get statistics about cached responses with automatic retry logic.
 
         Returns:
-            Dictionary with cache statistics
+            Dictionary with cache statistics including cache availability
         """
+        # Check if caching is enabled and Redis is healthy
+        if not await self._check_redis_health():
+            return {
+                "cached_responses": 0,
+                "cache_ttl": self.cache_ttl,
+                "cache_enabled": False,
+            }
+
         try:
             count = 0
             async for _ in self.redis.scan_iter(match="claude:response:*"):
@@ -452,7 +604,13 @@ class ClaudeClient:
             return {
                 "cached_responses": count,
                 "cache_ttl": self.cache_ttl,
+                "cache_enabled": True,
             }
         except Exception as e:
             logger.error(f"Failed to get cache stats: {e}")
-            return {"cached_responses": 0, "cache_ttl": self.cache_ttl}
+            self._cache_enabled = False
+            return {
+                "cached_responses": 0,
+                "cache_ttl": self.cache_ttl,
+                "cache_enabled": False,
+            }

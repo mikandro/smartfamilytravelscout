@@ -189,9 +189,9 @@ async def example_usage():
     """Example of how to use the scraper with database."""
     from datetime import date
 
-    from app.database import SessionLocal
+    from app.database import get_async_session_context
 
-    async with SessionLocal() as db:
+    async with get_async_session_context() as db:
         flights = await scrape_and_save_route(
             db=db,
             origin="FMM",
