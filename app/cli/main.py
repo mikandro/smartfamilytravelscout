@@ -638,89 +638,109 @@ async def _run_pipeline(
         # Step 5: Match packages
         task5 = progress.add_task("[cyan]Generating trip packages...", total=None)
 
-        matcher = AccommodationMatcher()
-        packages = await matcher.generate_trip_packages(
-            max_budget_per_person=max_price or settings.max_flight_price_per_person,
-        )
+        async with get_async_session_context() as db:
+            matcher = AccommodationMatcher()
+            packages = await matcher.generate_trip_packages(
+                db=db,
+                max_budget=max_price or settings.max_flight_price_per_person,
+            )
 
-        stats["packages"] = len(packages)
-        progress.update(task5, completed=1)
-        success(f"Generated {stats['packages']} trip packages")
+            stats["packages"] = len(packages)
+            progress.update(task5, completed=1)
+            success(f"Generated {stats['packages']} trip packages")
 
         # Step 6: Match events
         task6 = progress.add_task("[cyan]Matching events to packages...", total=None)
 
-        event_matcher = EventMatcher()
-        await event_matcher.match_events_to_packages()
+        async with get_async_session_context() as db:
+            event_matcher = EventMatcher(db_session=db)
+            packages = await event_matcher.match_events_to_packages(packages)
 
         progress.update(task6, completed=1)
 
         # Step 7: AI analysis
         if analyze and stats["packages"] > 0:
+            from app.ai.claude_client import ClaudeClient
             from app.ai.deal_scorer import DealScorer
             from app.models.trip_package import TripPackage
+            from redis.asyncio import Redis
 
-            async with get_async_session_context() as db:
-                result = await db.execute(
-                    select(TripPackage).where(TripPackage.ai_score.is_(None))
-                )
-                unscored = result.scalars().all()
+            # Initialize Redis client for caching
+            redis_client = await Redis.from_url(str(settings.redis_url))
 
-                # Limit to 50 for cost control
-                packages_to_score = unscored[:50]
+            try:
+                async with get_async_session_context() as db:
+                    result = await db.execute(
+                        select(TripPackage).where(TripPackage.ai_score.is_(None))
+                    )
+                    unscored = result.scalars().all()
 
-                task7 = progress.add_task(
-                    "[magenta]Running AI analysis...",
-                    total=len(packages_to_score)
-                )
+                    # Limit to 50 for cost control
+                    packages_to_score = unscored[:50]
 
-                scorer = DealScorer()
+                    task7 = progress.add_task(
+                        "[magenta]Running AI analysis...",
+                        total=len(packages_to_score)
+                    )
 
-                for idx, package in enumerate(packages_to_score):
-                    try:
-                        # Update progress with current package being analyzed
-                        progress.update(
-                            task7,
-                            description=f"[magenta]Analyzing {package.destination_city} "
-                            f"({idx+1}/{len(packages_to_score)})...",
-                        )
+                    # Create Claude client and deal scorer with proper dependencies
+                    claude_client = ClaudeClient(
+                        api_key=settings.anthropic_api_key,
+                        redis_client=redis_client,
+                        db_session=db,
+                    )
+                    scorer = DealScorer(
+                        claude_client=claude_client,
+                        db_session=db,
+                    )
 
-                        # Log start of analysis
-                        console.print(
-                            f"[dim magenta]⟳ Scoring package {package.id}: "
-                            f"{package.destination_city}, €{package.total_price}[/dim magenta]"
-                        )
-
-                        score_data = await scorer.score_trip(package)
-
-                        if score_data:
-                            package.ai_score = score_data["score"]
-                            package.ai_reasoning = score_data["reasoning"]
-                            await db.commit()
-                            stats["analyzed"] += 1
-
-                            # Log completion with score
-                            console.print(
-                                f"[dim green]✓ Package {package.id}: "
-                                f"Score {score_data['score']}/100 "
-                                f"({score_data.get('recommendation', 'N/A')})[/dim green]"
-                            )
-                        else:
-                            console.print(
-                                f"[dim yellow]⚠ Package {package.id}: Skipped (over price threshold)[/dim yellow]"
+                    for idx, package in enumerate(packages_to_score):
+                        try:
+                            # Update progress with current package being analyzed
+                            progress.update(
+                                task7,
+                                description=f"[magenta]Analyzing {package.destination_city} "
+                                f"({idx+1}/{len(packages_to_score)})...",
                             )
 
-                        progress.update(task7, advance=1)
+                            # Log start of analysis
+                            console.print(
+                                f"[dim magenta]⟳ Scoring package {package.id}: "
+                                f"{package.destination_city}, €{package.total_price}[/dim magenta]"
+                            )
 
-                    except Exception as e:
-                        logger.error(f"Failed to score package {package.id}: {e}")
-                        console.print(
-                            f"[dim red]✗ Package {package.id}: Failed - {str(e)}[/dim red]"
-                        )
-                        progress.update(task7, advance=1)
-                        continue
+                            score_data = await scorer.score_trip(package)
 
-            success(f"Analyzed {stats['analyzed']} packages")
+                            if score_data:
+                                package.ai_score = score_data["score"]
+                                package.ai_reasoning = score_data["reasoning"]
+                                await db.commit()
+                                stats["analyzed"] += 1
+
+                                # Log completion with score
+                                console.print(
+                                    f"[dim green]✓ Package {package.id}: "
+                                    f"Score {score_data['score']}/100 "
+                                    f"({score_data.get('recommendation', 'N/A')})[/dim green]"
+                                )
+                            else:
+                                console.print(
+                                    f"[dim yellow]⚠ Package {package.id}: Skipped (over price threshold)[/dim yellow]"
+                                )
+
+                            progress.update(task7, advance=1)
+
+                        except Exception as e:
+                            logger.error(f"Failed to score package {package.id}: {e}")
+                            console.print(
+                                f"[dim red]✗ Package {package.id}: Failed - {str(e)}[/dim red]"
+                            )
+                            progress.update(task7, advance=1)
+                            continue
+
+                success(f"Analyzed {stats['analyzed']} packages")
+            finally:
+                await redis_client.close()
 
     # Display final statistics
     console.print("\n")

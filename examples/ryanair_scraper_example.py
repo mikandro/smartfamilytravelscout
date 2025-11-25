@@ -156,10 +156,10 @@ async def example_3_with_database():
     print("=" * 60 + "\n")
 
     try:
-        from app.database import SessionLocal
+        from app.database import get_async_session_context
         from app.scrapers.ryanair_db_helper import scrape_and_save_route
 
-        async with SessionLocal() as db:
+        async with get_async_session_context() as db:
             flights = await scrape_and_save_route(
                 db=db,
                 origin="FMM",

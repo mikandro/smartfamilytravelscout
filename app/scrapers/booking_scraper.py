@@ -697,68 +697,83 @@ class BookingClient:
 
         Args:
             properties: List of property dictionaries to save
-            session: Optional database session (creates new one if not provided)
+            session: Optional database session (recommended to provide one)
 
         Returns:
             Number of properties saved
+
+        Note:
+            It's recommended to pass a database session for better resource management.
+            If no session is provided, one will be created using a context manager.
         """
         if not properties:
             logger.warning("No properties to save")
             return 0
 
-        should_close = session is None
-        if session is None:
-            session = AsyncSessionLocal()
+        # If session provided, use it directly
+        if session is not None:
+            return await self._save_properties(properties, session)
 
-        try:
-            saved_count = 0
+        # Otherwise, create session using context manager for proper cleanup
+        from app.database import get_async_session_context
 
-            for prop_data in properties:
-                try:
-                    # Convert scraped_at to datetime if it's a string
-                    if isinstance(prop_data.get("scraped_at"), str):
-                        prop_data["scraped_at"] = datetime.fromisoformat(
-                            prop_data["scraped_at"].replace("Z", "+00:00")
-                        )
+        async with get_async_session_context() as db:
+            return await self._save_properties(properties, db)
 
-                    # Create Accommodation instance
-                    accommodation = Accommodation(
-                        destination_city=prop_data.get("destination_city", "Unknown"),
-                        name=prop_data.get("name", "Unknown"),
-                        type=prop_data.get("type", "hotel"),
-                        bedrooms=prop_data.get("bedrooms"),
-                        price_per_night=prop_data.get("price_per_night", 0.0),
-                        family_friendly=prop_data.get("family_friendly", False),
-                        has_kitchen=prop_data.get("has_kitchen", False),
-                        has_kids_club=prop_data.get("has_kids_club", False),
-                        rating=prop_data.get("rating"),
-                        review_count=prop_data.get("review_count"),
-                        source=prop_data.get("source", "booking"),
-                        url=prop_data.get("url"),
-                        image_url=prop_data.get("image_url"),
-                        scraped_at=prop_data.get("scraped_at", datetime.now()),
+    async def _save_properties(
+        self,
+        properties: List[Dict[str, Any]],
+        session: AsyncSession,
+    ) -> int:
+        """
+        Internal method to save properties using a provided session.
+
+        Args:
+            properties: List of property dictionaries to save
+            session: Database session to use
+
+        Returns:
+            Number of properties saved
+        """
+        saved_count = 0
+
+        for prop_data in properties:
+            try:
+                # Convert scraped_at to datetime if it's a string
+                if isinstance(prop_data.get("scraped_at"), str):
+                    prop_data["scraped_at"] = datetime.fromisoformat(
+                        prop_data["scraped_at"].replace("Z", "+00:00")
                     )
 
-                    session.add(accommodation)
-                    saved_count += 1
+                # Create Accommodation instance
+                accommodation = Accommodation(
+                    destination_city=prop_data.get("destination_city", "Unknown"),
+                    name=prop_data.get("name", "Unknown"),
+                    type=prop_data.get("type", "hotel"),
+                    bedrooms=prop_data.get("bedrooms"),
+                    price_per_night=prop_data.get("price_per_night", 0.0),
+                    family_friendly=prop_data.get("family_friendly", False),
+                    has_kitchen=prop_data.get("has_kitchen", False),
+                    has_kids_club=prop_data.get("has_kids_club", False),
+                    rating=prop_data.get("rating"),
+                    review_count=prop_data.get("review_count"),
+                    source=prop_data.get("source", "booking"),
+                    url=prop_data.get("url"),
+                    image_url=prop_data.get("image_url"),
+                    scraped_at=prop_data.get("scraped_at", datetime.now()),
+                )
 
-                except Exception as e:
-                    logger.error(f"Error saving property '{prop_data.get('name')}': {e}")
-                    continue
+                session.add(accommodation)
+                saved_count += 1
 
-            await session.commit()
-            logger.info(f"Successfully saved {saved_count} properties to database")
+            except Exception as e:
+                logger.error(f"Error saving property '{prop_data.get('name')}': {e}")
+                continue
 
-            return saved_count
+        await session.commit()
+        logger.info(f"Successfully saved {saved_count} properties to database")
 
-        except Exception as e:
-            await session.rollback()
-            logger.error(f"Database error: {e}")
-            raise
-
-        finally:
-            if should_close:
-                await session.close()
+        return saved_count
 
 
 # Convenience function for quick searches
