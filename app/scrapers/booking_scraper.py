@@ -60,32 +60,30 @@ class BookingClient:
         self.screenshots_dir = screenshots_dir or Path("screenshots")
         self.screenshots_dir.mkdir(exist_ok=True)
         self.rate_limit_seconds = rate_limit_seconds
-        self.browser = None
-        self.context = None
-        self.playwright = None
         logger.info(f"BookingClient initialized (headless={headless})")
 
-    async def __aenter__(self):
-        """Async context manager entry."""
-        await self.start()
-        return self
+    async def _create_isolated_context(self):
+        """
+        Create an isolated browser context for a single scraping operation.
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
-        await self.close()
+        This ensures that each scrape has its own isolated environment with:
+        - Fresh cookies and session storage
+        - Randomized user agent
+        - Proper viewport settings
 
-    async def start(self) -> None:
-        """Start the Playwright browser."""
-        if self.browser:
-            return
+        Returns:
+            Tuple of (playwright, browser, context) that should be cleaned up after use
+        """
+        logger.info("Creating isolated browser context...")
 
-        logger.info("Starting Playwright browser...")
-        self.playwright = await async_playwright().start()
+        # Start playwright
+        playwright = await async_playwright().start()
 
-        # Random user agent for this session
+        # Random user agent for this scrape
         user_agent = random.choice(USER_AGENTS)
 
-        self.browser = await self.playwright.chromium.launch(
+        # Launch browser with anti-detection args
+        browser = await playwright.chromium.launch(
             headless=self.headless,
             args=[
                 "--disable-blink-features=AutomationControlled",
@@ -94,7 +92,8 @@ class BookingClient:
             ],
         )
 
-        self.context = await self.browser.new_context(
+        # Create fresh context with randomized settings
+        context = await browser.new_context(
             user_agent=user_agent,
             viewport={"width": 1920, "height": 1080},
             locale="en-US",
@@ -102,28 +101,13 @@ class BookingClient:
         )
 
         # Add extra headers to avoid detection
-        await self.context.set_extra_http_headers({
+        await context.set_extra_http_headers({
             "Accept-Language": "en-US,en;q=0.9",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         })
 
-        logger.info("Browser started successfully")
-
-    async def close(self) -> None:
-        """Close the browser and clean up resources."""
-        if self.context:
-            await self.context.close()
-            self.context = None
-
-        if self.browser:
-            await self.browser.close()
-            self.browser = None
-
-        if self.playwright:
-            await self.playwright.stop()
-            self.playwright = None
-
-        logger.info("Browser closed")
+        logger.info("Isolated browser context created successfully")
+        return playwright, browser, context
 
     async def _random_delay(self, min_seconds: Optional[float] = None) -> None:
         """Add a random delay to simulate human behavior."""
@@ -607,7 +591,10 @@ class BookingClient:
         limit: int = 20,
     ) -> List[Dict[str, Any]]:
         """
-        Search for family accommodations on Booking.com.
+        Search for family accommodations on Booking.com using an isolated browser context.
+
+        Each search operation gets its own isolated context to prevent
+        cookie/session leakage between requests.
 
         Args:
             city: Destination city name
@@ -620,9 +607,6 @@ class BookingClient:
         Returns:
             List of property dictionaries with extracted data
         """
-        if not self.browser:
-            await self.start()
-
         if children_ages is None:
             children_ages = [3, 6]
 
@@ -634,50 +618,74 @@ class BookingClient:
         # Build search URL
         url = self._build_search_url(city, check_in, check_out, adults, children_ages)
 
-        # Create new page
-        page = await self.context.new_page()
+        # Create isolated browser context for this search
+        playwright, browser, context = await self._create_isolated_context()
 
         try:
-            # Navigate to search results
-            logger.info("Loading search results page...")
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # Create new page in isolated context
+            page = await context.new_page()
 
-            # Handle cookie consent
-            await self._handle_cookie_consent(page)
+            try:
+                # Navigate to search results
+                logger.info("Loading search results page...")
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-            # Wait for results to load
-            if not await self._wait_for_results(page):
-                logger.error("Failed to load search results")
-                return []
+                # Handle cookie consent
+                await self._handle_cookie_consent(page)
 
-            # Random delay before scrolling
-            await self._random_delay(2.0)
+                # Wait for results to load
+                if not await self._wait_for_results(page):
+                    logger.error("Failed to load search results")
+                    return []
 
-            # Scroll to load more properties
-            await self._scroll_to_load_more(page, max_scrolls=3)
+                # Random delay before scrolling
+                await self._random_delay(2.0)
 
-            # Parse property cards
-            properties = await self.parse_property_cards(page, limit=limit)
+                # Scroll to load more properties
+                await self._scroll_to_load_more(page, max_scrolls=3)
 
-            # Add destination city to each property
-            for prop in properties:
-                prop["destination_city"] = city
-                prop["source"] = "booking"
-                prop["scraped_at"] = datetime.now().isoformat()
+                # Parse property cards
+                properties = await self.parse_property_cards(page, limit=limit)
 
-            logger.info(f"Search complete: found {len(properties)} properties")
+                # Add destination city to each property
+                for prop in properties:
+                    prop["destination_city"] = city
+                    prop["source"] = "booking"
+                    prop["scraped_at"] = datetime.now().isoformat()
 
-            return properties
+                logger.info(f"Search complete: found {len(properties)} properties")
 
-        except Exception as e:
-            logger.error(f"Error during search: {e}")
-            await self._save_screenshot(page, "search_error")
-            raise
+                return properties
+
+            except Exception as e:
+                logger.error(f"Error during search: {e}")
+                await self._save_screenshot(page, "search_error")
+                raise
+
+            finally:
+                await page.close()
+                # Rate limiting
+                await self._random_delay()
 
         finally:
-            await page.close()
-            # Rate limiting
-            await self._random_delay()
+            # Always cleanup isolated browser context
+            logger.debug("Cleaning up isolated browser context")
+            try:
+                await context.close()
+            except Exception as e:
+                logger.warning(f"Error closing context: {e}")
+
+            try:
+                await browser.close()
+            except Exception as e:
+                logger.warning(f"Error closing browser: {e}")
+
+            try:
+                await playwright.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping playwright: {e}")
+
+            logger.debug("Isolated browser context cleaned up")
 
     async def save_to_database(
         self,

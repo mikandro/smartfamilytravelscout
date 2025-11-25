@@ -87,9 +87,6 @@ class SkyscannerScraper:
         """
         self.headless = headless
         self.slow_mo = slow_mo
-        self.browser: Optional[Browser] = None
-        self.context: Optional[BrowserContext] = None
-        self.playwright = None
         self.stealth = Stealth()  # Initialize stealth mode
         self.rate_limiter = rate_limiter or get_skyscanner_rate_limiter()
 
@@ -101,30 +98,30 @@ class SkyscannerScraper:
             f"SkyscannerScraper initialized with stealth mode (headless={headless}, slow_mo={slow_mo})"
         )
 
-    async def __aenter__(self):
-        """Context manager entry - start browser."""
-        await self._start_browser()
-        return self
+    async def _create_isolated_context(self):
+        """
+        Create an isolated browser context for a single scraping operation.
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - close browser."""
-        await self._close_browser()
+        This ensures that each scrape has its own isolated environment with:
+        - Fresh cookies and session storage
+        - Randomized user agent
+        - Proper viewport settings
+        - Stealth mode enabled
 
-    async def _start_browser(self):
-        """Start Playwright browser with random user agent and stealth mode."""
-        if self.browser:
-            logger.warning("Browser already started")
-            return
+        Returns:
+            Tuple of (playwright, browser, context) that should be cleaned up after use
+        """
+        logger.info("Creating isolated browser context...")
 
-        logger.info("Starting Playwright browser with stealth mode...")
-        self.playwright = await async_playwright().start()
+        # Start playwright
+        playwright = await async_playwright().start()
 
-        # Random user agent for this session
+        # Random user agent for this scrape
         user_agent = random.choice(USER_AGENTS)
         logger.debug(f"Using user agent: {user_agent[:50]}...")
 
-        # Launch browser with additional args to avoid detection
-        self.browser = await self.playwright.chromium.launch(
+        # Launch browser with anti-detection args
+        browser = await playwright.chromium.launch(
             headless=self.headless,
             slow_mo=self.slow_mo,
             args=[
@@ -134,39 +131,23 @@ class SkyscannerScraper:
             ]
         )
 
-        # Create context with user agent and additional options
-        self.context = await self.browser.new_context(
+        # Create fresh context with randomized settings
+        context = await browser.new_context(
             user_agent=user_agent,
             viewport={"width": 1920, "height": 1080},
             locale="en-US",
             timezone_id="Europe/Vienna",
-            # Additional stealth options
             extra_http_headers={
                 'Accept-Language': 'en-US,en;q=0.9',
             },
         )
 
         # Apply stealth mode to the context
-        await self.stealth.apply_stealth_async(self.context)
-        logger.debug("Stealth mode applied to browser context")
+        await self.stealth.apply_stealth_async(context)
+        logger.debug("Stealth mode applied to isolated browser context")
 
-        logger.info("Browser started successfully with stealth mode enabled")
-
-    async def _close_browser(self):
-        """Close Playwright browser and cleanup."""
-        if self.context:
-            await self.context.close()
-            self.context = None
-
-        if self.browser:
-            await self.browser.close()
-            self.browser = None
-
-        if self.playwright:
-            await self.playwright.stop()
-            self.playwright = None
-
-        logger.info("Browser closed")
+        logger.info("Isolated browser context created successfully")
+        return playwright, browser, context
 
     def _check_rate_limit(self):
         """
@@ -309,7 +290,10 @@ class SkyscannerScraper:
         return_date: Optional[date] = None,
     ) -> List[Dict]:
         """
-        Scrape flights for a specific route.
+        Scrape flights for a specific route using an isolated browser context.
+
+        Each scraping operation gets its own isolated context to prevent
+        cookie/session leakage between requests.
 
         Args:
             origin: Origin airport IATA code (e.g., "MUC")
@@ -328,56 +312,76 @@ class SkyscannerScraper:
         # Check rate limit
         self._check_rate_limit()
 
-        # Ensure browser is started
-        if not self.browser:
-            await self._start_browser()
-
         # Build Skyscanner URL
         url = self._build_url(origin, destination, departure_date, return_date)
         logger.info(f"Scraping route: {origin} → {destination} ({url})")
 
-        # Create new page (stealth already applied to context)
-        page = await self.context.new_page()
+        # Create isolated browser context for this scrape
+        playwright, browser, context = await self._create_isolated_context()
 
         try:
-            # Respectful delay before request
-            await self._respectful_delay()
+            # Create new page in isolated context
+            page = await context.new_page()
 
-            # Navigate to URL
-            logger.debug(f"Navigating to {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                # Respectful delay before request
+                await self._respectful_delay()
 
-            # Handle cookie consent
-            await self._handle_cookie_consent(page)
+                # Navigate to URL
+                logger.debug(f"Navigating to {url}")
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-            # Check for CAPTCHA
-            if await self._detect_captcha(page):
-                await self._save_screenshot(page, prefix="captcha")
-                raise CaptchaDetectedError(
-                    "CAPTCHA detected. Aborting scrape. Screenshot saved."
-                )
+                # Handle cookie consent
+                await self._handle_cookie_consent(page)
 
-            # Wait for results to load
-            await self._wait_for_results(page)
+                # Check for CAPTCHA
+                if await self._detect_captcha(page):
+                    await self._save_screenshot(page, prefix="captcha")
+                    raise CaptchaDetectedError(
+                        "CAPTCHA detected. Aborting scrape. Screenshot saved."
+                    )
 
-            # Parse flight cards
-            flights = await self.parse_flight_cards(page)
+                # Wait for results to load
+                await self._wait_for_results(page)
 
-            logger.info(f"Successfully scraped {len(flights)} flights")
-            return flights
+                # Parse flight cards
+                flights = await self.parse_flight_cards(page)
 
-        except PlaywrightTimeoutError as e:
-            logger.error(f"Timeout loading page: {e}")
-            await self._save_screenshot(page, prefix="timeout")
-            raise
+                logger.info(f"Successfully scraped {len(flights)} flights")
+                return flights
 
-        except Exception as e:
-            logger.error(f"Error scraping route: {e}", exc_info=True)
-            await self._save_screenshot(page, prefix="error")
-            raise
+            except PlaywrightTimeoutError as e:
+                logger.error(f"Timeout loading page: {e}")
+                await self._save_screenshot(page, prefix="timeout")
+                raise
+
+            except Exception as e:
+                logger.error(f"Error scraping route: {e}", exc_info=True)
+                await self._save_screenshot(page, prefix="error")
+                raise
+
+            finally:
+                await page.close()
 
         finally:
-            await page.close()
+            # Always cleanup browser context and playwright instance
+            logger.debug("Cleaning up isolated browser context")
+            try:
+                await context.close()
+            except Exception as e:
+                logger.warning(f"Error closing context: {e}")
+
+            try:
+                await browser.close()
+            except Exception as e:
+                logger.warning(f"Error closing browser: {e}")
+
+            try:
+                await playwright.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping playwright: {e}")
+
+            logger.debug("Isolated browser context cleaned up")
 
     def _build_url(
         self,

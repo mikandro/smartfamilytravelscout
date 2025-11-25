@@ -87,29 +87,32 @@ class RyanairScraper:
             self.log_dir = settings.get_log_dir() / "ryanair"
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.browser: Optional[Browser] = None
-        self.context: Optional[BrowserContext] = None
-        self.page: Optional[Page] = None
         self.rate_limiter = rate_limiter or get_ryanair_rate_limiter()
 
-    async def __aenter__(self):
-        """Context manager entry."""
-        await self._init_browser()
-        return self
+    async def _create_isolated_context(self):
+        """
+        Create an isolated browser context for a single scraping operation.
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
-        await self.close()
+        This ensures that each scrape has its own isolated environment with:
+        - Fresh cookies and session storage
+        - Randomized user agent
+        - Proper viewport settings
+        - Stealth mode enabled
 
-    async def _init_browser(self) -> None:
-        """Initialize Playwright browser with stealth configuration."""
-        logger.info("Initializing browser with stealth mode...")
+        Returns:
+            Tuple of (playwright, browser, context) that should be cleaned up after use
+        """
+        logger.info("Creating isolated browser context with stealth mode...")
 
+        # Start playwright
         playwright = await async_playwright().start()
 
+        # Random user agent for this scrape
+        user_agent = random.choice(self.USER_AGENTS)
+
         # Launch browser with stealth args
-        self.browser = await playwright.chromium.launch(
-            headless=True,  # Set to False for debugging
+        browser = await playwright.chromium.launch(
+            headless=True,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
@@ -125,10 +128,10 @@ class RyanairScraper:
             ],
         )
 
-        # Create context with realistic settings
-        self.context = await self.browser.new_context(
+        # Create fresh context with realistic settings
+        context = await browser.new_context(
             viewport={"width": 1920, "height": 1080},
-            user_agent=random.choice(self.USER_AGENTS),
+            user_agent=user_agent,
             locale="en-GB",
             timezone_id="Europe/London",
             permissions=["geolocation"],
@@ -141,14 +144,14 @@ class RyanairScraper:
         )
 
         # Create page
-        self.page = await self.context.new_page()
+        page = await context.new_page()
 
         # Apply stealth mode
         stealth_config = Stealth()
-        await stealth_config.apply_stealth_async(self.page)
+        await stealth_config.apply_stealth_async(page)
 
         # Additional stealth: override navigator.webdriver
-        await self.page.add_init_script(
+        await page.add_init_script(
             """
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
@@ -179,17 +182,8 @@ class RyanairScraper:
         """
         )
 
-        logger.info("Browser initialized with stealth mode")
-
-    async def close(self) -> None:
-        """Close browser and cleanup."""
-        if self.page:
-            await self.page.close()
-        if self.context:
-            await self.context.close()
-        if self.browser:
-            await self.browser.close()
-        logger.info("Browser closed")
+        logger.info("Isolated browser context created with stealth mode")
+        return playwright, browser, context, page
 
     async def _check_rate_limit(self) -> None:
         """
@@ -217,11 +211,12 @@ class RyanairScraper:
             f"Rate limit check: {status['current_count']}/{status['max_requests']} searches today"
         )
 
-    async def _save_screenshot(self, name: str) -> str:
+    async def _save_screenshot(self, page: Page, name: str) -> str:
         """
         Save screenshot for debugging.
 
         Args:
+            page: Playwright page instance
             name: Screenshot name/identifier
 
         Returns:
@@ -231,20 +226,23 @@ class RyanairScraper:
         filename = f"{timestamp}_{name}.png"
         filepath = self.log_dir / filename
 
-        if self.page:
-            await self.page.screenshot(path=str(filepath), full_page=True)
+        if page:
+            await page.screenshot(path=str(filepath), full_page=True)
             logger.info(f"Screenshot saved: {filepath}")
 
         return str(filepath)
 
-    async def _detect_captcha(self) -> bool:
+    async def _detect_captcha(self, page: Page) -> bool:
         """
         Detect if CAPTCHA is present on the page.
+
+        Args:
+            page: Playwright page instance
 
         Returns:
             True if CAPTCHA detected, False otherwise
         """
-        if not self.page:
+        if not page:
             return False
 
         # Check for common CAPTCHA indicators
@@ -259,7 +257,7 @@ class RyanairScraper:
 
         for selector in captcha_selectors:
             try:
-                element = await self.page.query_selector(selector)
+                element = await page.query_selector(selector)
                 if element:
                     logger.warning(f"CAPTCHA detected: {selector}")
                     return True
@@ -268,7 +266,7 @@ class RyanairScraper:
 
         # Check page content for CAPTCHA text
         try:
-            content = await self.page.content()
+            content = await page.content()
             if any(
                 keyword in content.lower()
                 for keyword in ["captcha", "verify you are human", "security check"]
@@ -291,18 +289,19 @@ class RyanairScraper:
         delay = random.uniform(min_seconds, max_seconds)
         await asyncio.sleep(delay)
 
-    async def _type_like_human(self, selector: str, text: str) -> None:
+    async def _type_like_human(self, page: Page, selector: str, text: str) -> None:
         """
         Type text with human-like delays.
 
         Args:
+            page: Playwright page instance
             selector: Element selector
             text: Text to type
         """
-        if not self.page:
+        if not page:
             return
 
-        element = await self.page.wait_for_selector(selector, timeout=10000)
+        element = await page.wait_for_selector(selector, timeout=10000)
         if element:
             # Click to focus
             await element.click()
@@ -314,19 +313,24 @@ class RyanairScraper:
 
             await self._human_delay(0.3, 0.7)
 
-    async def _scroll_randomly(self) -> None:
-        """Scroll page randomly to simulate human behavior."""
-        if not self.page:
+    async def _scroll_randomly(self, page: Page) -> None:
+        """
+        Scroll page randomly to simulate human behavior.
+
+        Args:
+            page: Playwright page instance
+        """
+        if not page:
             return
 
         # Random scroll down
         scroll_amount = random.randint(100, 500)
-        await self.page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+        await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
         await self._human_delay(0.5, 1.5)
 
         # Sometimes scroll back up
         if random.random() > 0.5:
-            await self.page.evaluate(f"window.scrollBy(0, -{scroll_amount // 2})")
+            await page.evaluate(f"window.scrollBy(0, -{scroll_amount // 2})")
             await self._human_delay(0.3, 0.8)
 
     async def handle_popups(self, page: Page) -> None:
@@ -446,6 +450,7 @@ class RyanairScraper:
             # Type origin code
             await origin_input.fill("")  # Clear first
             await self._type_like_human(
+                page,
                 'input[placeholder*="Departure"],'
                 'input[data-ref="input-button__input"],'
                 'input#input-button__departure',
@@ -466,7 +471,7 @@ class RyanairScraper:
 
         except Exception as e:
             logger.error(f"Error selecting origin: {e}")
-            await self._save_screenshot("error_origin_selection")
+            await self._save_screenshot(page, "error_origin_selection")
             raise
 
         # Destination airport
@@ -485,6 +490,7 @@ class RyanairScraper:
             # Type destination code
             await dest_input.fill("")  # Clear first
             await self._type_like_human(
+                page,
                 'input[placeholder*="Destination"],' 'input#input-button__destination',
                 destination,
             )
@@ -503,7 +509,7 @@ class RyanairScraper:
 
         except Exception as e:
             logger.error(f"Error selecting destination: {e}")
-            await self._save_screenshot("error_destination_selection")
+            await self._save_screenshot(page, "error_destination_selection")
             raise
 
         # Dates
@@ -540,7 +546,7 @@ class RyanairScraper:
 
         except Exception as e:
             logger.error(f"Error selecting dates: {e}")
-            await self._save_screenshot("error_date_selection")
+            await self._save_screenshot(page, "error_date_selection")
             raise
 
         # Passengers (2 adults, 2 children)
@@ -584,14 +590,14 @@ class RyanairScraper:
 
         except Exception as e:
             logger.warning(f"Error selecting passengers (continuing anyway): {e}")
-            await self._save_screenshot("warning_passenger_selection")
+            await self._save_screenshot(page, "warning_passenger_selection")
 
         # Submit search
         try:
             logger.info("Submitting search...")
 
             # Scroll to search button
-            await self._scroll_randomly()
+            await self._scroll_randomly(page)
 
             # Click search button
             search_button = await page.wait_for_selector(
@@ -610,7 +616,7 @@ class RyanairScraper:
 
         except Exception as e:
             logger.error(f"Error submitting search: {e}")
-            await self._save_screenshot("error_search_submit")
+            await self._save_screenshot(page, "error_search_submit")
             raise
 
     async def parse_fare_calendar(self, page: Page) -> List[Dict]:
@@ -651,7 +657,7 @@ class RyanairScraper:
 
             if not flight_elements:
                 logger.warning("No flight cards found, trying alternative parsing...")
-                await self._save_screenshot("no_flights_found")
+                await self._save_screenshot(page, "no_flights_found")
 
                 # Try to parse from page content
                 content = await page.content()
@@ -746,7 +752,7 @@ class RyanairScraper:
 
         except Exception as e:
             logger.error(f"Error parsing fare calendar: {e}")
-            await self._save_screenshot("error_fare_parsing")
+            await self._save_screenshot(page, "error_fare_parsing")
             raise
 
         return flights
@@ -796,16 +802,20 @@ class RyanairScraper:
         return_date: date,
     ) -> List[Dict]:
         """
-        Scrape Ryanair flights for a specific route.
+        Scrape Ryanair flights for a specific route using an isolated browser context.
+
+        Each scraping operation gets its own isolated context to prevent
+        cookie/session leakage between requests.
 
         This is the main entry point for scraping. It handles:
         - Rate limiting
-        - Browser initialization
+        - Isolated browser context creation
         - Navigation and form filling
         - Popup handling
         - Result parsing
         - Error handling and screenshots
         - CAPTCHA detection
+        - Proper cleanup
 
         Args:
             origin: Origin airport code (e.g., 'FMM', 'MUC')
@@ -829,44 +839,36 @@ class RyanairScraper:
         # Check rate limit
         await self._check_rate_limit()
 
+        # Create isolated browser context for this scrape
+        playwright, browser, context, page = await self._create_isolated_context()
+
         try:
-            # Initialize browser if not already done
-            if not self.browser:
-                await self._init_browser()
-
-            if not self.page:
-                raise ScraperInitializationError(
-                    scraper_name="Ryanair",
-                    component="browser page",
-                    error_details="Page object failed to initialize after browser startup"
-                )
-
             # Navigate to homepage
             logger.info(f"Navigating to {self.BASE_URL}...")
-            await self.page.goto(self.BASE_URL, wait_until="networkidle", timeout=60000)
+            await page.goto(self.BASE_URL, wait_until="networkidle", timeout=60000)
             await self._human_delay(3, 5)
 
             # Save initial screenshot
-            await self._save_screenshot("initial_page")
+            await self._save_screenshot(page, "initial_page")
 
             # Check for CAPTCHA
-            if await self._detect_captcha():
-                await self._save_screenshot("captcha_detected")
+            if await self._detect_captcha(page):
+                await self._save_screenshot(page, "captcha_detected")
                 raise CaptchaDetected("CAPTCHA detected, aborting to avoid detection")
 
             # Handle popups
-            await self.handle_popups(self.page)
+            await self.handle_popups(page)
 
             # Navigate search form
-            await self.navigate_search(self.page, origin, destination, departure_date, return_date)
+            await self.navigate_search(page, origin, destination, departure_date, return_date)
 
             # Check for CAPTCHA after submission
-            if await self._detect_captcha():
-                await self._save_screenshot("captcha_detected_after_search")
+            if await self._detect_captcha(page):
+                await self._save_screenshot(page, "captcha_detected_after_search")
                 raise CaptchaDetected("CAPTCHA detected after search, aborting")
 
             # Parse results
-            flights = await self.parse_fare_calendar(self.page)
+            flights = await self.parse_fare_calendar(page)
 
             # Add metadata
             for flight in flights:
@@ -883,7 +885,7 @@ class RyanairScraper:
                 )
 
             # Save success screenshot
-            await self._save_screenshot("success_results")
+            await self._save_screenshot(page, "success_results")
 
             logger.info(f"Scraping completed successfully: {len(flights)} flights found")
 
@@ -895,12 +897,36 @@ class RyanairScraper:
 
         except Exception as e:
             logger.error(f"Scraping failed: {e}")
-            await self._save_screenshot("error_general")
+            await self._save_screenshot(page, "error_general")
             raise
 
         finally:
             # Add conservative delay before closing
             await self._human_delay(5, 10)
+
+            # Always cleanup isolated browser context
+            logger.debug("Cleaning up isolated browser context")
+            try:
+                await page.close()
+            except Exception as e:
+                logger.warning(f"Error closing page: {e}")
+
+            try:
+                await context.close()
+            except Exception as e:
+                logger.warning(f"Error closing context: {e}")
+
+            try:
+                await browser.close()
+            except Exception as e:
+                logger.warning(f"Error closing browser: {e}")
+
+            try:
+                await playwright.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping playwright: {e}")
+
+            logger.debug("Isolated browser context cleaned up")
 
     def _construct_booking_url(
         self,
