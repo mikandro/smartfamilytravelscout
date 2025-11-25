@@ -69,15 +69,21 @@ class FlightOrchestrator:
         wizzair: WizzAir API scraper
     """
 
-    def __init__(self, redis_client: Optional[Redis] = None):
+    def __init__(self, enabled_scrapers: Optional[List[str]] = None, redis_client: Optional[Redis] = None):
         """
         Initialize enabled flight scrapers based on configuration.
 
         Args:
+            enabled_scrapers: Optional list of scrapers to enable (overrides config).
+                            Valid values: 'kiwi', 'skyscanner', 'ryanair', 'wizzair'
             redis_client: Optional Redis client for caching. If not provided,
-                         caching will be disabled and all flights will be deduplicated.
+                        a new connection will be created.
         """
-        self.enabled_scrapers = settings.get_available_scrapers()
+        # Use provided scrapers or fall back to configuration
+        if enabled_scrapers is not None:
+            self.enabled_scrapers = enabled_scrapers
+        else:
+            self.enabled_scrapers = settings.get_available_scrapers()
 
         # Initialize only enabled scrapers
         self.kiwi = KiwiClient() if "kiwi" in self.enabled_scrapers else None

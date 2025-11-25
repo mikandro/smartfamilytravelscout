@@ -25,6 +25,57 @@ poetry run scout test-scraper ryanair --origin MUC --dest PRG
 
 The default scrapers work out of the box - no configuration needed!
 
+<<<<<<< HEAD
+## Controlling Scrapers
+
+You can enable or disable specific scrapers both via configuration and at runtime:
+
+### Configuration-based Control (Persistent)
+
+Set environment variables in your `.env` file:
+
+```bash
+# Enable/disable specific scrapers (default: all enabled)
+USE_KIWI_SCRAPER=false        # Disable Kiwi.com (requires API key anyway)
+USE_SKYSCANNER_SCRAPER=true   # Enable Skyscanner (free)
+USE_RYANAIR_SCRAPER=true      # Enable Ryanair (free)
+USE_WIZZAIR_SCRAPER=false     # Disable WizzAir
+
+# Or use CLI
+poetry run scout config set use_wizzair_scraper false
+```
+
+### Runtime Control (Temporary)
+
+Override configuration for a single command:
+
+```bash
+# Disable specific scrapers for this run only
+poetry run scout scrape --origin MUC --destination LIS --disable-scraper wizzair
+
+# Disable multiple scrapers
+poetry run scout run --disable-scraper wizzair --disable-scraper ryanair
+
+# Enable a normally-disabled scraper (if you have API key)
+poetry run scout scrape --origin MUC --destination BCN --enable-scraper kiwi
+
+# Mix enable and disable
+poetry run scout run --enable-scraper kiwi --disable-scraper skyscanner
+```
+
+### Check Scraper Status
+
+```bash
+# View which scrapers are currently enabled
+poetry run scout config show
+```
+
+This feature is useful when:
+- A scraper is temporarily broken or rate-limited
+- You want to test specific scrapers in isolation
+- You need to reduce scraping time by using fewer sources
+- You want to avoid API costs from premium scrapers
+=======
 ## CLI Command Structure
 
 SmartFamilyTravelScout uses a clear, hierarchical command structure:
@@ -46,6 +97,7 @@ SmartFamilyTravelScout uses a clear, hierarchical command structure:
 - `pipeline` = automated full-stack deal discovery
 - `deals` = BEST packages (AI-vetted, high scores)
 - `packages` = ALL packages (complete view, includes pending AI analysis)
+>>>>>>> origin/main
 
 ## Development Commands
 
