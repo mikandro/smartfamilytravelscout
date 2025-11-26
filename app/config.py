@@ -126,6 +126,23 @@ class Settings(BaseSettings):
         default=60, description="Advance booking days for searches"
     )
 
+    # Data Retention Policy
+    flight_retention_days: int = Field(
+        default=90, description="Days to retain flight data after departure date"
+    )
+    event_retention_days: int = Field(
+        default=180, description="Days to retain event data after event date"
+    )
+    package_retention_days: int = Field(
+        default=60, description="Days to retain trip package data after departure date"
+    )
+    accommodation_retention_days: int = Field(
+        default=180, description="Days to retain accommodation data after scraping"
+    )
+    scraping_job_retention_days: int = Field(
+        default=30, description="Days to retain scraping job records after completion"
+    )
+
     # Rate Limiting
     rate_limit_per_minute: int = Field(default=60, description="Rate limit per minute")
     rate_limit_per_hour: int = Field(default=1000, description="Rate limit per hour")
