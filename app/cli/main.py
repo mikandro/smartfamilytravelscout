@@ -276,30 +276,30 @@ async def _run_scrape(
 
                 if scraper == "skyscanner":
                     from app.scrapers.skyscanner_scraper import SkyscannerScraper
-                    scraper_instance = SkyscannerScraper(headless=True)
-                    results = await scraper_instance.scrape_route(
-                        origin=origin.upper(),
-                        destination=destination.upper(),
-                        departure_date=dep_date,
-                        return_date=ret_date,
-                    )
-                    # Normalize data
-                    for r in results:
-                        r["origin_airport"] = origin.upper()
-                        r["destination_airport"] = destination.upper()
-                        r["source"] = "skyscanner"
-                    all_results.extend(results)
+                    async with SkyscannerScraper(headless=True) as scraper_instance:
+                        results = await scraper_instance.scrape_route(
+                            origin=origin.upper(),
+                            destination=destination.upper(),
+                            departure_date=dep_date,
+                            return_date=ret_date,
+                        )
+                        # Normalize data
+                        for r in results:
+                            r["origin_airport"] = origin.upper()
+                            r["destination_airport"] = destination.upper()
+                            r["source"] = "skyscanner"
+                        all_results.extend(results)
 
                 elif scraper == "ryanair":
                     from app.scrapers.ryanair_scraper import RyanairScraper
-                    scraper_instance = RyanairScraper()
-                    results = await scraper_instance.scrape_route(
-                        origin=origin.upper(),
-                        destination=destination.upper(),
-                        departure_date=dep_date,
-                        return_date=ret_date,
-                    )
-                    all_results.extend(results)
+                    async with RyanairScraper() as scraper_instance:
+                        results = await scraper_instance.scrape_route(
+                            origin=origin.upper(),
+                            destination=destination.upper(),
+                            departure_date=dep_date,
+                            return_date=ret_date,
+                        )
+                        all_results.extend(results)
 
                 elif scraper == "wizzair":
                     from app.scrapers.wizzair_scraper import WizzAirScraper
