@@ -89,6 +89,33 @@ class RyanairScraper:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.rate_limiter = rate_limiter or get_ryanair_rate_limiter()
 
+    async def __aenter__(self):
+        """
+        Enter async context manager.
+
+        Returns:
+            Self for use in async with statement
+        """
+        logger.debug("RyanairScraper context manager entered")
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """
+        Exit async context manager.
+
+        Args:
+            exc_type: Exception type if an error occurred
+            exc_val: Exception value if an error occurred
+            exc_tb: Exception traceback if an error occurred
+
+        Returns:
+            False to propagate any exceptions
+        """
+        logger.debug("RyanairScraper context manager exited")
+        # Note: Individual browser contexts are cleaned up in scrape_route()
+        # This method is here to support the async context manager protocol
+        return False
+
     async def _create_isolated_context(self):
         """
         Create an isolated browser context for a single scraping operation.
