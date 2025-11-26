@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.ai.accommodation_scorer import AccommodationScorer
 from app.models.accommodation import Accommodation
 from app.models.flight import Flight
 from app.models.school_holiday import SchoolHoliday
@@ -46,6 +47,7 @@ class AccommodationMatcher:
         - Trip duration filtering (min/max nights)
         - Budget filtering
         - School holiday filtering
+        - Accommodation scoring and ranking
         - Comprehensive cost breakdown
         - Batch database operations
 
@@ -59,6 +61,10 @@ class AccommodationMatcher:
     # Cost estimates for family of 4
     DAILY_FOOD_COST = 100.0  # EUR per day
     DAILY_ACTIVITIES_COST = 50.0  # EUR per day
+
+    def __init__(self):
+        """Initialize the accommodation matcher with scoring capability."""
+        self.scorer = AccommodationScorer()
 
     async def generate_trip_packages(
         self,
@@ -161,7 +167,7 @@ class AccommodationMatcher:
                     Accommodation.destination_city == destination_city
                 )
                 accom_result = await db.execute(accom_stmt)
-                accommodations = accom_result.scalars().all()
+                accommodations = list(accom_result.scalars().all())
 
                 if not accommodations:
                     logger.debug(f"No accommodations found for {destination_city}")
@@ -170,6 +176,11 @@ class AccommodationMatcher:
                     )
                     progress.update(task_id, advance=1)
                     continue
+
+                # Score and rank accommodations
+                accommodations = await self._score_and_rank_accommodations(
+                    db, accommodations
+                )
 
                 # Log start of matching for this city
                 logger.info(
@@ -472,6 +483,63 @@ class AccommodationMatcher:
         )
 
         return stats
+
+    async def _score_and_rank_accommodations(
+        self, db: AsyncSession, accommodations: List[Accommodation]
+    ) -> List[Accommodation]:
+        """
+        Score and rank accommodations using the accommodation scorer.
+
+        Updates accommodation objects with scores and details, saves to database,
+        and returns sorted list (best scored first).
+
+        Args:
+            db: Async database session
+            accommodations: List of Accommodation objects to score
+
+        Returns:
+            Sorted list of Accommodation objects (highest score first)
+
+        Example:
+            >>> ranked = await matcher._score_and_rank_accommodations(db, accommodations)
+            >>> print(f"Best: {ranked[0].name} (score: {ranked[0].accommodation_score})")
+        """
+        if not accommodations:
+            return []
+
+        # Score all accommodations
+        scored_results = self.scorer.compare_accommodations(accommodations)
+
+        # Update database with scores
+        for result in scored_results:
+            accommodation = result["accommodation"]
+            accommodation.accommodation_score = result["overall_score"]
+            accommodation.accommodation_score_details = {
+                "price_per_person_per_night": result["price_per_person_per_night"],
+                "estimated_capacity": result["estimated_capacity"],
+                "price_quality_score": result["price_quality_score"],
+                "family_suitability_score": result["family_suitability_score"],
+                "quality_score": result["quality_score"],
+                "value_category": result["value_category"],
+                "family_features": result["family_features"],
+                "comparison_notes": result["comparison_notes"],
+            }
+            db.add(accommodation)
+
+        # Commit scores to database
+        await db.commit()
+
+        # Return sorted list (best first)
+        sorted_accommodations = [r["accommodation"] for r in scored_results]
+
+        logger.info(
+            f"Scored {len(sorted_accommodations)} accommodations, "
+            f"best score: {sorted_accommodations[0].accommodation_score:.1f}"
+            if sorted_accommodations
+            else "No accommodations to score"
+        )
+
+        return sorted_accommodations
 
     async def print_package_summary(
         self, db: AsyncSession, packages: List[TripPackage]
