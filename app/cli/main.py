@@ -47,9 +47,11 @@ app = typer.Typer(
 # Create sub-commands
 config_app = typer.Typer(help="Manage configuration")
 db_app = typer.Typer(help="Database management")
+prefs_app = typer.Typer(help="Manage user preferences")
 
 app.add_typer(config_app, name="config")
 app.add_typer(db_app, name="db")
+app.add_typer(prefs_app, name="prefs")
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -785,6 +787,14 @@ def deals(
         "table",
         help="Output format: 'table' or 'json'",
     ),
+    profile: Optional[str] = typer.Option(
+        None,
+        help="Use preference profile for personalized scoring (e.g., 'family-with-toddlers')",
+    ),
+    user_id: int = typer.Option(
+        1,
+        help="User ID for loading preferences from database",
+    ),
 ):
     """
     View top-rated travel deals (AI-scored packages with score >= 70).
@@ -795,14 +805,19 @@ def deals(
     Use this to find the BEST deals that have been vetted by AI.
     For viewing ALL packages (including unscored), use 'scout packages'.
 
+    You can use --profile to load a preference profile for personalized recommendations,
+    or the command will use preferences from the database for the specified user_id.
+
     Examples:
         scout deals                                    # Top 10 deals (score >= 70)
         scout deals --min-score 80 --limit 20          # Top 20 excellent deals
         scout deals --destination lisbon --type family # Family deals to Lisbon
         scout deals --format json                      # JSON output for scripts
+        scout deals --profile family-with-toddlers     # Personalized recommendations
+        scout deals --profile budget-conscious --min-score 75  # Budget-conscious deals
     """
     try:
-        asyncio.run(_show_deals(min_score, destination, limit, package_type, format))
+        asyncio.run(_show_deals(min_score, destination, limit, package_type, format, profile, user_id))
     except Exception as e:
         handle_error(e, "Failed to retrieve deals")
 
@@ -860,11 +875,35 @@ async def _show_deals(
     limit: int,
     package_type: Optional[str],
     format: str,
+    profile: Optional[str],
+    user_id: int,
 ):
-    """Retrieve and display top deals."""
+    """Retrieve and display top deals with optional personalized scoring."""
     from app.models.trip_package import TripPackage
+    from app.models.user_preference import UserPreference
+    from app.utils.preference_loader import PreferenceLoader
+
+    # Load user preferences if profile is specified or from database
+    user_prefs = None
+    if profile:
+        loader = PreferenceLoader()
+        try:
+            user_prefs = loader.load_profile(profile)
+            info(f"Using preference profile: {profile}")
+        except Exception as e:
+            warning(f"Could not load profile '{profile}': {e}")
+            info("Falling back to standard scoring")
 
     async with get_async_session_context() as db:
+        # Try to load user preferences from database if not loaded from profile
+        if user_prefs is None:
+            result = await db.execute(
+                select(UserPreference).where(UserPreference.user_id == user_id)
+            )
+            user_prefs = result.scalar_one_or_none()
+            if user_prefs:
+                info(f"Using preferences from database for user {user_id}")
+
         # Build query
         query = select(TripPackage).where(
             TripPackage.ai_score >= min_score
@@ -878,6 +917,20 @@ async def _show_deals(
         if package_type:
             query = query.where(TripPackage.package_type == package_type)
 
+        # Apply preference filtering if available
+        if user_prefs:
+            # Filter by budget preferences
+            query = query.where(
+                TripPackage.total_price <= float(user_prefs.max_total_budget_family)
+            )
+
+            # Filter out avoided destinations
+            if user_prefs.avoid_destinations:
+                for avoid_dest in user_prefs.avoid_destinations:
+                    query = query.where(
+                        ~TripPackage.destination_city.ilike(f"%{avoid_dest}%")
+                    )
+
         query = query.order_by(desc(TripPackage.ai_score)).limit(limit)
 
         result = await db.execute(query)
@@ -885,6 +938,8 @@ async def _show_deals(
 
         if not packages:
             warning("No deals found matching your criteria")
+            if user_prefs:
+                info("Try adjusting your preference profile or budget constraints")
             return
 
         if format == "json":
@@ -2733,6 +2788,212 @@ async def _find_parent_escapes(
             console.print("\n")
 
     success(f"Found {len(packages)} parent escape opportunities!")
+# PREFS Commands - User Preferences Management
+# ============================================================================
+
+@prefs_app.command("list")
+def prefs_list():
+    """
+    List all available preference profiles.
+
+    Profiles are stored in app/preference_profiles/ and can be loaded
+    to customize deal recommendations.
+    """
+    console.print("\n")
+    console.print(Panel(
+        "[bold]Available Preference Profiles[/bold]",
+        border_style="blue",
+    ))
+
+    from app.utils.preference_loader import PreferenceLoader
+
+    loader = PreferenceLoader()
+    profiles = loader.list_available_profiles()
+
+    if not profiles:
+        warning("No preference profiles found")
+        return
+
+    # Create table
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Profile", style="cyan", no_wrap=True)
+    table.add_column("Description", style="white")
+
+    for profile_name in profiles:
+        description = loader.get_profile_description(profile_name)
+        table.add_row(profile_name, description)
+
+    console.print(table)
+    console.print("\n")
+    info(f"Use 'scout prefs load <profile>' to load a profile")
+
+
+@prefs_app.command("show")
+def prefs_show(
+    profile: str = typer.Argument(..., help="Profile name to show"),
+):
+    """
+    Show details of a specific preference profile.
+
+    Example:
+        scout prefs show family-with-toddlers
+    """
+    console.print("\n")
+
+    from app.utils.preference_loader import PreferenceLoader
+
+    loader = PreferenceLoader()
+
+    try:
+        data = loader.load_profile_data(profile)
+
+        console.print(Panel(
+            f"[bold]{data.get('name', profile)}[/bold]\n"
+            f"{data.get('description', 'No description')}",
+            border_style="blue",
+        ))
+
+        # Create details table
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Max Flight Price (Family)", f"€{data['max_flight_price_family']}")
+        table.add_row("Max Flight Price (Parents)", f"€{data['max_flight_price_parents']}")
+        table.add_row("Max Total Budget (Family)", f"€{data['max_total_budget_family']}")
+        table.add_row("Notification Threshold", f"{data.get('notification_threshold', 70)}/100")
+
+        if data.get('preferred_destinations'):
+            table.add_row("Preferred Destinations", ", ".join(data['preferred_destinations']))
+
+        if data.get('avoid_destinations'):
+            table.add_row("Avoid Destinations", ", ".join(data['avoid_destinations']))
+
+        if data.get('interests'):
+            table.add_row("Interests", ", ".join(data['interests']))
+
+        console.print("\n")
+        console.print(table)
+        console.print("\n")
+
+    except FileNotFoundError as e:
+        handle_error(e, "Profile not found")
+    except Exception as e:
+        handle_error(e, "Failed to load profile")
+
+
+@prefs_app.command("load")
+def prefs_load(
+    profile: str = typer.Argument(..., help="Profile name to load"),
+    user_id: int = typer.Option(1, help="User ID to associate with this profile"),
+):
+    """
+    Load a preference profile into the database.
+
+    This will create or update user preferences in the database based on
+    the selected profile.
+
+    Examples:
+        scout prefs load family-with-toddlers
+        scout prefs load budget-conscious --user-id 2
+    """
+    console.print("\n")
+    console.print(Panel(
+        f"[bold]Loading Preference Profile: {profile}[/bold]",
+        border_style="blue",
+    ))
+
+    from app.utils.preference_loader import PreferenceLoader
+
+    loader = PreferenceLoader()
+
+    try:
+        # Load profile data first to show what will be saved
+        data = loader.load_profile_data(profile)
+
+        info(f"Profile: {data.get('name', profile)}")
+        info(f"Description: {data.get('description', 'N/A')}")
+
+        console.print()
+
+        # Confirm before saving
+        confirm = typer.confirm("Save this profile to the database?")
+
+        if not confirm:
+            warning("Operation cancelled")
+            raise typer.Exit()
+
+        # Save to database
+        db = get_sync_session()
+        try:
+            user_pref = loader.save_profile_to_db(profile, db, user_id)
+            success(f"Loaded profile '{profile}' for user {user_pref.user_id}")
+            info("Use 'scout deals --profile <profile>' to get personalized recommendations")
+        finally:
+            db.close()
+
+    except FileNotFoundError as e:
+        handle_error(e, "Profile not found")
+    except Exception as e:
+        handle_error(e, "Failed to load profile")
+
+
+@prefs_app.command("current")
+def prefs_current(
+    user_id: int = typer.Option(1, help="User ID to check"),
+):
+    """
+    Show current user preferences from database.
+
+    Example:
+        scout prefs current
+        scout prefs current --user-id 2
+    """
+    console.print("\n")
+
+    from app.models.user_preference import UserPreference
+
+    db = get_sync_session()
+    try:
+        user_pref = (
+            db.query(UserPreference)
+            .filter(UserPreference.user_id == user_id)
+            .first()
+        )
+
+        if not user_pref:
+            warning(f"No preferences found for user {user_id}")
+            info("Use 'scout prefs load <profile>' to create preferences")
+            return
+
+        console.print(Panel(
+            f"[bold]User {user_id} Preferences[/bold]",
+            border_style="blue",
+        ))
+
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Max Flight Price (Family)", f"€{user_pref.max_flight_price_family}")
+        table.add_row("Max Flight Price (Parents)", f"€{user_pref.max_flight_price_parents}")
+        table.add_row("Max Total Budget (Family)", f"€{user_pref.max_total_budget_family}")
+        table.add_row("Notification Threshold", f"{user_pref.notification_threshold}/100")
+        table.add_row("Preferred Destinations", user_pref.preferred_destinations_str)
+
+        if user_pref.avoid_destinations:
+            table.add_row("Avoid Destinations", ", ".join(user_pref.avoid_destinations))
+
+        table.add_row("Interests", user_pref.interests_str)
+
+        console.print("\n")
+        console.print(table)
+        console.print("\n")
+
+    except Exception as e:
+        handle_error(e, "Failed to retrieve preferences")
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":
