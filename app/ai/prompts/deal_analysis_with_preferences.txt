@@ -1,0 +1,91 @@
+You are an expert travel deal analyzer specializing in family travel. Analyze the following trip package and score it comprehensively based on the user's specific preferences.
+
+TRIP DETAILS:
+- Destination: {city}
+- Dates: {departure_date} to {return_date} ({num_nights} nights)
+- Flights: {flight_details}
+  - Price per person: €{flight_price_per_person}
+  - True cost (incl. baggage, parking, etc.): €{true_cost}
+- Accommodation: {accommodation_name} ({accommodation_type})
+  - Bedrooms: {bedrooms}
+  - Price per night: €{accommodation_price_per_night}
+  - Rating: {accommodation_rating}/10
+  - Amenities: {amenities}
+- Total Package Cost: €{total_cost} for 4 people (€{cost_per_person} per person)
+
+HISTORICAL CONTEXT:
+{price_context}
+
+EVENTS DURING VISIT:
+{events_list}
+
+USER PREFERENCES:
+- Budget Constraints:
+  - Max flight price per person (family trips): €{max_flight_price_family}
+  - Max total budget (family trips): €{max_total_budget_family}
+  - Notification threshold: {notification_threshold}/100
+- Preferred Destinations: {preferred_destinations}
+- Destinations to Avoid: {avoid_destinations}
+- Interests: {interests}
+- Travel Purpose: {travel_purpose}
+
+FAMILY CONTEXT:
+- 2 adults + 2 children (ages 3 and 6)
+- Looking for family-friendly destinations
+- Budget-conscious but value quality experiences
+
+ANALYSIS REQUIREMENTS:
+Provide a comprehensive scoring based on:
+
+1. OVERALL DEAL SCORE (0-100)
+   - Weight price competitiveness heavily against user's budget preferences
+   - Consider if destination matches preferred destinations or interests
+   - Factor in family suitability
+   - Account for timing and events
+   - IMPORTANT: Heavily penalize if destination is in the avoid list
+   - IMPORTANT: Boost score if destination is in preferred list or matches interests
+
+2. VALUE ASSESSMENT
+   - Is this genuinely cheap compared to typical prices AND user's budget?
+   - Does the price fit within the user's max flight price and total budget?
+   - Does the price include good value (accommodation quality, location, etc.)?
+   - Are there hidden costs or concerns?
+
+3. PREFERENCE ALIGNMENT
+   - How well does this destination match the user's interests?
+   - If the user has specific interests (e.g., wine, beaches, hiking), does this destination offer those?
+   - Is this a preferred destination?
+   - Is this destination in the avoid list? (If yes, score should be very low)
+
+4. FAMILY SUITABILITY (for kids ages 3 & 6)
+   - Destination appropriate for young children?
+   - Accommodation family-friendly (space, amenities)?
+   - Activities and events suitable?
+
+5. TIMING QUALITY
+   - Good weather expected for the dates?
+   - Interesting events happening during visit?
+   - School holiday period considerations
+
+6. RECOMMENDATION
+   - book_now: Exceptional deal that matches preferences, should book immediately
+   - wait: Good deal but might get better, or timing not ideal, or partial preference match
+   - skip: Not a great deal, doesn't match preferences, or in avoid list
+
+7. CONFIDENCE LEVEL (0-100)
+   - How confident are you in this assessment?
+   - Consider data completeness and market knowledge
+
+Return your analysis in the following JSON format:
+{
+  "score": <number 0-100>,
+  "value_assessment": "<1-2 sentences on whether this is genuinely a good price for this user>",
+  "preference_alignment": <number 0-10>,
+  "family_suitability": <number 0-10>,
+  "timing_quality": <number 0-10>,
+  "recommendation": "<book_now | wait | skip>",
+  "confidence": <number 0-100>,
+  "reasoning": "<2-3 sentences explaining the score and recommendation, specifically mentioning how it matches user preferences>",
+  "highlights": ["<key selling point 1>", "<key selling point 2>", ...],
+  "concerns": ["<concern 1>", "<concern 2>", ...]
+}

@@ -3,12 +3,24 @@ Retry decorator with exponential backoff for SmartFamilyTravelScout.
 
 Provides robust retry logic for handling transient failures in API calls,
 network requests, and database operations.
+
+Supports both synchronous and asynchronous functions using tenacity.
 """
 
+import asyncio
 import logging
 import time
 from functools import wraps
 from typing import Callable, Type, Tuple
+
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+    after_log,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +29,7 @@ RETRIABLE_EXCEPTIONS: Tuple[Type[Exception], ...] = (
     ConnectionError,
     TimeoutError,
     OSError,
+    IOError,
 )
 
 
@@ -242,3 +255,313 @@ class RetryContext:
                 f"All {self.max_attempts} retry attempts failed: {exception}",
                 exc_info=True,
             )
+
+
+# ============================================================================
+# Tenacity-based Async Retry Decorators
+# ============================================================================
+
+
+def async_retry_with_backoff(
+    max_attempts: int = 3,
+    min_wait_seconds: int = 2,
+    max_wait_seconds: int = 10,
+    exceptions: Tuple[Type[Exception], ...] | None = None,
+):
+    """
+    Async retry decorator using tenacity for exponential backoff.
+
+    This decorator is designed for async functions and provides automatic
+    retry logic with exponential backoff for transient failures.
+
+    Args:
+        max_attempts: Maximum number of attempts (default: 3)
+        min_wait_seconds: Minimum wait time between retries (default: 2)
+        max_wait_seconds: Maximum wait time between retries (default: 10)
+        exceptions: Tuple of exception types to catch. If None, uses RETRIABLE_EXCEPTIONS.
+
+    Returns:
+        Decorated async function with retry logic
+
+    Examples:
+        >>> @async_retry_with_backoff(max_attempts=3)
+        ... async def fetch_data():
+        ...     async with httpx.AsyncClient() as client:
+        ...         response = await client.get("https://api.example.com")
+        ...         return response.json()
+
+        >>> @async_retry_with_backoff(max_attempts=5, exceptions=(ValueError,))
+        ... async def validate_data(data):
+        ...     if not data:
+        ...         raise ValueError("Empty data")
+        ...     return data
+
+    Raises:
+        The last exception if all retry attempts fail
+    """
+    if exceptions is None:
+        exceptions = RETRIABLE_EXCEPTIONS
+
+    return retry(
+        retry=retry_if_exception_type(exceptions),
+        stop=stop_after_attempt(max_attempts),
+        wait=wait_exponential(multiplier=1, min=min_wait_seconds, max=max_wait_seconds),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        after=after_log(logger, logging.DEBUG),
+        reraise=True,
+    )
+
+
+def async_retry_on_exception(
+    exception_type: Type[Exception],
+    max_attempts: int = 3,
+    min_wait_seconds: int = 2,
+    max_wait_seconds: int = 10,
+):
+    """
+    Simplified async retry decorator for a single exception type.
+
+    Args:
+        exception_type: Exception type to catch and retry
+        max_attempts: Maximum number of attempts (default: 3)
+        min_wait_seconds: Minimum wait time between retries (default: 2)
+        max_wait_seconds: Maximum wait time between retries (default: 10)
+
+    Returns:
+        Decorated async function with retry logic
+
+    Examples:
+        >>> @async_retry_on_exception(httpx.TimeoutException, max_attempts=3)
+        ... async def fetch_with_timeout():
+        ...     async with httpx.AsyncClient() as client:
+        ...         return await client.get("https://api.example.com", timeout=5)
+    """
+    return async_retry_with_backoff(
+        max_attempts=max_attempts,
+        min_wait_seconds=min_wait_seconds,
+        max_wait_seconds=max_wait_seconds,
+        exceptions=(exception_type,),
+    )
+
+
+def database_retry(
+    max_attempts: int = 3,
+    min_wait_seconds: int = 1,
+    max_wait_seconds: int = 5,
+):
+    """
+    Specialized retry decorator for database operations.
+
+    Retries on common database transient errors:
+    - Connection errors
+    - Timeout errors
+    - Operational errors (deadlocks, connection pool exhaustion)
+
+    Args:
+        max_attempts: Maximum number of attempts (default: 3)
+        min_wait_seconds: Minimum wait time between retries (default: 1)
+        max_wait_seconds: Maximum wait time between retries (default: 5)
+
+    Returns:
+        Decorated async function with retry logic
+
+    Examples:
+        >>> from sqlalchemy.ext.asyncio import AsyncSession
+        >>> @database_retry(max_attempts=3)
+        ... async def save_to_database(db: AsyncSession, data: dict):
+        ...     obj = MyModel(**data)
+        ...     db.add(obj)
+        ...     await db.commit()
+    """
+    # Import SQLAlchemy exceptions here to avoid circular imports
+    try:
+        from sqlalchemy.exc import OperationalError, DBAPIError, TimeoutError as SQLTimeoutError
+        db_exceptions = (
+            ConnectionError,
+            TimeoutError,
+            OperationalError,
+            DBAPIError,
+            SQLTimeoutError,
+            OSError,
+        )
+    except ImportError:
+        # Fallback if SQLAlchemy is not installed
+        db_exceptions = RETRIABLE_EXCEPTIONS
+
+    return retry(
+        retry=retry_if_exception_type(db_exceptions),
+        stop=stop_after_attempt(max_attempts),
+        wait=wait_exponential(multiplier=1, min=min_wait_seconds, max=max_wait_seconds),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        after=after_log(logger, logging.DEBUG),
+        reraise=True,
+    )
+
+
+def redis_retry(
+    max_attempts: int = 3,
+    min_wait_seconds: int = 1,
+    max_wait_seconds: int = 5,
+):
+    """
+    Specialized retry decorator for Redis operations.
+
+    Retries on common Redis transient errors:
+    - Connection errors
+    - Timeout errors
+    - Response errors
+
+    Args:
+        max_attempts: Maximum number of attempts (default: 3)
+        min_wait_seconds: Minimum wait time between retries (default: 1)
+        max_wait_seconds: Maximum wait time between retries (default: 5)
+
+    Returns:
+        Decorated async function with retry logic
+
+    Examples:
+        >>> from redis.asyncio import Redis
+        >>> @redis_retry(max_attempts=3)
+        ... async def get_from_cache(redis: Redis, key: str):
+        ...     return await redis.get(key)
+    """
+    # Import Redis exceptions here to avoid circular imports
+    try:
+        from redis.exceptions import (
+            ConnectionError as RedisConnectionError,
+            TimeoutError as RedisTimeoutError,
+            ResponseError,
+        )
+        redis_exceptions = (
+            ConnectionError,
+            TimeoutError,
+            RedisConnectionError,
+            RedisTimeoutError,
+            ResponseError,
+            OSError,
+        )
+    except ImportError:
+        # Fallback if redis is not installed
+        redis_exceptions = RETRIABLE_EXCEPTIONS
+
+    return retry(
+        retry=retry_if_exception_type(redis_exceptions),
+        stop=stop_after_attempt(max_attempts),
+        wait=wait_exponential(multiplier=1, min=min_wait_seconds, max=max_wait_seconds),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        after=after_log(logger, logging.DEBUG),
+        reraise=True,
+    )
+
+
+def api_retry(
+    max_attempts: int = 3,
+    min_wait_seconds: int = 2,
+    max_wait_seconds: int = 10,
+):
+    """
+    Specialized retry decorator for external API calls.
+
+    Retries on common API transient errors:
+    - Connection errors
+    - Timeout errors
+    - HTTP 5xx server errors
+    - HTTP 429 rate limit errors (with longer backoff)
+
+    Args:
+        max_attempts: Maximum number of attempts (default: 3)
+        min_wait_seconds: Minimum wait time between retries (default: 2)
+        max_wait_seconds: Maximum wait time between retries (default: 10)
+
+    Returns:
+        Decorated async function with retry logic
+
+    Examples:
+        >>> import httpx
+        >>> @api_retry(max_attempts=3)
+        ... async def call_external_api():
+        ...     async with httpx.AsyncClient() as client:
+        ...         response = await client.get("https://api.example.com/data")
+        ...         response.raise_for_status()
+        ...         return response.json()
+    """
+    # Import HTTP exceptions here to avoid circular imports
+    try:
+        import httpx
+        api_exceptions = (
+            ConnectionError,
+            TimeoutError,
+            httpx.TimeoutException,
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.PoolTimeout,
+            httpx.NetworkError,
+            OSError,
+        )
+    except ImportError:
+        try:
+            import aiohttp
+            api_exceptions = (
+                ConnectionError,
+                TimeoutError,
+                aiohttp.ClientError,
+                asyncio.TimeoutError,
+                OSError,
+            )
+        except ImportError:
+            # Fallback if neither httpx nor aiohttp is installed
+            api_exceptions = RETRIABLE_EXCEPTIONS
+
+    return retry(
+        retry=retry_if_exception_type(api_exceptions),
+        stop=stop_after_attempt(max_attempts),
+        wait=wait_exponential(multiplier=1, min=min_wait_seconds, max=max_wait_seconds),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        after=after_log(logger, logging.DEBUG),
+        reraise=True,
+    )
+
+
+def file_io_retry(
+    max_attempts: int = 3,
+    min_wait_seconds: int = 1,
+    max_wait_seconds: int = 3,
+):
+    """
+    Specialized retry decorator for file I/O operations.
+
+    Retries on common file I/O transient errors:
+    - OSError
+    - IOError
+    - Permission errors (temporary)
+
+    Args:
+        max_attempts: Maximum number of attempts (default: 3)
+        min_wait_seconds: Minimum wait time between retries (default: 1)
+        max_wait_seconds: Maximum wait time between retries (default: 3)
+
+    Returns:
+        Decorated function with retry logic (works for both sync and async)
+
+    Examples:
+        >>> @file_io_retry(max_attempts=3)
+        ... def read_file(path: str):
+        ...     with open(path, 'r') as f:
+        ...         return f.read()
+    """
+    file_exceptions = (
+        OSError,
+        IOError,
+        TimeoutError,
+    )
+
+    return retry(
+        retry=retry_if_exception_type(file_exceptions),
+        stop=stop_after_attempt(max_attempts),
+        wait=wait_exponential(multiplier=1, min=min_wait_seconds, max=max_wait_seconds),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        after=after_log(logger, logging.DEBUG),
+        reraise=True,
+    )

@@ -3,9 +3,10 @@ Accommodation model for storing hotels, Airbnbs, and apartment rentals.
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -57,6 +58,19 @@ class Accommodation(Base, TimestampMixin):
     image_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     scraped_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default="NOW()", index=True
+    )
+
+    # AI scoring (for comparison and ranking)
+    accommodation_score: Mapped[Optional[float]] = mapped_column(
+        Numeric(5, 2),
+        nullable=True,
+        index=True,
+        comment="AI-generated accommodation score from 0 to 100",
+    )
+    accommodation_score_details: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="Detailed scoring breakdown (price-quality, family-suitability, etc.)",
     )
 
     def __repr__(self) -> str:

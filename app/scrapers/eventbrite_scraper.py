@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_async_session_context
+from app.exceptions import APIKeyMissingError
 from app.models.event import Event
 from app.utils.retry import retry_with_backoff
 
@@ -75,8 +76,16 @@ class EventBriteClient:
         """
         self.api_key = api_key or settings.eventbrite_api_key
         if not self.api_key:
-            raise ValueError(
-                "EventBrite API key is required. Set EVENTBRITE_API_KEY in environment."
+            raise APIKeyMissingError(
+                service="EventBrite API",
+                env_var="EVENTBRITE_API_KEY",
+                optional=True,
+                fallback_info=(
+                    "Get a free API key (1,000 requests/day) at: https://www.eventbrite.com/platform/api\n\n"
+                    "EventBrite integration will be disabled. You can still use:\n"
+                    "  - Tourism scrapers (Barcelona, Prague, Lisbon)\n"
+                    "  - Other event sources"
+                )
             )
 
         self.session: Optional[httpx.AsyncClient] = None

@@ -369,8 +369,12 @@
                             <p><strong>SmartFamilyTravelScout</strong></p>
                             <p>Finding the best family AND couple travel deals, powered by AI</p>
                             <p style="margin-top: 15px;">
-                                <a href="https://smartfamilytravelscout.com/preferences">Update Preferences</a> •
-                                <a href="https://smartfamilytravelscout.com/unsubscribe">Unsubscribe</a>
+                                {% if unsubscribe_token %}
+                                <a href="https://smartfamilytravelscout.com/notifications/unsubscribe/{{ unsubscribe_token }}/preferences">Update Preferences</a> •
+                                <a href="https://smartfamilytravelscout.com/notifications/unsubscribe/{{ unsubscribe_token }}">Unsubscribe</a>
+                                {% else %}
+                                <a href="https://smartfamilytravelscout.com/preferences">Update Preferences</a>
+                                {% endif %}
                             </p>
                             <p style="margin-top: 10px; font-size: 12px; color: #adb5bd;">
                                 You're receiving this weekly digest because you subscribed to parent escape deal alerts.

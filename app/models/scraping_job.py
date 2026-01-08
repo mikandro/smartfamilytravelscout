@@ -38,7 +38,7 @@ class ScrapingJob(Base):
         String(20),
         nullable=False,
         index=True,
-        comment="'running', 'completed', 'failed'",
+        comment="'running', 'completed', 'failed', 'interrupted'",
     )
     items_scraped: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, comment="Number of items successfully scraped"
@@ -81,3 +81,8 @@ class ScrapingJob(Base):
     def is_failed(self) -> bool:
         """Check if job failed."""
         return self.status == "failed"
+
+    @property
+    def is_interrupted(self) -> bool:
+        """Check if job was interrupted."""
+        return self.status == "interrupted"

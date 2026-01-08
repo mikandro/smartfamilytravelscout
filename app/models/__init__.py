@@ -7,8 +7,10 @@ from app.models.accommodation import Accommodation
 from app.models.airport import Airport
 from app.models.api_cost import ApiCost
 from app.models.base import Base, TimestampMixin
+from app.models.email_delivery_log import EmailDeliveryLog
 from app.models.event import Event
 from app.models.flight import Flight
+from app.models.model_pricing import ModelPricing
 from app.models.price_history import PriceHistory
 from app.models.school_holiday import SchoolHoliday
 from app.models.scraping_job import ScrapingJob
@@ -28,4 +30,6 @@ __all__ = [
     "PriceHistory",
     "ScrapingJob",
     "ApiCost",
+    "EmailDeliveryLog",
+    "ModelPricing",
 ]

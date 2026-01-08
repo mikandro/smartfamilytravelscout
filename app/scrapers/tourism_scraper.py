@@ -20,6 +20,7 @@ from playwright.async_api import async_playwright, Browser, Page
 
 from app.models.event import Event
 from app.utils.date_utils import parse_date
+from app.utils.retry import api_retry
 
 logger = logging.getLogger(__name__)
 
@@ -240,9 +241,10 @@ class BaseTourismScraper(ABC):
             await self._playwright.stop()
             self._playwright = None
 
+    @api_retry(max_attempts=3, min_wait_seconds=2, max_wait_seconds=10)
     async def fetch_html(self, url: str, use_playwright: bool = False) -> Optional[str]:
         """
-        Fetch HTML content from URL.
+        Fetch HTML content from URL with automatic retry logic.
 
         Args:
             url: URL to fetch
@@ -250,33 +252,29 @@ class BaseTourismScraper(ABC):
 
         Returns:
             HTML content or None if fetch fails
+
+        Raises:
+            Exception: If all retry attempts fail
         """
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                if use_playwright:
-                    browser = await self._get_playwright_browser()
-                    page = await browser.new_page()
-                    try:
-                        await page.goto(url, wait_until='networkidle', timeout=self.TIMEOUT * 1000)
-                        html = await page.content()
-                        return html
-                    finally:
-                        await page.close()
-                else:
-                    session = await self._get_http_session()
-                    response = await session.get(url)
-                    response.raise_for_status()
-                    return response.text
+        try:
+            if use_playwright:
+                browser = await self._get_playwright_browser()
+                page = await browser.new_page()
+                try:
+                    await page.goto(url, wait_until='networkidle', timeout=self.TIMEOUT * 1000)
+                    html = await page.content()
+                    return html
+                finally:
+                    await page.close()
+            else:
+                session = await self._get_http_session()
+                response = await session.get(url)
+                response.raise_for_status()
+                return response.text
 
-            except Exception as e:
-                logger.warning(f"Attempt {attempt + 1}/{self.MAX_RETRIES} failed for {url}: {e}")
-                if attempt < self.MAX_RETRIES - 1:
-                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                else:
-                    logger.error(f"Failed to fetch {url} after {self.MAX_RETRIES} attempts")
-                    return None
-
-        return None
+        except Exception as e:
+            logger.error(f"Failed to fetch {url}: {e}")
+            return None
 
     def make_absolute_url(self, url: str) -> str:
         """Convert relative URL to absolute URL."""

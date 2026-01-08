@@ -4,12 +4,12 @@ Populates airports, school holidays, and default user preferences.
 """
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.models import Airport, SchoolHoliday, UserPreference
+from app.models import Airport, ModelPricing, SchoolHoliday, UserPreference
 
 logger = logging.getLogger(__name__)
 
@@ -126,100 +126,154 @@ def seed_airports(db: Session) -> None:
     logger.info("Airport seeding completed")
 
 
-def seed_school_holidays(db: Session) -> None:
+def seed_school_holidays(db: Session, regions: list[str] | None = None) -> None:
     """
-    Seed Bavaria school holidays for 2025-2026.
-    Includes major holidays and long weekends.
+    Seed school holidays for German states (2025-2026).
+
+    Args:
+        db: Database session
+        regions: List of specific regions to seed. If None, seeds all 16 German states.
+                 Examples: ["Bavaria"], ["Bavaria", "Berlin"], or None for all.
+
+    Examples:
+        # Seed all regions
+        seed_school_holidays(db)
+
+        # Seed only Bavaria
+        seed_school_holidays(db, regions=["Bavaria"])
+
+        # Seed multiple regions
+        seed_school_holidays(db, regions=["Bavaria", "Berlin", "Hamburg"])
     """
-    holidays_data = [
-        # 2025 holidays
+    from app.utils.german_school_holidays import GERMAN_HOLIDAYS_2025_2026, get_all_regions
+
+    # If no regions specified, seed all
+    if regions is None:
+        regions = get_all_regions()
+
+    total_added = 0
+    total_skipped = 0
+
+    for region in regions:
+        if region not in GERMAN_HOLIDAYS_2025_2026:
+            logger.warning(f"Region '{region}' not found in holiday data, skipping")
+            continue
+
+        logger.info(f"Seeding holidays for {region}...")
+        holidays = GERMAN_HOLIDAYS_2025_2026[region]
+
+        for holiday in holidays:
+            # Check if holiday already exists for this region
+            existing = (
+                db.query(SchoolHoliday)
+                .filter_by(
+                    name=holiday.name,
+                    start_date=holiday.start_date,
+                    region=holiday.region
+                )
+                .first()
+            )
+            if existing:
+                logger.debug(f"Holiday {holiday.name} ({region}) already exists, skipping")
+                total_skipped += 1
+                continue
+
+            # Create holiday record
+            holiday_record = SchoolHoliday(
+                name=holiday.name,
+                start_date=holiday.start_date,
+                end_date=holiday.end_date,
+                year=holiday.start_date.year,
+                holiday_type=holiday.holiday_type,
+                region=holiday.region,
+            )
+            db.add(holiday_record)
+            logger.info(
+                f"Created holiday: {holiday.name} ({region}) "
+                f"({holiday.start_date} to {holiday.end_date})"
+            )
+            total_added += 1
+
+    db.commit()
+    logger.info(
+        f"School holiday seeding completed: {total_added} added, "
+        f"{total_skipped} skipped across {len(regions)} region(s)"
+    )
+
+
+def seed_model_pricing(db: Session) -> None:
+    """
+    Seed model pricing data for AI services.
+    Includes current Claude pricing (as of November 2025).
+    """
+    pricing_data = [
         {
-            "name": "Easter Break 2025",
-            "start_date": date(2025, 4, 14),
-            "end_date": date(2025, 4, 25),
-            "year": 2025,
-            "holiday_type": "major",
-            "region": "Bavaria",
+            "service": "claude",
+            "model": "claude-sonnet-4-5-20250929",
+            "input_cost_per_million": 3.0,
+            "output_cost_per_million": 15.0,
+            "effective_date": datetime(2025, 11, 1, 0, 0, 0),
+            "currency": "USD",
+            "notes": "Claude Sonnet 4.5 pricing as of November 2025",
         },
         {
-            "name": "Whitsun Break 2025",
-            "start_date": date(2025, 6, 10),
-            "end_date": date(2025, 6, 20),
-            "year": 2025,
-            "holiday_type": "major",
-            "region": "Bavaria",
+            "service": "claude",
+            "model": "claude-3-5-sonnet-20241022",
+            "input_cost_per_million": 3.0,
+            "output_cost_per_million": 15.0,
+            "effective_date": datetime(2024, 10, 1, 0, 0, 0),
+            "currency": "USD",
+            "notes": "Claude 3.5 Sonnet pricing (legacy model)",
         },
         {
-            "name": "Summer Holiday 2025",
-            "start_date": date(2025, 8, 1),
-            "end_date": date(2025, 9, 15),
-            "year": 2025,
-            "holiday_type": "major",
-            "region": "Bavaria",
+            "service": "claude",
+            "model": "claude-3-opus-20240229",
+            "input_cost_per_million": 15.0,
+            "output_cost_per_million": 75.0,
+            "effective_date": datetime(2024, 3, 1, 0, 0, 0),
+            "currency": "USD",
+            "notes": "Claude 3 Opus pricing (legacy model)",
         },
         {
-            "name": "Autumn Break 2025",
-            "start_date": date(2025, 10, 27),
-            "end_date": date(2025, 11, 7),
-            "year": 2025,
-            "holiday_type": "major",
-            "region": "Bavaria",
-        },
-        {
-            "name": "Christmas Break 2025/2026",
-            "start_date": date(2025, 12, 22),
-            "end_date": date(2026, 1, 10),
-            "year": 2025,
-            "holiday_type": "major",
-            "region": "Bavaria",
-        },
-        # 2026 holidays
-        {
-            "name": "Winter Break 2026",
-            "start_date": date(2026, 2, 16),
-            "end_date": date(2026, 2, 20),
-            "year": 2026,
-            "holiday_type": "long_weekend",
-            "region": "Bavaria",
-        },
-        {
-            "name": "Easter Break 2026",
-            "start_date": date(2026, 3, 30),
-            "end_date": date(2026, 4, 10),
-            "year": 2026,
-            "holiday_type": "major",
-            "region": "Bavaria",
-        },
-        {
-            "name": "Whitsun Break 2026",
-            "start_date": date(2026, 5, 26),
-            "end_date": date(2026, 6, 5),
-            "year": 2026,
-            "holiday_type": "major",
-            "region": "Bavaria",
+            "service": "claude",
+            "model": "claude-3-haiku-20240307",
+            "input_cost_per_million": 0.25,
+            "output_cost_per_million": 1.25,
+            "effective_date": datetime(2024, 3, 1, 0, 0, 0),
+            "currency": "USD",
+            "notes": "Claude 3 Haiku pricing (legacy model)",
         },
     ]
 
-    for holiday_data in holidays_data:
-        # Check if holiday already exists
+    for pricing in pricing_data:
+        # Check if pricing already exists for this service/model/date
         existing = (
-            db.query(SchoolHoliday)
-            .filter_by(name=holiday_data["name"], start_date=holiday_data["start_date"])
+            db.query(ModelPricing)
+            .filter_by(
+                service=pricing["service"],
+                model=pricing["model"],
+                effective_date=pricing["effective_date"],
+            )
             .first()
         )
         if existing:
-            logger.info(f"Holiday {holiday_data['name']} already exists, skipping")
+            logger.info(
+                f"Pricing for {pricing['service']}/{pricing['model']} "
+                f"(effective {pricing['effective_date'].date()}) already exists, skipping"
+            )
             continue
 
-        holiday = SchoolHoliday(**holiday_data)
-        db.add(holiday)
+        model_pricing = ModelPricing(**pricing)
+        db.add(model_pricing)
         logger.info(
-            f"Created holiday: {holiday_data['name']} "
-            f"({holiday_data['start_date']} to {holiday_data['end_date']})"
+            f"Created pricing: {pricing['service']}/{pricing['model']} - "
+            f"${pricing['input_cost_per_million']}/M input, "
+            f"${pricing['output_cost_per_million']}/M output "
+            f"(effective {pricing['effective_date'].date()})"
         )
 
     db.commit()
-    logger.info("School holiday seeding completed")
+    logger.info("Model pricing seeding completed")
 
 
 def seed_user_preferences(db: Session) -> None:
@@ -271,6 +325,7 @@ def seed_all(db: Session) -> None:
 
     seed_airports(db)
     seed_school_holidays(db)
+    seed_model_pricing(db)
     seed_user_preferences(db)
 
     logger.info("Database seeding completed successfully!")
@@ -279,9 +334,11 @@ def seed_all(db: Session) -> None:
 if __name__ == "__main__":
     """Run seeding when script is executed directly."""
     import sys
+    from pathlib import Path
 
-    # Add parent directory to path for imports
-    sys.path.insert(0, "/home/user/smartfamilytravelscout")
+    # Add project root to path for imports (dynamically determined)
+    project_root = Path(__file__).parent.parent.parent.resolve()
+    sys.path.insert(0, str(project_root))
 
     from app.database import get_sync_session
 

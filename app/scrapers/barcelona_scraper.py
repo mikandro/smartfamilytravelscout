@@ -44,7 +44,15 @@ class BarcelonaTourismScraper(BaseTourismScraper):
             # Barcelona Turisme may use JavaScript for loading events
             html = await self.fetch_html(self.EVENTS_URL, use_playwright=True)
             if not html:
-                logger.error("Failed to fetch Barcelona events page")
+                logger.error(
+                    f"Failed to fetch Barcelona events page\n"
+                    f"URL: {self.EVENTS_URL}\n"
+                    f"Possible causes:\n"
+                    f"  - Website is down or blocking requests\n"
+                    f"  - Network connectivity issues\n"
+                    f"  - Playwright browser not installed\n"
+                    f"To fix: Check website availability or run 'poetry run playwright install chromium'"
+                )
                 return events
 
             soup = BeautifulSoup(html, 'lxml')

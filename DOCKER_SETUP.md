@@ -27,9 +27,11 @@ nano .env
 ```
 
 **Required for AI features:**
+
 - `ANTHROPIC_API_KEY`: Get from https://console.anthropic.com/
 
 **Optional (for enhanced scraping):**
+
 - `KIWI_API_KEY`: Flight data from Kiwi.com
 - `EVENTBRITE_API_KEY`: Event data from Eventbrite
 - Other API keys as listed in `.env.example`
@@ -42,6 +44,7 @@ docker-compose up -d
 ```
 
 This will:
+
 1. Start PostgreSQL database
 2. Start Redis cache/message broker
 3. Build and start the FastAPI application
@@ -65,6 +68,7 @@ curl http://localhost:8000/health
 ```
 
 Expected response:
+
 ```json
 {
   "status": "healthy",
@@ -89,11 +93,13 @@ Expected response:
 ### Services Not Starting
 
 **Check logs:**
+
 ```bash
 docker-compose logs -f
 ```
 
 **Check specific service logs:**
+
 ```bash
 docker-compose logs -f app
 docker-compose logs -f postgres
@@ -321,6 +327,7 @@ celery-worker, celery-beat (wait for app to start)
 ### Automatic Initialization
 
 The `entrypoint.sh` script automatically:
+
 1. Waits for PostgreSQL to be ready
 2. Waits for Redis to be ready
 3. Runs database migrations with Alembic

@@ -24,6 +24,7 @@ class TestClaudeClient:
         redis.setex = AsyncMock()
         redis.delete = AsyncMock(return_value=0)
         redis.scan_iter = AsyncMock()
+        redis.ping = AsyncMock(return_value=True)
         return redis
 
     @pytest.fixture
@@ -38,7 +39,7 @@ class TestClaudeClient:
     @pytest.fixture
     def claude_client(self, mock_redis, mock_db_session):
         """Create ClaudeClient instance with mocked dependencies."""
-        with patch("app.ai.claude_client.Anthropic"):
+        with patch("app.ai.claude_client.AsyncAnthropic"):
             return ClaudeClient(
                 api_key="test-api-key",
                 redis_client=mock_redis,
@@ -304,10 +305,14 @@ class TestClaudeClient:
     async def test_analyze_api_error(self, claude_client):
         """Test analyze handling API errors."""
         from anthropic import APIError
+        from httpx import Request
+
+        # Create a mock request for APIError
+        mock_request = Request("POST", "https://api.anthropic.com/v1/messages")
 
         # Mock API to raise error
         claude_client._call_api_with_retry = AsyncMock(
-            side_effect=APIError("API Error")
+            side_effect=APIError("API Error", request=mock_request, body=None)
         )
 
         with pytest.raises(ClaudeAPIError) as exc_info:
@@ -328,7 +333,7 @@ class TestClaudeClient:
             for key in mock_keys:
                 yield key
 
-        mock_redis.scan_iter.return_value = async_gen()
+        mock_redis.scan_iter = MagicMock(return_value=async_gen())
         mock_redis.delete.return_value = len(mock_keys)
 
         deleted = await claude_client.clear_cache()
@@ -343,17 +348,18 @@ class TestClaudeClient:
             for _ in range(5):
                 yield b"claude:response:key"
 
-        mock_redis.scan_iter.return_value = async_gen()
+        mock_redis.scan_iter = MagicMock(return_value=async_gen())
 
         stats = await claude_client.get_cache_stats()
 
         assert stats["cached_responses"] == 5
         assert stats["cache_ttl"] == claude_client.cache_ttl
+        assert stats["cache_enabled"] is True
 
     def test_pricing_constants(self):
-        """Test that pricing constants are set correctly."""
-        assert ClaudeClient.INPUT_COST_PER_MILLION == 3.0
-        assert ClaudeClient.OUTPUT_COST_PER_MILLION == 15.0
+        """Test that default pricing constants are set correctly."""
+        assert ClaudeClient.DEFAULT_INPUT_COST_PER_MILLION == 3.0
+        assert ClaudeClient.DEFAULT_OUTPUT_COST_PER_MILLION == 15.0
 
     async def test_analyze_with_formatting(self, claude_client, mock_api_response):
         """Test analyze with prompt formatting."""
@@ -369,3 +375,196 @@ class TestClaudeClient:
         formatted_prompt = call_args[0]
         assert "Paris" in formatted_prompt
         assert "4" in formatted_prompt
+
+    def test_initialization_with_cache_enabled(self, claude_client):
+        """Test that cache is enabled after successful initialization."""
+        assert claude_client._cache_enabled is True
+
+    async def test_check_redis_health_success(self, claude_client, mock_redis):
+        """Test Redis health check with successful connection."""
+        mock_redis.ping.return_value = True
+
+        result = await claude_client._check_redis_health()
+
+        assert result is True
+        assert claude_client._cache_enabled is True
+        mock_redis.ping.assert_called_once()
+
+    async def test_check_redis_health_failure(self, claude_client, mock_redis):
+        """Test Redis health check with failed connection."""
+        # Simulate Redis connection failure
+        mock_redis.ping.side_effect = Exception("Connection refused")
+
+        result = await claude_client._check_redis_health()
+
+        assert result is False
+        assert claude_client._cache_enabled is False
+
+    async def test_get_cached_response_redis_unavailable(
+        self, claude_client, mock_redis
+    ):
+        """Test cache retrieval when Redis is unavailable."""
+        # Simulate Redis being down
+        mock_redis.ping.side_effect = Exception("Connection refused")
+
+        result = await claude_client._get_cached_response("test_key")
+
+        assert result is None
+        # Redis get should not be called if health check fails
+        mock_redis.get.assert_not_called()
+
+    async def test_cache_response_redis_unavailable(self, claude_client, mock_redis):
+        """Test cache storage when Redis is unavailable."""
+        # Simulate Redis being down
+        mock_redis.ping.side_effect = Exception("Connection refused")
+        response = {"score": 85, "rating": "good"}
+
+        await claude_client._cache_response("test_key", response)
+
+        # Redis setex should not be called if health check fails
+        mock_redis.setex.assert_not_called()
+
+    async def test_clear_cache_redis_unavailable(self, claude_client, mock_redis):
+        """Test clear_cache when Redis is unavailable."""
+        # Simulate Redis being down
+        mock_redis.ping.side_effect = Exception("Connection refused")
+
+        deleted = await claude_client.clear_cache()
+
+        assert deleted == 0
+        # scan_iter should not be called if health check fails
+        mock_redis.scan_iter.assert_not_called()
+
+    async def test_get_cache_stats_redis_unavailable(self, claude_client, mock_redis):
+        """Test get_cache_stats when Redis is unavailable."""
+        # Simulate Redis being down
+        mock_redis.ping.side_effect = Exception("Connection refused")
+
+        stats = await claude_client.get_cache_stats()
+
+        assert stats["cached_responses"] == 0
+        assert stats["cache_enabled"] is False
+        # scan_iter should not be called if health check fails
+        mock_redis.scan_iter.assert_not_called()
+
+    async def test_get_cache_stats_redis_available(self, claude_client, mock_redis):
+        """Test get_cache_stats when Redis is available."""
+        # Mock successful ping
+        mock_redis.ping.return_value = True
+
+        # Mock scan_iter to return some keys
+        async def async_gen():
+            for _ in range(3):
+                yield b"claude:response:key"
+
+        # scan_iter is called as a method, so it should return the generator
+        mock_redis.scan_iter = MagicMock(return_value=async_gen())
+
+        stats = await claude_client.get_cache_stats()
+
+        assert stats["cached_responses"] == 3
+        assert stats["cache_enabled"] is True
+
+    async def test_analyze_continues_without_cache(
+        self, claude_client, mock_redis, mock_api_response
+    ):
+        """Test that analyze continues to work even when Redis is down."""
+        # Simulate Redis being down
+        mock_redis.ping.side_effect = Exception("Connection refused")
+
+        # Mock the API call
+        claude_client._call_api_with_retry = AsyncMock(return_value=mock_api_response)
+
+        # Should still work without caching
+        result = await claude_client.analyze(
+            prompt="Test prompt",
+            data={},
+            response_format="json",
+        )
+
+        # Verify result structure
+        assert "score" in result
+        assert "_cost" in result
+
+        # Verify API was called (no cache hit)
+        claude_client._call_api_with_retry.assert_called_once()
+
+        # Verify cache operations were not attempted
+        mock_redis.get.assert_not_called()
+        mock_redis.setex.assert_not_called()
+
+    async def test_load_pricing_from_database(self, claude_client, mock_db_session):
+        """Test loading pricing from database."""
+        from app.models.model_pricing import ModelPricing
+
+        # Create mock pricing object
+        mock_pricing = Mock(spec=ModelPricing)
+        mock_pricing.input_cost_per_million = 5.0
+        mock_pricing.output_cost_per_million = 20.0
+        mock_pricing.effective_date = datetime(2025, 11, 1)
+
+        # Mock the database query
+        mock_result = Mock()
+        mock_result.scalar_one_or_none = Mock(return_value=mock_pricing)
+        mock_db_session.execute = AsyncMock(return_value=mock_result)
+
+        await claude_client._load_pricing()
+
+        assert claude_client.input_cost_per_million == 5.0
+        assert claude_client.output_cost_per_million == 20.0
+        assert claude_client._pricing_loaded is True
+
+    async def test_load_pricing_fallback_to_defaults(self, claude_client, mock_db_session):
+        """Test fallback to default pricing when no database pricing found."""
+        # Mock database to return None (no pricing found)
+        mock_result = Mock()
+        mock_result.scalar_one_or_none = Mock(return_value=None)
+        mock_db_session.execute = AsyncMock(return_value=mock_result)
+
+        await claude_client._load_pricing()
+
+        # Should fall back to defaults
+        assert claude_client.input_cost_per_million == ClaudeClient.DEFAULT_INPUT_COST_PER_MILLION
+        assert claude_client.output_cost_per_million == ClaudeClient.DEFAULT_OUTPUT_COST_PER_MILLION
+        assert claude_client._pricing_loaded is True
+
+    async def test_load_pricing_without_db_session(self, mock_redis):
+        """Test loading pricing without database session uses defaults."""
+        with patch("app.ai.claude_client.AsyncAnthropic"):
+            client = ClaudeClient(
+                api_key="test-api-key",
+                redis_client=mock_redis,
+                db_session=None,
+            )
+
+        await client._load_pricing()
+
+        assert client.input_cost_per_million == ClaudeClient.DEFAULT_INPUT_COST_PER_MILLION
+        assert client.output_cost_per_million == ClaudeClient.DEFAULT_OUTPUT_COST_PER_MILLION
+        assert client._pricing_loaded is True
+
+    async def test_track_cost_uses_loaded_pricing(self, claude_client, mock_db_session):
+        """Test that track_cost uses pricing loaded from database."""
+        from app.models.model_pricing import ModelPricing
+
+        # Create mock pricing with custom values
+        mock_pricing = Mock(spec=ModelPricing)
+        mock_pricing.input_cost_per_million = 10.0  # Different from defaults
+        mock_pricing.output_cost_per_million = 50.0  # Different from defaults
+        mock_pricing.effective_date = datetime(2025, 11, 1)
+
+        mock_result = Mock()
+        mock_result.scalar_one_or_none = Mock(return_value=mock_pricing)
+        mock_db_session.execute = AsyncMock(return_value=mock_result)
+
+        # Track cost should load pricing and use it
+        cost = await claude_client.track_cost(
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            operation="test",
+        )
+
+        # Cost should be calculated with custom pricing: (1M * $10 + 1M * $50) / 1M = $60
+        assert cost == 60.0
+        assert claude_client.input_cost_per_million == 10.0
+        assert claude_client.output_cost_per_million == 50.0

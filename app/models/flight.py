@@ -33,10 +33,10 @@ class Flight(Base, TimestampMixin):
 
     # Airport relationships
     origin_airport_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("airports.id", ondelete="CASCADE"), nullable=False, index=True
+        Integer, ForeignKey("airports.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     destination_airport_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("airports.id", ondelete="CASCADE"), nullable=False, index=True
+        Integer, ForeignKey("airports.id", ondelete="RESTRICT"), nullable=False, index=True
     )
 
     # Flight details

@@ -3,7 +3,7 @@ Unit tests for date_utils module.
 """
 
 import pytest
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
 from app.utils.date_utils import (
     Holiday,
@@ -18,6 +18,7 @@ from app.utils.date_utils import (
     is_weekend,
     get_weekday_name,
     parse_date,
+    parse_time,
 )
 
 
@@ -340,3 +341,91 @@ class TestBavariaHolidaysData:
         # Christmas
         assert date(2025, 12, 25) in BAVARIA_PUBLIC_HOLIDAYS_2025_2026
         assert date(2025, 12, 26) in BAVARIA_PUBLIC_HOLIDAYS_2025_2026
+
+
+class TestParseTime:
+    """Tests for parse_time function."""
+
+    def test_parse_time_24hour_hhmm(self):
+        """Test parsing 24-hour format (HH:MM)."""
+        assert parse_time("14:30") == time(14, 30)
+        assert parse_time("09:15") == time(9, 15)
+        assert parse_time("00:00") == time(0, 0)
+        assert parse_time("23:59") == time(23, 59)
+
+    def test_parse_time_24hour_hhmmss(self):
+        """Test parsing 24-hour format with seconds (HH:MM:SS)."""
+        assert parse_time("14:30:00") == time(14, 30, 0)
+        assert parse_time("09:15:30") == time(9, 15, 30)
+        assert parse_time("00:00:00") == time(0, 0, 0)
+        assert parse_time("23:59:59") == time(23, 59, 59)
+
+    def test_parse_time_12hour_am_pm(self):
+        """Test parsing 12-hour format (h:MM AM/PM)."""
+        assert parse_time("2:30 PM") == time(14, 30)
+        assert parse_time("9:15 AM") == time(9, 15)
+        assert parse_time("12:00 PM") == time(12, 0)  # Noon
+        assert parse_time("12:00 AM") == time(0, 0)   # Midnight
+
+    def test_parse_time_12hour_with_seconds(self):
+        """Test parsing 12-hour format with seconds (h:MM:SS AM/PM)."""
+        assert parse_time("2:30:00 PM") == time(14, 30, 0)
+        assert parse_time("9:15:30 AM") == time(9, 15, 30)
+
+    def test_parse_time_with_spaces(self):
+        """Test parsing time with leading/trailing spaces."""
+        assert parse_time("  14:30  ") == time(14, 30)
+        assert parse_time("  2:30 PM  ") == time(14, 30)
+
+    def test_parse_time_none(self):
+        """Test with None value."""
+        assert parse_time(None) is None
+
+    def test_parse_time_empty_string(self):
+        """Test with empty string."""
+        assert parse_time("") is None
+
+    def test_parse_time_string_none(self):
+        """Test with string 'None'."""
+        assert parse_time("None") is None
+
+    def test_parse_time_invalid_format(self):
+        """Test parsing invalid time formats."""
+        assert parse_time("invalid") is None
+        assert parse_time("25:00") is None  # Invalid hour
+        assert parse_time("14:60") is None  # Invalid minute
+        assert parse_time("abc:def") is None
+
+    def test_parse_time_already_time_object(self):
+        """Test with time object (should return as-is)."""
+        time_obj = time(14, 30)
+        assert parse_time(time_obj) is time_obj
+
+    def test_parse_time_invalid_type(self):
+        """Test with invalid types."""
+        assert parse_time(123) is None
+        assert parse_time([]) is None
+        assert parse_time({}) is None
+
+    def test_parse_time_with_context(self):
+        """Test that context parameter doesn't affect parsing."""
+        # Context is only for logging, should not affect result
+        assert parse_time("14:30", context="test flight") == time(14, 30)
+        assert parse_time("invalid", context="test flight") is None
+
+    def test_parse_time_edge_cases(self):
+        """Test edge cases."""
+        # Midnight
+        assert parse_time("00:00") == time(0, 0)
+        # Just before midnight
+        assert parse_time("23:59") == time(23, 59)
+        # Noon
+        assert parse_time("12:00") == time(12, 0)
+
+    def test_parse_time_consistency(self):
+        """Test that different formats for same time produce same result."""
+        # All these should represent 2:30 PM (14:30)
+        assert parse_time("14:30") == time(14, 30)
+        assert parse_time("14:30:00") == time(14, 30)
+        assert parse_time("2:30 PM") == time(14, 30)
+        assert parse_time("2:30:00 PM") == time(14, 30)

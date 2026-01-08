@@ -48,13 +48,11 @@ class Airport(Base, TimestampMixin):
         "Flight",
         foreign_keys="Flight.origin_airport_id",
         back_populates="origin_airport",
-        cascade="all, delete-orphan",
     )
     arriving_flights: Mapped[List["Flight"]] = relationship(
         "Flight",
         foreign_keys="Flight.destination_airport_id",
         back_populates="destination_airport",
-        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:
@@ -67,3 +65,22 @@ class Airport(Base, TimestampMixin):
         fuel_cost = self.distance_from_home * 0.30 * 2  # Round trip
         parking_cost = (self.parking_cost_per_day or 0) * 7  # Average 7-day trip
         return fuel_cost + parking_cost
+
+    @property
+    def has_associated_flights(self) -> bool:
+        """
+        Check if this airport has any associated flights.
+        Returns True if there are flights departing from or arriving to this airport.
+
+        This is useful to check before attempting to delete an airport,
+        as deletion will fail if there are associated flights (RESTRICT constraint).
+        """
+        return len(self.departing_flights) > 0 or len(self.arriving_flights) > 0
+
+    @property
+    def flight_count(self) -> int:
+        """
+        Return total number of flights associated with this airport.
+        Includes both departing and arriving flights.
+        """
+        return len(self.departing_flights) + len(self.arriving_flights)
