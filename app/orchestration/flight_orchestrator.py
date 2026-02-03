@@ -34,6 +34,14 @@ from app.exceptions import ScraperFailureThresholdExceeded
 from app.models.airport import Airport
 from app.models.flight import Flight
 from app.models.scraping_job import ScrapingJob
+from app.monitoring.decorators import track_scraper_metrics
+from app.monitoring.metrics import (
+    scraper_requests_total,
+    scraper_duration_seconds,
+    scraping_errors_total,
+    active_scraping_jobs,
+    flights_discovered_total,
+)
 from app.scrapers.kiwi_scraper import KiwiClient
 from app.scrapers.ryanair_scraper import RyanairScraper
 from app.scrapers.skyscanner_scraper import SkyscannerScraper
@@ -403,6 +411,8 @@ class FlightOrchestrator:
         Returns:
             List of normalized flight dictionaries, or empty list if scraping fails
         """
+        import time
+
         departure_date, return_date = dates
 
         # Log start of scraping with console output for immediate feedback
@@ -412,6 +422,11 @@ class FlightOrchestrator:
         )
         logger.info(log_msg)
         console.print(f"[dim cyan]⟳ {log_msg}[/dim cyan]")
+
+        # Track active jobs
+        active_scraping_jobs.labels(scraper=scraper_name).inc()
+        start_time = time.time()
+        status = "success"
 
         try:
             # Call appropriate scraper method based on type
@@ -514,13 +529,26 @@ class FlightOrchestrator:
                 logger.error(f"Unknown scraper: {scraper_name}")
                 return []
 
-            # Log completion with console output for immediate feedback
+            # Log completion with console output and metrics
             success_msg = f"[{scraper_name}] Completed: {len(flights)} flights found"
             logger.info(success_msg)
             console.print(f"[dim green]✓ {success_msg}[/dim green]")
+
+            # Track discovered flights
+            if flights:
+                flights_discovered_total.labels(
+                    scraper=scraper_name, origin=origin, destination=destination
+                ).inc(len(flights))
+
             return flights
 
         except Exception as e:
+            status = "failure"
+            error_type = type(e).__name__
+
+            # Track error metrics
+            scraping_errors_total.labels(scraper=scraper_name, error_type=error_type).inc()
+
             # Log error with console output for immediate user feedback
             error_msg = f"[{scraper_name}] Scraping failed for {origin}→{destination}: {e}"
             logger.error(error_msg, exc_info=True)
@@ -529,6 +557,13 @@ class FlightOrchestrator:
             # Re-raise exception to let scrape_all handle it via return_exceptions=True
             # This allows proper failure tracking and threshold checking
             raise
+
+        finally:
+            # Track metrics
+            duration = time.time() - start_time
+            scraper_duration_seconds.labels(scraper=scraper_name).observe(duration)
+            scraper_requests_total.labels(scraper=scraper_name, status=status).inc()
+            active_scraping_jobs.labels(scraper=scraper_name).dec()
 
     async def deduplicate(self, flights: List[Dict]) -> List[Dict]:
         """
