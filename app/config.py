@@ -100,6 +100,30 @@ class Settings(BaseSettings):
         le=1.0,
     )
 
+    # WizzAir-specific anti-ban settings
+    wizzair_proxy_url: Optional[str] = Field(
+        default=None,
+        description="HTTP(S) proxy URL for WizzAir requests (e.g. http://user:pass@host:port). When set, used for both warm-up and API calls.",
+    )
+    wizzair_api_version: str = Field(
+        default="27.4.0",
+        description="WizzAir internal API version path segment. Bump if scraper starts returning 404.",
+    )
+    wizzair_warmup_enabled: bool = Field(
+        default=True,
+        description="Hit wizzair.com once per scrape to collect Cloudflare/session cookies before calling the JSON API.",
+    )
+    wizzair_min_delay_seconds: float = Field(
+        default=3.0,
+        description="Minimum seconds between WizzAir API calls (jittered up to wizzair_max_delay_seconds).",
+        ge=0.0,
+    )
+    wizzair_max_delay_seconds: float = Field(
+        default=7.0,
+        description="Maximum seconds between WizzAir API calls.",
+        ge=0.0,
+    )
+
     # Price Thresholds (in EUR)
     max_flight_price_per_person: float = Field(
         default=200.0, description="Maximum flight price per person in EUR"
