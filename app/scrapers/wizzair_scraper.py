@@ -11,7 +11,10 @@ inspect the network traffic on wizzair.com using browser DevTools to find the
 updated API endpoint and request format.
 """
 
+import asyncio
 import logging
+import random
+import time as _time
 from datetime import date, datetime, time
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +22,14 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+try:  # HTTP/2 is optional but improves TLS fingerprint match with real browsers.
+    import h2  # noqa: F401
+
+    _HTTP2_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _HTTP2_AVAILABLE = False
+
+from app.config import settings
 from app.models.airport import Airport
 from app.models.flight import Flight
 from app.utils.retry import api_retry
@@ -38,6 +49,17 @@ class WizzAirRateLimitError(Exception):
     pass
 
 
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+]
+
+
+_last_request_time: float = 0.0
+
+
 class WizzAirScraper:
     """
     Scraper for WizzAir flights using their unofficial API.
@@ -46,30 +68,104 @@ class WizzAirScraper:
     particularly Moldova (Chisinau).
     """
 
-    # WizzAir API endpoint (the * is a wildcard for API version)
-    BASE_URL = "https://be.wizzair.com/*/Api/search/search"
+    BASE_URL_TEMPLATE = "https://be.wizzair.com/{version}/Api/search/search"
+    WARMUP_URL = "https://wizzair.com/en-gb"
 
-    # User agent to mimic browser requests
-    USER_AGENT = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    )
-
-    def __init__(self, timeout: int = 30) -> None:
+    def __init__(
+        self,
+        timeout: int = 30,
+        proxy_url: Optional[str] = None,
+        api_version: Optional[str] = None,
+        warmup: Optional[bool] = None,
+        min_delay_seconds: Optional[float] = None,
+        max_delay_seconds: Optional[float] = None,
+    ) -> None:
         """
         Initialize the WizzAir scraper.
 
         Args:
             timeout: HTTP request timeout in seconds (default: 30)
+            proxy_url: HTTP(S) proxy URL. Falls back to ``settings.wizzair_proxy_url``.
+            api_version: WizzAir internal API version segment. Falls back to ``settings.wizzair_api_version``.
+            warmup: When True, GET ``wizzair.com`` once per search to collect cookies before the API call.
+                Falls back to ``settings.wizzair_warmup_enabled``.
+            min_delay_seconds: Minimum jittered delay between calls (defaults to settings).
+            max_delay_seconds: Maximum jittered delay between calls (defaults to settings).
         """
         self.timeout = timeout
-        self.headers = {
-            "User-Agent": self.USER_AGENT,
+        self.proxy_url = proxy_url if proxy_url is not None else settings.wizzair_proxy_url
+        self.api_version = api_version or settings.wizzair_api_version
+        self.warmup = settings.wizzair_warmup_enabled if warmup is None else warmup
+        self.min_delay = (
+            settings.wizzair_min_delay_seconds
+            if min_delay_seconds is None
+            else min_delay_seconds
+        )
+        self.max_delay = (
+            settings.wizzair_max_delay_seconds
+            if max_delay_seconds is None
+            else max_delay_seconds
+        )
+        self.user_agent = random.choice(_USER_AGENTS)
+
+    @property
+    def headers(self) -> Dict[str, str]:
+        """Browser-mimicking headers for the JSON API call."""
+        return {
+            "User-Agent": self.user_agent,
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
             "Origin": "https://wizzair.com",
             "Referer": "https://wizzair.com/",
+            "X-Requested-With": "XMLHttpRequest",
+            "Sec-Fetch-Site": "same-site",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
         }
+
+    @property
+    def warmup_headers(self) -> Dict[str, str]:
+        """Headers used for the homepage warm-up request."""
+        return {
+            "User-Agent": self.user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Dest": "document",
+            "Upgrade-Insecure-Requests": "1",
+        }
+
+    @property
+    def base_url(self) -> str:
+        return self.BASE_URL_TEMPLATE.format(version=self.api_version)
+
+    async def _respectful_delay(self) -> None:
+        """Jittered delay between API calls to avoid rate-limit / WAF tripping."""
+        if self.max_delay <= 0:
+            return
+
+        global _last_request_time
+        now = _time.time()
+        since_last = now - _last_request_time
+        if since_last < self.min_delay:
+            await asyncio.sleep(self.min_delay - since_last)
+        if self.max_delay > self.min_delay:
+            await asyncio.sleep(random.uniform(0, self.max_delay - self.min_delay))
+        _last_request_time = _time.time()
+
+    async def _warmup(self, client: httpx.AsyncClient) -> None:
+        """Hit the WizzAir homepage so the client picks up Cloudflare/session cookies."""
+        try:
+            response = await client.get(self.WARMUP_URL, headers=self.warmup_headers)
+            logger.debug(
+                f"WizzAir warm-up: status={response.status_code}, "
+                f"cookies={len(client.cookies)}"
+            )
+        except httpx.HTTPError as e:
+            # Warm-up is best-effort — if it fails, the API call will still try.
+            logger.warning(f"WizzAir warm-up failed (continuing anyway): {e}")
 
     def _build_payload(
         self,
@@ -169,10 +265,24 @@ class WizzAirScraper:
             f"departure: {departure_date}, return: {return_date}"
         )
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        await self._respectful_delay()
+
+        client_kwargs: Dict[str, Any] = {
+            "timeout": self.timeout,
+            "follow_redirects": True,
+        }
+        if _HTTP2_AVAILABLE:
+            client_kwargs["http2"] = True
+        if self.proxy_url:
+            client_kwargs["proxies"] = self.proxy_url
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
             try:
+                if self.warmup:
+                    await self._warmup(client)
+
                 response = await client.post(
-                    self.BASE_URL, headers=self.headers, json=payload
+                    self.base_url, headers=self.headers, json=payload
                 )
 
                 # Check for rate limiting
@@ -180,6 +290,20 @@ class WizzAirScraper:
                     logger.error("WizzAir API rate limit exceeded")
                     raise WizzAirRateLimitError(
                         "Rate limit exceeded. Please wait 60 seconds before retrying."
+                    )
+
+                # Cloudflare / WAF ban — usually means the IP needs to rotate
+                # or the session lacks the cf_clearance cookie.
+                if response.status_code in (401, 403):
+                    logger.error(
+                        f"WizzAir API blocked: status={response.status_code}. "
+                        f"Likely IP/WAF ban — consider rotating proxy "
+                        f"(set WIZZAIR_PROXY_URL) or bumping wizzair_api_version."
+                    )
+                    raise WizzAirAPIError(
+                        f"WizzAir blocked the request (HTTP {response.status_code}). "
+                        f"This is typically a Cloudflare/IP block — "
+                        f"configure WIZZAIR_PROXY_URL or update the API version."
                     )
 
                 # Check for other HTTP errors
