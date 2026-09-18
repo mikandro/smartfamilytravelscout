@@ -13,7 +13,6 @@ from app.scrapers.skyscanner_scraper import (
     SkyscannerScraper,
     RateLimitExceededError,
     CaptchaDetectedError,
-    MAX_REQUESTS_PER_HOUR,
 )
 
 
@@ -26,9 +25,9 @@ class TestSkyscannerScraperInit:
 
         assert scraper.headless is True
         assert scraper.slow_mo == 0
-        assert scraper.browser is None
-        assert scraper.context is None
         assert scraper.logs_dir == Path("logs")
+        # No long-lived browser/context attributes: the scraper creates an
+        # isolated context per scrape (see _create_isolated_context).
 
     def test_init_custom_params(self):
         """Test scraper initialization with custom parameters."""
@@ -46,6 +45,14 @@ class TestSkyscannerScraperInit:
             assert scraper.logs_dir is not None
 
 
+@pytest.mark.skip(
+    reason=(
+        "Asserts a long-lived self.browser/self.context lifecycle. The scraper "
+        "now creates an isolated browser context per scrape "
+        "(_create_isolated_context), so there is nothing to start or close. "
+        "These were hidden by the module's collection error."
+    )
+)
 class TestBrowserManagement:
     """Test browser lifecycle management."""
 
@@ -130,48 +137,17 @@ class TestBrowserManagement:
 class TestRateLimiting:
     """Test rate limiting functionality."""
 
-    def test_rate_limit_check_under_limit(self):
-        """Test rate limit check when under limit."""
-        scraper = SkyscannerScraper()
-
-        # Reset counters
-        import app.scrapers.skyscanner_scraper as scraper_module
-
-        scraper_module._request_count = 0
-
-        # Should not raise
-        scraper._check_rate_limit()
-        assert scraper_module._request_count == 1
-
-    def test_rate_limit_check_at_limit(self):
-        """Test rate limit check when at limit."""
-        scraper = SkyscannerScraper()
-
-        # Set counter to max
-        import app.scrapers.skyscanner_scraper as scraper_module
-
-        scraper_module._request_count = MAX_REQUESTS_PER_HOUR
-
-        # Should raise
-        with pytest.raises(RateLimitExceededError) as exc_info:
-            scraper._check_rate_limit()
-
-        assert "Rate limit exceeded" in str(exc_info.value)
-
-    def test_rate_limit_counter_reset_after_hour(self):
-        """Test rate limit counter resets after an hour."""
-        scraper = SkyscannerScraper()
-
-        import app.scrapers.skyscanner_scraper as scraper_module
-        import time
-
-        # Set counter to max and hour_start_time to past
-        scraper_module._request_count = MAX_REQUESTS_PER_HOUR
-        scraper_module._hour_start_time = time.time() - 3601  # Over an hour ago
-
-        # Should not raise (counter reset)
-        scraper._check_rate_limit()
-        assert scraper_module._request_count == 1
+    @pytest.mark.skip(
+        reason=(
+            "Rate limiting moved from a module-level counter to the Redis-backed "
+            "RedisRateLimiter; these drove _request_count/MAX_REQUESTS_PER_HOUR, "
+            "which no longer exist. Covered by tests/unit/test_rate_limiter.py. "
+            "The stale MAX_REQUESTS_PER_HOUR import also made this whole module "
+            "fail to collect, hiding every other test in the file."
+        )
+    )
+    def test_rate_limit_via_module_counter(self):
+        """Superseded by RedisRateLimiter."""
 
 
 class TestURLBuilding:

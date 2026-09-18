@@ -13,6 +13,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.claude_client import ClaudeClient
+from app.ai.judgement import JudgementSchema
+
+#: What an event-scoring response must contain.
+EVENT_SCHEMA = JudgementSchema(
+    required=("relevance_score",),
+    optional=("reasoning", "age_appropriate", "highlights"),
+    defaults={"reasoning": "", "age_appropriate": None, "highlights": []},
+)
 from app.ai.prompt_loader import PromptLoader
 from app.models.event import Event
 from app.models.user_preference import UserPreference
@@ -119,8 +127,11 @@ class EventScorer:
                 temperature=0.7,
             )
 
-            # Extract relevance score
-            relevance_score = result.get("relevance_score", 0.0)
+            # Validate rather than defaulting. `result.get("relevance_score",
+            # 0.0)` made a malformed response indistinguishable from a
+            # genuinely bad event, silently scoring it zero.
+            result = EVENT_SCHEMA.validate(result, "event_scoring")
+            relevance_score = result["relevance_score"]
 
             # Update database if requested
             if update_db:

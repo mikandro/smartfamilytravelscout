@@ -131,7 +131,10 @@ class EmailNotifier:
             return False
 
         if not deal.ai_score or float(deal.ai_score) < 85:
-            logger.warning(f"Deal score {deal.ai_score} is below alert threshold (85)")
+            logger.warning(
+                f"Deal score {deal.ai_score} is below alert threshold "
+                f"({settings.notification_alert_threshold})"
+            )
             return False
 
         try:

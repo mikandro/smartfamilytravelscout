@@ -236,7 +236,10 @@ class TestCreateTripPackage:
 
         assert isinstance(package, TripPackage)
         assert package.package_type == "family"
-        assert package.flights_json == [42]
+        # Travel components use the canonical envelope, so every reader agrees
+        # on the shape. This used to be a bare [42], which crashed DealScorer.
+        assert package.flights_json["travel_method"] == "flight"
+        assert package.flights_json["flight_ids"] == [42]
         assert package.accommodation_id == 10
         assert package.events_json == []
         assert package.total_price == 2169.27

@@ -10,6 +10,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_session
+from app.domain.deal_query import GOOD_DEAL_SCORE
 from app.models import TripPackage, Flight, Accommodation, Event
 from app.api.schemas.stats import StatsResponse, DestinationStats
 
@@ -34,9 +35,9 @@ async def get_stats(
             select(func.count()).select_from(TripPackage)
         ) or 0
 
-        # Count high score packages (>= 70)
+        # Count high score packages (GOOD_DEAL_SCORE)
         high_score_packages = await db.scalar(
-            select(func.count()).select_from(TripPackage).where(TripPackage.ai_score >= 70)
+            select(func.count()).select_from(TripPackage).where(TripPackage.ai_score >= GOOD_DEAL_SCORE)
         ) or 0
 
         # Average score

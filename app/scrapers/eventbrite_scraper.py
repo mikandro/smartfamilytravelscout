@@ -9,6 +9,7 @@ Rate Limit: 1,000 requests/day (free tier)
 """
 
 import logging
+from app.scrapers.source_errors import SourceRateLimited, SourceUnavailable
 import re
 from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
@@ -48,13 +49,13 @@ MAX_DAILY_CALLS = 1000
 RATE_LIMIT_WARNING_THRESHOLD = 900
 
 
-class EventBriteAPIError(Exception):
+class EventBriteAPIError(SourceUnavailable):
     """Custom exception for EventBrite API errors."""
 
     pass
 
 
-class EventBriteRateLimitError(Exception):
+class EventBriteRateLimitError(SourceRateLimited):
     """Exception raised when rate limit is exceeded."""
 
     pass

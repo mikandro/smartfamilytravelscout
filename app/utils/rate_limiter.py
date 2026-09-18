@@ -14,6 +14,7 @@ Features:
 """
 
 import logging
+from app.scrapers.source_errors import SourceRateLimited
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional
@@ -34,7 +35,7 @@ class TimeWindow(str, Enum):
     MONTHLY = "monthly"
 
 
-class RateLimitExceededError(Exception):
+class RateLimitExceededError(SourceRateLimited):
     """Raised when rate limit is exceeded."""
 
     pass

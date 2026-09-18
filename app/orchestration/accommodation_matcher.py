@@ -25,6 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.ai.accommodation_scorer import AccommodationScorer
+from app.domain.package_components import build_flight_components
+from app.domain.party_size import FAMILY, PartySize
 from app.models.accommodation import Accommodation
 from app.models.flight import Flight
 from app.models.school_holiday import SchoolHoliday
@@ -62,9 +64,16 @@ class AccommodationMatcher:
     DAILY_FOOD_COST = 100.0  # EUR per day
     DAILY_ACTIVITIES_COST = 50.0  # EUR per day
 
-    def __init__(self):
-        """Initialize the accommodation matcher with scoring capability."""
+    def __init__(self, party: Optional[PartySize] = None):
+        """
+        Initialize the accommodation matcher.
+
+        Args:
+            party: Who the trip is for. Determines the per-person divisor,
+                which was previously the hardcoded literal 4.
+        """
         self.scorer = AccommodationScorer()
+        self.party = party or FAMILY
 
     async def generate_trip_packages(
         self,
@@ -311,7 +320,7 @@ class AccommodationMatcher:
             "food_cost": round(food_cost, 2),
             "activities_cost": round(activities_cost, 2),
             "total": round(total, 2),
-            "per_person": round(total / 4.0, 2),  # Family of 4
+            "per_person": self.party.per_person(total),
         }
 
     def create_trip_package(
@@ -337,7 +346,7 @@ class AccommodationMatcher:
 
         package = TripPackage(
             package_type="family",
-            flights_json=[flight.id],  # Store flight IDs as array
+            flights_json=build_flight_components([flight]),
             accommodation_id=accommodation.id,
             events_json=[],  # Will be filled by EventMatcher later
             total_price=cost_breakdown["total"],

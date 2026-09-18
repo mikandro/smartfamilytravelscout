@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_session
+from app.domain.airport_registry import find_airport
 from app.api.schemas.search import SearchRequest, SearchResponse
 
 logger = logging.getLogger(__name__)
@@ -44,10 +45,7 @@ async def trigger_search(
         from sqlalchemy import select
 
         # Check if airports exist
-        origin_result = await db.execute(
-            select(Airport).where(Airport.iata_code == search_request.origin.upper())
-        )
-        origin_airport = origin_result.scalar_one_or_none()
+        origin_airport = await find_airport(db, search_request.origin)
 
         if not origin_airport:
             raise HTTPException(
@@ -55,10 +53,7 @@ async def trigger_search(
                 detail=f"Origin airport '{search_request.origin}' not found",
             )
 
-        dest_result = await db.execute(
-            select(Airport).where(Airport.iata_code == search_request.destination.upper())
-        )
-        dest_airport = dest_result.scalar_one_or_none()
+        dest_airport = await find_airport(db, search_request.destination)
 
         if not dest_airport:
             raise HTTPException(

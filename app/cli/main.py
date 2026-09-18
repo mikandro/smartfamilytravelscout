@@ -27,10 +27,17 @@ from rich.table import Table
 from rich.tree import Tree
 from rich import print as rprint
 from sqlalchemy import select, func, and_, desc
+from sqlalchemy.orm import selectinload
 
 from app import __version__, __app_name__
 from app.config import settings
 from app.database import check_db_connection, get_async_session_context, get_sync_session
+from app.domain.deal_query import is_excellent_deal
+from app.orchestration.scraper_selection import (
+    FREE_FLIGHT_SCRAPERS,
+    NoScrapersEnabled,
+    resolve_flight_scrapers,
+)
 from app.cli.validators import (
     airport_code_callback,
     date_callback,
@@ -190,8 +197,15 @@ def scrape(
 
     try:
         asyncio.run(_run_scrape(
-            origin, destination, departure_date, return_date,
-            scraper, region, save, disable_scraper, enable_scraper
+            origin=origin,
+            destination=destination,
+            departure_date_str=departure_date,
+            return_date_str=return_date,
+            scraper_name=scraper,
+            region=region,
+            save=save,
+            disable_scraper=disable_scraper,
+            enable_scraper=enable_scraper,
         ))
     except Exception as e:
         handle_error(e, "Scraping failed")
@@ -233,15 +247,29 @@ async def _run_scrape(
     table.add_row("Return", ret_date.strftime("%Y-%m-%d"))
     table.add_row("Region", region)
 
-    # Determine which scrapers to use
-    if scraper_name and scraper_name != "all":
-        scrapers_to_use = [scraper_name.lower()]
+    # Determine which scrapers to use.
+    #
+    # Quick search defaults to the free scrapers so it works without API keys,
+    # but --enable-scraper/--disable-scraper are honoured on top. Previously
+    # this hardcoded the list and ignored both override flags entirely, so
+    # `scout scrape --disable-scraper wizzair` silently did nothing.
+    selection = resolve_flight_scrapers(
+        only=scraper_name,
+        enable=enable_scraper,
+        disable=disable_scraper,
+        base=FREE_FLIGHT_SCRAPERS,
+    )
+    scrapers_to_use = list(selection.names)
+
+    if selection.ignored:
+        warning(f"Ignored unknown scraper(s): {', '.join(selection.ignored)}")
+
+    if scraper_name and scraper_name.lower() != "all":
         table.add_row("Scraper", scraper_name.title())
     else:
-        # Use all default (free) scrapers only
-        scrapers_to_use = ["skyscanner", "ryanair", "wizzair"]
-        table.add_row("Scrapers", "All free scrapers (Skyscanner, Ryanair, WizzAir)")
-        table.add_row("Note", "Use --scraper kiwi for Kiwi.com API (requires API key)")
+        table.add_row("Scrapers", ", ".join(s.title() for s in scrapers_to_use))
+        if "kiwi" not in scrapers_to_use:
+            table.add_row("Note", "Use --scraper kiwi for Kiwi.com API (requires API key)")
 
     table.add_row("Save to DB", "Yes" if save else "No")
 
@@ -459,9 +487,18 @@ def pipeline(
     ))
 
     try:
+        # Passed by keyword: this call previously omitted `region` and every
+        # later argument slid by one position (region=analyze, analyze=max_price,
+        # max_price=disable_scraper), which silently disabled AI analysis and
+        # made --region a no-op.
         asyncio.run(_run_pipeline(
-            destinations, dates, analyze, max_price,
-            disable_scraper, enable_scraper
+            destinations=destinations,
+            dates=dates,
+            region=region,
+            analyze=analyze,
+            max_price=max_price,
+            disable_scraper=disable_scraper,
+            enable_scraper=enable_scraper,
         ))
     except Exception as e:
         handle_error(e, "Pipeline execution failed")
@@ -476,44 +513,24 @@ async def _run_pipeline(
     disable_scraper: Optional[List[str]] = None,
     enable_scraper: Optional[List[str]] = None,
 ):
-    """Execute the main pipeline."""
-    from app.orchestration.flight_orchestrator import FlightOrchestrator
-    from app.orchestration.accommodation_matcher import AccommodationMatcher
-    from app.orchestration.event_matcher import EventMatcher
-    from app.models.airport import Airport
-    from app.utils.date_utils import get_school_holiday_periods
+    """
+    CLI adapter over the trip search pipeline.
 
-    # Apply scraper configuration overrides temporarily
-    original_scrapers = settings.get_available_scrapers()
-    scrapers_to_use = original_scrapers.copy()
+    The pipeline itself lives in app.orchestration.trip_search_pipeline. This
+    function now only builds a spec, renders progress, and prints the report --
+    which is why Celery and the API can run the same search.
+    """
+    from app.orchestration.trip_search_pipeline import PipelineSpec, TripSearchPipeline
 
-    # Apply runtime enable/disable overrides
-    if enable_scraper:
-        for scraper in enable_scraper:
-            scraper = scraper.lower()
-            if scraper not in scrapers_to_use:
-                scrapers_to_use.append(scraper)
-
-    if disable_scraper:
-        for scraper in disable_scraper:
-            scraper = scraper.lower()
-            if scraper in scrapers_to_use:
-                scrapers_to_use.remove(scraper)
-
-    if not scrapers_to_use:
-        console.print("[red]Error: All scrapers have been disabled![/red]")
-        raise typer.Exit(code=1)
-
-    if scrapers_to_use != original_scrapers:
-        info(f"Using scrapers: {', '.join([s.title() for s in scrapers_to_use])}")
-
-    stats = {
-        "flights": 0,
-        "accommodations": 0,
-        "events": 0,
-        "packages": 0,
-        "analyzed": 0,
-    }
+    spec = PipelineSpec(
+        destinations=destinations,
+        dates=dates,
+        region=region,
+        analyze=analyze,
+        max_price=max_price,
+        enable_scraper=enable_scraper,
+        disable_scraper=disable_scraper,
+    )
 
     with Progress(
         SpinnerColumn(),
@@ -522,239 +539,37 @@ async def _run_pipeline(
         TimeElapsedColumn(),
         console=console,
     ) as progress:
+        task = progress.add_task("[cyan]Starting pipeline...", total=None)
 
-        # Step 1: Determine destinations
-        task1 = progress.add_task("[cyan]Loading destinations...", total=1)
+        def on_progress(step: str, detail: str) -> None:
+            progress.update(task, description=f"[cyan]{step}: {detail}")
 
-        async with get_async_session_context() as db:
-            if destinations == "all":
-                result = await db.execute(select(Airport).where(Airport.is_destination == True))
-                dest_airports = result.scalars().all()
-                dest_codes = [a.iata_code for a in dest_airports]
-            else:
-                dest_codes = [d.strip().upper() for d in destinations.split(",")]
-
-            # Get origin airports
-            origin_result = await db.execute(
-                select(Airport).where(Airport.is_origin == True)
-            )
-            origin_airports = origin_result.scalars().all()
-            origin_codes = [a.iata_code for a in origin_airports]
-
-        progress.update(task1, completed=1)
-        info(f"Origins: {', '.join(origin_codes)}")
-        info(f"Destinations: {', '.join(dest_codes)}")
-        info(f"Region: {region}")
-
-        # Step 2: Determine date ranges
-        task2 = progress.add_task("[cyan]Calculating date ranges...", total=1)
-
-        if dates == "next-3-months":
-            end_date = date.today() + timedelta(days=90)
-        elif dates == "next-6-months":
-            end_date = date.today() + timedelta(days=180)
-        else:
-            end_date = date.today() + timedelta(days=90)
-
-        date_ranges = get_school_holiday_periods(
-            start_date=date.today(),
-            end_date=end_date,
-            region=region,
-        )
-
-        progress.update(task2, completed=1)
-        info(f"Date ranges: {len(date_ranges)} school holiday periods")
-
-        # Step 3: Scrape flights
-        task3 = progress.add_task("[yellow]Scraping flights...", total=None)
-
-        # Initialize Redis client for caching
-        redis_client = None
         try:
-            redis_client = await Redis.from_url(str(settings.redis_url))
-            await redis_client.ping()
-            logger.info("Redis connection established for flight caching")
-        except Exception as e:
-            logger.warning(f"Redis connection failed, caching will be disabled: {e}")
-            redis_client = None
+            report = await TripSearchPipeline(on_progress=on_progress).run(spec)
+        except NoScrapersEnabled as exc:
+            console.print(f"[red]Error: {exc}[/red]")
+            raise typer.Exit(code=1)
 
-        orchestrator = FlightOrchestrator(redis_client=redis_client)
-        flights = await orchestrator.scrape_all(
-            origins=origin_codes,
-            destinations=dest_codes,
-            date_ranges=date_ranges,
-        )
+    info(f"Origins: {', '.join(report.origins)}")
+    info(f"Destinations: {', '.join(report.destinations)}")
+    info(f"Region: {region}")
+    info(f"Scrapers: {', '.join(report.scrapers_used)}")
 
-        # Close Redis connection
-        if redis_client:
-            await redis_client.close()
+    for message in report.warnings:
+        warning(message)
 
-        stats["flights"] = len(flights)
-        progress.update(task3, completed=1)
-        success(f"Found {stats['flights']} flights")
-
-        # Step 4: Scrape accommodations
-        task4 = progress.add_task("[yellow]Scraping accommodations...", total=len(dest_codes))
-
-        from app.orchestration.accommodation_orchestrator import AccommodationOrchestrator
-
-        acc_orchestrator = AccommodationOrchestrator()
-        all_accommodations = []
-
-        for dest_code in dest_codes:
-            try:
-                # Get city name for destination
-                async with get_async_session_context() as db:
-                    result = await db.execute(
-                        select(Airport).where(Airport.iata_code == dest_code)
-                    )
-                    dest_airport = result.scalar_one_or_none()
-                    city_name = dest_airport.city if dest_airport else dest_code
-
-                # Use first date range for accommodation search
-                if date_ranges:
-                    check_in, check_out = date_ranges[0]
-
-                    accommodations = await acc_orchestrator.search_all_sources(
-                        city=city_name,
-                        check_in=check_in,
-                        check_out=check_out,
-                        adults=2,
-                        children=2,
-                    )
-
-                    if accommodations:
-                        save_stats = await acc_orchestrator.save_to_database(accommodations)
-                        all_accommodations.extend(accommodations)
-                        stats["accommodations"] += save_stats["inserted"] + save_stats["updated"]
-
-                progress.update(task4, advance=1)
-
-            except Exception as e:
-                logger.error(f"Error scraping accommodations for {dest_code}: {e}")
-                progress.update(task4, advance=1)
-                continue
-
-        info(f"Found {stats['accommodations']} accommodations")
-
-        # Step 5: Match packages
-        task5 = progress.add_task("[cyan]Generating trip packages...", total=None)
-
-        async with get_async_session_context() as db:
-            matcher = AccommodationMatcher()
-            packages = await matcher.generate_trip_packages(
-                db=db,
-                max_budget=max_price or settings.max_flight_price_per_person,
-            )
-
-            stats["packages"] = len(packages)
-            progress.update(task5, completed=1)
-            success(f"Generated {stats['packages']} trip packages")
-
-        # Step 6: Match events
-        task6 = progress.add_task("[cyan]Matching events to packages...", total=None)
-
-        async with get_async_session_context() as db:
-            event_matcher = EventMatcher(db_session=db)
-            packages = await event_matcher.match_events_to_packages(packages)
-
-        progress.update(task6, completed=1)
-
-        # Step 7: AI analysis
-        if analyze and stats["packages"] > 0:
-            from app.ai.claude_client import ClaudeClient
-            from app.ai.deal_scorer import DealScorer
-            from app.models.trip_package import TripPackage
-            from redis.asyncio import Redis
-
-            # Initialize Redis client for caching
-            redis_client = await Redis.from_url(str(settings.redis_url))
-
-            try:
-                async with get_async_session_context() as db:
-                    result = await db.execute(
-                        select(TripPackage).where(TripPackage.ai_score.is_(None))
-                    )
-                    unscored = result.scalars().all()
-
-                    # Limit to 50 for cost control
-                    packages_to_score = unscored[:50]
-
-                    task7 = progress.add_task(
-                        "[magenta]Running AI analysis...",
-                        total=len(packages_to_score)
-                    )
-
-                    # Create Claude client and deal scorer with proper dependencies
-                    claude_client = ClaudeClient(
-                        api_key=settings.anthropic_api_key,
-                        redis_client=redis_client,
-                        db_session=db,
-                    )
-                    scorer = DealScorer(
-                        claude_client=claude_client,
-                        db_session=db,
-                    )
-
-                    for idx, package in enumerate(packages_to_score):
-                        try:
-                            # Update progress with current package being analyzed
-                            progress.update(
-                                task7,
-                                description=f"[magenta]Analyzing {package.destination_city} "
-                                f"({idx+1}/{len(packages_to_score)})...",
-                            )
-
-                            # Log start of analysis
-                            console.print(
-                                f"[dim magenta]⟳ Scoring package {package.id}: "
-                                f"{package.destination_city}, €{package.total_price}[/dim magenta]"
-                            )
-
-                            score_data = await scorer.score_trip(package)
-
-                            if score_data:
-                                package.ai_score = score_data["score"]
-                                package.ai_reasoning = score_data["reasoning"]
-                                await db.commit()
-                                stats["analyzed"] += 1
-
-                                # Log completion with score
-                                console.print(
-                                    f"[dim green]✓ Package {package.id}: "
-                                    f"Score {score_data['score']}/100 "
-                                    f"({score_data.get('recommendation', 'N/A')})[/dim green]"
-                                )
-                            else:
-                                console.print(
-                                    f"[dim yellow]⚠ Package {package.id}: Skipped (over price threshold)[/dim yellow]"
-                                )
-
-                            progress.update(task7, advance=1)
-
-                        except Exception as e:
-                            logger.error(f"Failed to score package {package.id}: {e}")
-                            console.print(
-                                f"[dim red]✗ Package {package.id}: Failed - {str(e)}[/dim red]"
-                            )
-                            progress.update(task7, advance=1)
-                            continue
-
-                success(f"Analyzed {stats['analyzed']} packages")
-            finally:
-                await redis_client.close()
-
-    # Display final statistics
     console.print("\n")
     table = Table(title="Pipeline Results", show_header=True, header_style="bold magenta")
     table.add_column("Metric", style="cyan")
     table.add_column("Count", style="green", justify="right")
 
-    table.add_row("Flights Found", str(stats["flights"]))
-    table.add_row("Accommodations Available", str(stats["accommodations"]))
-    table.add_row("Packages Generated", str(stats["packages"]))
+    table.add_row("Flights Found", str(report.flights_found))
+    table.add_row("Flights Saved", str(report.flights_saved))
+    table.add_row("True Costs Calculated", str(report.true_costs_calculated))
+    table.add_row("Accommodations Available", str(report.accommodations))
+    table.add_row("Packages Generated", str(report.packages))
     if analyze:
-        table.add_row("Packages Analyzed", str(stats["analyzed"]))
+        table.add_row("Packages Analyzed", str(report.analyzed))
 
     console.print(table)
     console.print("\n")
@@ -976,7 +791,7 @@ async def _show_deals(
 
             for pkg in packages:
                 score_str = f"{pkg.ai_score:.0f}/100" if pkg.ai_score else "N/A"
-                score_style = "bold green" if pkg.ai_score and pkg.ai_score >= 80 else "yellow"
+                score_style = "bold green" if is_excellent_deal(pkg) else "yellow"
 
                 table.add_row(
                     pkg.destination_city.title(),

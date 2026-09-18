@@ -27,11 +27,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.exceptions import ScraperFailureThresholdExceeded
 from app.database import get_async_session_context
 from app.models.accommodation import Accommodation
 from app.models.scraping_job import ScrapingJob
 from app.scrapers.booking_scraper import BookingClient
 from app.scrapers.airbnb_scraper import AirbnbClient
+from app.orchestration.scraper_selection import resolve_accommodation_scrapers
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -58,9 +60,34 @@ class AccommodationOrchestrator:
         airbnb: Airbnb scraper client
     """
 
-    def __init__(self):
-        """Initialize enabled accommodation scrapers based on configuration."""
-        self.enabled_scrapers = self._get_available_scrapers()
+    def __init__(
+        self,
+        enabled_scrapers: Optional[List[str]] = None,
+        disable_scraper: Optional[List[str]] = None,
+        enable_scraper: Optional[List[str]] = None,
+    ):
+        """
+        Initialize enabled accommodation scrapers.
+
+        Args:
+            enabled_scrapers: Explicit list of scrapers to run. When given, it
+                is used as-is and overrides resolution.
+            disable_scraper: Scraper names to remove, as ``--disable-scraper``.
+            enable_scraper: Scraper names to add, as ``--enable-scraper``.
+
+        Selection is resolved by ``app.orchestration.scraper_selection`` so the
+        runtime override flags reach accommodations too. This used to hardcode
+        its own list and ignore both configuration and the flags.
+        """
+        if enabled_scrapers is not None:
+            self.enabled_scrapers = list(enabled_scrapers)
+        else:
+            self.enabled_scrapers = list(
+                resolve_accommodation_scrapers(
+                    enable=enable_scraper,
+                    disable=disable_scraper,
+                ).names
+            )
 
         # Initialize scrapers based on availability
         self.booking = None
@@ -76,23 +103,6 @@ class AccommodationOrchestrator:
             f"AccommodationOrchestrator initialized with {len(self.enabled_scrapers)} scrapers: "
             f"{', '.join(self.enabled_scrapers)}"
         )
-
-    def _get_available_scrapers(self) -> List[str]:
-        """
-        Determine which accommodation scrapers are available.
-
-        Returns:
-            List of available scraper names
-        """
-        available = []
-
-        # Booking.com is always available (uses Playwright)
-        available.append("booking")
-
-        # Airbnb is always available (uses Apify or Playwright fallback)
-        available.append("airbnb")
-
-        return available
 
     async def search_all_sources(
         self,
@@ -202,6 +212,26 @@ class AccommodationOrchestrator:
             f"Scraping completed: {successful_scrapers} successful, {failed_scrapers} failed, "
             f"{len(all_accommodations)} total accommodations, {elapsed_time:.2f}s elapsed"
         )
+
+        # Abort if too many sources failed. The flight orchestrator has had
+        # this circuit breaker all along; accommodations silently returned
+        # partial results no matter how many scrapers were broken.
+        total_scrapers = successful_scrapers + failed_scrapers
+        if total_scrapers > 0:
+            failure_rate = failed_scrapers / total_scrapers
+            threshold = settings.scraper_failure_threshold
+            if failure_rate > threshold:
+                logger.critical(
+                    f"CRITICAL: Accommodation scraper failure threshold exceeded! "
+                    f"{failed_scrapers}/{total_scrapers} scrapers failed "
+                    f"({failure_rate:.1%}, threshold: {threshold:.1%})"
+                )
+                raise ScraperFailureThresholdExceeded(
+                    total_scrapers=total_scrapers,
+                    failed_scrapers=failed_scrapers,
+                    failure_rate=failure_rate,
+                    threshold=threshold,
+                )
 
         # Print statistics table
         self._print_stats_table(scraper_stats, elapsed_time)
@@ -341,7 +371,11 @@ class AccommodationOrchestrator:
                 f"[{scraper_name}] Scraping failed for {city}: {e}",
                 exc_info=True,
             )
-            return []
+            # Re-raise so asyncio.gather(return_exceptions=True) records it and
+            # the failure threshold below can see it. Returning [] here meant
+            # failed_scrapers was always zero and the circuit breaker the
+            # flight orchestrator has could never fire for accommodations.
+            raise
 
     def deduplicate(self, accommodations: List[Dict]) -> List[Dict]:
         """

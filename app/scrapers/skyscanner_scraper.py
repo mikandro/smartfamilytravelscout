@@ -7,6 +7,7 @@ including rate limiting, user agent rotation, and error handling.
 """
 
 import asyncio
+from app.scrapers.source_errors import SourceBlocked
 import logging
 import random
 import time
@@ -26,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.domain.airport_registry import find_airport
 from app.database import get_async_session_context
 from app.models.airport import Airport
 from app.models.flight import Flight
@@ -52,7 +54,7 @@ USER_AGENTS = [
 ]
 
 
-class CaptchaDetectedError(Exception):
+class CaptchaDetectedError(SourceBlocked):
     """Raised when CAPTCHA is detected."""
 
     pass
@@ -919,18 +921,11 @@ class SkyscannerScraper:
         self, session: AsyncSession, iata_code: str
     ) -> Optional[Airport]:
         """
-        Get airport by IATA code.
+        Resolve an airport by IATA code.
 
-        Args:
-            session: Database session
-            iata_code: IATA airport code (e.g., "MUC")
-
-        Returns:
-            Airport model or None if not found
+        Delegates to the airport registry -- one lookup rule for every source.
         """
-        stmt = select(Airport).where(Airport.iata_code == iata_code.upper())
-        result = await session.execute(stmt)
-        return result.scalar_one_or_none()
+        return await find_airport(session, iata_code)
 
     def _parse_time(self, time_str: Optional[str]) -> Optional[time_type]:
         """

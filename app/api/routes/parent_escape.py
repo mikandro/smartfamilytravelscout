@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.claude_client import ClaudeClient
 from app.ai.parent_escape_analyzer import ParentEscapeAnalyzer, TRAIN_DESTINATIONS
 from app.database import get_async_session_context
+from app.domain.package_components import read_flight_components
 from app.models.trip_package import TripPackage
 from app.models.accommodation import Accommodation
 
@@ -253,10 +254,11 @@ async def search_parent_escapes(
         # Convert to response models
         opportunities = []
         for pkg in sorted_packages[:limit]:
-            # Extract country from flights_json
-            country = "Unknown"
-            if pkg.flights_json and "details" in pkg.flights_json:
-                country = pkg.flights_json["details"].get("country", "Unknown")
+            # Extract country from the travel components. Read through the
+            # seam: this used to index flights_json directly, which raises
+            # TypeError on the list shape the main pipeline writes.
+            components = read_flight_components(pkg.flights_json)
+            country = components.details.get("country", "Unknown")
 
             # Build opportunity object
             opportunity = ParentEscapeOpportunity(

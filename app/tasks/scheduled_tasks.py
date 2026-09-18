@@ -39,16 +39,37 @@ def daily_flight_search(self):
         if hasattr(self, 'check_shutdown'):
             self.check_shutdown()
 
-        # TODO(#59): Implement actual flight search logic
-        # Example:
-        # for airport in airports:
-        #     # Check for shutdown between operations
-        #     if hasattr(self, 'check_shutdown'):
-        #         self.check_shutdown()
-        #     search_flights_from_airport.delay(airport, start_date, end_date)
+        # Run the same pipeline the CLI runs. This was a TODO(#59) stub that
+        # logged success and returned, because the logic lived inside a private
+        # CLI function and could not be reached from here.
+        import asyncio
 
-        logger.info("Daily flight search task completed successfully")
-        return {"status": "success", "airports": airports, "task_id": self.request.id}
+        from app.orchestration.trip_search_pipeline import (
+            PipelineSpec,
+            TripSearchPipeline,
+        )
+
+        spec = PipelineSpec(analyze=settings.enable_ai_scoring)
+        report = asyncio.run(TripSearchPipeline().run(spec))
+
+        logger.info(
+            "Daily flight search completed: %s flights found, %s saved, "
+            "%s packages, %s analyzed",
+            report.flights_found,
+            report.flights_saved,
+            report.packages,
+            report.analyzed,
+        )
+        return {
+            "status": "success",
+            "airports": airports,
+            "flights_found": report.flights_found,
+            "flights_saved": report.flights_saved,
+            "packages": report.packages,
+            "analyzed": report.analyzed,
+            "warnings": report.warnings,
+            "task_id": self.request.id,
+        }
 
     except SystemExit:
         # Handle graceful shutdown

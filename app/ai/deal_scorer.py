@@ -15,7 +15,28 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.claude_client import ClaudeClient
+from app.ai.judgement import JudgementSchema, MalformedJudgement
 from app.ai.prompt_loader import PromptLoader
+
+#: What a deal-scoring response must contain.
+DEAL_SCHEMA = JudgementSchema(
+    required=(
+        "score",
+        "value_assessment",
+        "family_suitability",
+        "timing_quality",
+        "recommendation",
+        "confidence",
+        "reasoning",
+    ),
+    optional=("highlights", "concerns"),
+    defaults={"highlights": [], "concerns": []},
+)
+from app.domain.package_components import (
+    describe_flight,
+    load_flights,
+    read_flight_components,
+)
 from app.models.accommodation import Accommodation
 from app.models.event import Event
 from app.models.flight import Flight
@@ -113,7 +134,9 @@ class DealScorer:
         try:
             # Check price threshold (unless analyze_all or force_analyze)
             if not self.analyze_all and not force_analyze:
-                flight_price_per_person = self._get_flight_price_per_person(trip_package)
+                flight_price_per_person = await self._get_flight_price_per_person(
+                    trip_package
+                )
                 if flight_price_per_person > self.price_threshold:
                     logger.info(
                         f"Skipping trip {trip_package.id}: flight price "
@@ -143,22 +166,11 @@ class DealScorer:
                 operation="deal_scoring",
             )
 
-            # Validate response structure
-            required_fields = [
-                "score",
-                "value_assessment",
-                "family_suitability",
-                "timing_quality",
-                "recommendation",
-                "confidence",
-                "reasoning",
-            ]
-            for field in required_fields:
-                if field not in response:
-                    logger.warning(
-                        f"Missing field '{field}' in Claude response for trip {trip_package.id}"
-                    )
-                    response[field] = None
+            # Validate against the declared schema. This used to set every
+            # missing field to None and carry on, which produced packages with
+            # a null score and no error anywhere -- indistinguishable from a
+            # package Claude had genuinely declined to score.
+            response = DEAL_SCHEMA.validate(response, "deal_scoring")
 
             # Update trip package with AI results
             await self._update_trip_package(trip_package, response)
@@ -218,7 +230,9 @@ class DealScorer:
         try:
             # Check price threshold against user preferences
             if not self.analyze_all and not force_analyze:
-                flight_price_per_person = self._get_flight_price_per_person(package)
+                flight_price_per_person = await self._get_flight_price_per_person(
+                    package
+                )
 
                 # Use user's max flight price preference
                 max_price = float(user_prefs.max_flight_price_family)
@@ -379,9 +393,13 @@ class DealScorer:
 
         return results
 
-    def _get_flight_price_per_person(self, trip_package: TripPackage) -> float:
+    async def _get_flight_price_per_person(self, trip_package: TripPackage) -> float:
         """
-        Extract flight price per person from trip package.
+        Resolve the flight price per person for a trip package.
+
+        Reads the travel components through the package-components seam and
+        resolves referenced ``Flight`` rows, so every historical shape of
+        ``flights_json`` is handled in one place.
 
         Args:
             trip_package: The trip package
@@ -390,36 +408,37 @@ class DealScorer:
             Flight price per person in EUR
 
         Raises:
-            ValueError: If flight data is missing or invalid
+            ValueError: If the package claims to be flight-backed but no price
+                can be resolved from its ids or its legacy snapshot.
         """
-        flights_data = trip_package.flights_json
+        components = read_flight_components(trip_package.flights_json)
 
-        if not flights_data:
-            raise ValueError(f"Trip package {trip_package.id} has no flight data")
+        # Flight-backed package: resolve the referenced Flight row. This used to
+        # call .get() on whatever sat in flights_json, which raised
+        # AttributeError on the list[int] the main pipeline writes.
+        flights = await load_flights(components, self.db)
+        if flights:
+            price = flights[0].price_per_person
+            if price is not None:
+                return float(price)
 
-        # Handle different flight data structures
-        if isinstance(flights_data, dict):
-            # Single flight stored as dict
-            price = flights_data.get("price_per_person")
-            if price is None:
-                raise ValueError(
-                    f"Flight data missing price_per_person for trip {trip_package.id}"
-                )
-            return float(price)
+        # Legacy row with the flight fields embedded in the JSON.
+        if components.snapshot:
+            price = components.snapshot.get("price_per_person")
+            if price is not None:
+                return float(price)
 
-        elif isinstance(flights_data, list) and len(flights_data) > 0:
-            # Multiple flights stored as array, use first one
-            price = flights_data[0].get("price_per_person")
-            if price is None:
-                raise ValueError(
-                    f"Flight data missing price_per_person for trip {trip_package.id}"
-                )
-            return float(price)
+        # Non-flight travel (parent escape) has no per-person flight price;
+        # fall back to the package's own per-person figure, which knows that
+        # an escape package is for two people rather than four.
+        if not components.is_flight:
+            return float(trip_package.price_per_person)
 
-        else:
-            raise ValueError(
-                f"Invalid flight data structure for trip {trip_package.id}"
-            )
+        raise ValueError(
+            f"Trip package {trip_package.id} has no resolvable flight price "
+            f"(travel_method={components.travel_method}, "
+            f"flight_ids={list(components.flight_ids)})"
+        )
 
     async def _build_prompt_data(
         self, trip_package: TripPackage
@@ -433,14 +452,10 @@ class DealScorer:
         Returns:
             Dictionary with all variables needed for the prompt template
         """
-        # Get flight details
-        flights_data = trip_package.flights_json
-        if isinstance(flights_data, dict):
-            flight_info = flights_data
-        elif isinstance(flights_data, list) and len(flights_data) > 0:
-            flight_info = flights_data[0]
-        else:
-            flight_info = {}
+        # Resolve the travel components once, through the seam.
+        components = read_flight_components(trip_package.flights_json)
+        flights = await load_flights(components, self.db)
+        primary_flight = flights[0] if flights else None
 
         # Get accommodation details
         accommodation = trip_package.accommodation
@@ -464,13 +479,18 @@ class DealScorer:
             amenities = "Not specified"
 
         # Format flight details for display
-        origin = flight_info.get("origin_airport", "N/A")
-        destination = flight_info.get("destination_airport", "N/A")
-        airline = flight_info.get("airline", "N/A")
-        flight_details = f"{origin} → {destination} via {airline}"
+        flight_details = describe_flight(primary_flight, components)
 
-        flight_price_per_person = self._get_flight_price_per_person(trip_package)
-        true_cost = flight_info.get("true_cost", flight_price_per_person)
+        flight_price_per_person = await self._get_flight_price_per_person(trip_package)
+
+        # Prefer the true cost on the resolved Flight row; fall back to a legacy
+        # embedded snapshot, then to the plain per-person price.
+        if primary_flight is not None and primary_flight.true_cost is not None:
+            true_cost = float(primary_flight.true_cost)
+        else:
+            true_cost = float(
+                components.snapshot.get("true_cost", flight_price_per_person)
+            )
 
         # Get price history context
         price_context = await self._get_price_context(trip_package)
@@ -557,16 +577,18 @@ class DealScorer:
             Formatted string with price context
         """
         try:
-            # Get origin and destination from flight data
-            flights_data = trip_package.flights_json
-            if isinstance(flights_data, dict):
-                origin = flights_data.get("origin_airport")
-                destination = flights_data.get("destination_airport")
-            elif isinstance(flights_data, list) and len(flights_data) > 0:
-                origin = flights_data[0].get("origin_airport")
-                destination = flights_data[0].get("destination_airport")
+            # Resolve origin and destination through the components seam.
+            components = read_flight_components(trip_package.flights_json)
+            flights = await load_flights(components, self.db)
+
+            if flights:
+                origin = getattr(flights[0].origin_airport, "iata_code", None)
+                destination = getattr(
+                    flights[0].destination_airport, "iata_code", None
+                )
             else:
-                return "No historical price data available."
+                origin = components.snapshot.get("origin_airport")
+                destination = components.snapshot.get("destination_airport")
 
             if not origin or not destination:
                 return "No historical price data available."
@@ -588,7 +610,7 @@ class DealScorer:
             min_price = min(prices)
             max_price = max(prices)
 
-            current_price = self._get_flight_price_per_person(trip_package)
+            current_price = await self._get_flight_price_per_person(trip_package)
             percent_diff = ((current_price - avg_price) / avg_price) * 100
             comparison = "above" if percent_diff > 0 else "below"
 

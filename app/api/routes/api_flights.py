@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_async_session
+from app.domain.airport_registry import find_airport
 from app.models import Flight, Airport
 from app.api.schemas.flight import FlightResponse, AirportResponse
 
@@ -51,19 +52,13 @@ async def search_flights(
 
         if origin:
             # Look up origin airport by IATA code
-            airport_result = await db.execute(
-                select(Airport).where(Airport.iata_code == origin.upper())
-            )
-            origin_airport = airport_result.scalar_one_or_none()
+            origin_airport = await find_airport(db, origin)
             if origin_airport:
                 filters.append(Flight.origin_airport_id == origin_airport.id)
 
         if destination:
             # Look up destination airport by IATA code
-            airport_result = await db.execute(
-                select(Airport).where(Airport.iata_code == destination.upper())
-            )
-            dest_airport = airport_result.scalar_one_or_none()
+            dest_airport = await find_airport(db, destination)
             if dest_airport:
                 filters.append(Flight.destination_airport_id == dest_airport.id)
 
