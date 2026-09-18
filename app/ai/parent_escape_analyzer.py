@@ -29,6 +29,10 @@ from sqlalchemy.orm import selectinload
 
 from app.ai.claude_client import ClaudeClient
 from app.ai.prompt_loader import load_prompt
+from app.domain.package_components import (
+    TRAVEL_METHOD_TRAIN,
+    build_alternative_travel_components,
+)
 from app.models.accommodation import Accommodation
 from app.models.event import Event
 from app.models.flight import Flight
@@ -490,7 +494,9 @@ class ParentEscapeAnalyzer:
         # Create package
         package = TripPackage(
             package_type="parent_escape",
-            flights_json={"travel_method": "train", "details": city_info},
+            flights_json=build_alternative_travel_components(
+                TRAVEL_METHOD_TRAIN, city_info
+            ),
             accommodation_id=accommodation.id,
             events_json=[e.id for e in events] if events else [],
             destination_city=city,

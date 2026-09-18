@@ -110,9 +110,17 @@ class TripPackage(Base, TimestampMixin):
 
     @property
     def price_per_person(self) -> float:
-        """Calculate price per person (assuming 4 people for family, 2 for parent escape)."""
-        num_people = 4 if self.package_type == "family" else 2
-        return float(self.total_price) / num_people
+        """
+        Price per traveller.
+
+        Party size comes from PartySize.for_package_type rather than a literal,
+        so a parent-escape package divides by two and a family package by four.
+        """
+        from app.domain.party_size import PartySize
+
+        return PartySize.for_package_type(self.package_type).per_person(
+            self.total_price
+        )
 
     @property
     def price_per_night(self) -> float:

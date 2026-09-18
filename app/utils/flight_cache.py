@@ -18,6 +18,7 @@ Example:
 """
 
 import hashlib
+from app.domain.party_size import FAMILY
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -110,7 +111,7 @@ class FlightDeduplicationCache:
         price = flight.get("price_per_person")
         if price is None:
             total_price = flight.get("total_price", 0)
-            price = total_price / 4 if total_price else 0
+            price = FAMILY.per_person(total_price) if total_price else 0
 
         # Round price to 2 decimals to avoid minor variations
         price = round(float(price), 2) if price else 0.0

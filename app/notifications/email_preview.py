@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List
 
 from app.config import get_settings
+from app.domain.package_components import empty_components
 from app.models.trip_package import TripPackage
 from app.notifications.email_sender import create_email_notifier
 
@@ -53,7 +54,7 @@ def create_sample_deals(count: int = 5) -> List[TripPackage]:
         deal.total_price = Decimal(1200 + (i * 100))
         deal.ai_score = Decimal(score)
         deal.ai_reasoning = reasoning
-        deal.flights_json = {}
+        deal.flights_json = empty_components()
         deal.accommodation_id = None
         deal.events_json = None
         deal.notified = False
@@ -80,7 +81,7 @@ def create_sample_exceptional_deal() -> TripPackage:
         "Barcelona's family-friendly attractions, excellent weather, and this incredible price "
         "make this an exceptional opportunity."
     )
-    deal.flights_json = {}
+    deal.flights_json = empty_components()
     deal.accommodation_id = None
     deal.events_json = None
     deal.notified = False
@@ -114,7 +115,7 @@ def create_sample_parent_escapes(count: int = 5) -> List[TripPackage]:
         escape.total_price = Decimal(600 + (i * 75))
         escape.ai_score = Decimal(score)
         escape.ai_reasoning = reasoning
-        escape.flights_json = {}
+        escape.flights_json = empty_components()
         escape.accommodation_id = None
         escape.events_json = None
         escape.notified = False
