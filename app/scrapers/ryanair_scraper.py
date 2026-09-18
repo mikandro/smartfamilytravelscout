@@ -12,6 +12,7 @@ Target: https://www.ryanair.com/
 """
 
 import asyncio
+from app.scrapers.source_errors import SourceBlocked, SourceRateLimited
 import json
 import random
 import re
@@ -34,13 +35,13 @@ from app.utils.rate_limiter import (
 logger = get_logger(__name__)
 
 
-class RateLimitExceeded(Exception):
+class RateLimitExceeded(SourceRateLimited):
     """Raised when daily rate limit is exceeded (deprecated, use RateLimitExceededError)."""
 
     pass
 
 
-class CaptchaDetected(Exception):
+class CaptchaDetected(SourceBlocked):
     """Raised when CAPTCHA is detected."""
 
     pass

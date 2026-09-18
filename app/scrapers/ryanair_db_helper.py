@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.domain.airport_registry import find_airport
 from app.models.airport import Airport
 from app.models.flight import Flight
 from app.scrapers.ryanair_scraper import RyanairScraper
@@ -24,23 +24,12 @@ logger = get_logger(__name__)
 
 async def get_airport_id(db: AsyncSession, iata_code: str) -> Optional[int]:
     """
-    Get airport ID from IATA code.
+    Get an airport's id from its IATA code.
 
-    Args:
-        db: Database session
-        iata_code: IATA airport code (e.g., 'FMM', 'BCN')
-
-    Returns:
-        Airport ID or None if not found
+    Delegates to the airport registry -- one lookup rule for every source.
     """
-    stmt = select(Airport.id).where(Airport.iata_code == iata_code.upper())
-    result = await db.execute(stmt)
-    airport_id = result.scalar_one_or_none()
-
-    if not airport_id:
-        logger.warning(f"Airport not found: {iata_code}")
-
-    return airport_id
+    airport = await find_airport(db, iata_code)
+    return airport.id if airport else None
 
 
 async def save_scraped_flights(

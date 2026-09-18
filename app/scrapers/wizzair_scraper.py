@@ -12,6 +12,7 @@ updated API endpoint and request format.
 """
 
 import logging
+from app.scrapers.source_errors import SourceRateLimited, SourceUnavailable
 from datetime import date, datetime, time
 from typing import Any, Dict, List, Optional
 
@@ -20,19 +21,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.airport import Airport
+from app.domain.airport_registry import find_airport
 from app.models.flight import Flight
 from app.utils.retry import api_retry
 
 logger = logging.getLogger(__name__)
 
 
-class WizzAirAPIError(Exception):
+class WizzAirAPIError(SourceUnavailable):
     """Raised when WizzAir API returns an error."""
 
     pass
 
 
-class WizzAirRateLimitError(Exception):
+class WizzAirRateLimitError(SourceRateLimited):
     """Raised when WizzAir API rate limit is exceeded."""
 
     pass
@@ -463,22 +465,13 @@ class WizzAirScraper:
         self, db: AsyncSession, iata_code: str
     ) -> Optional[Airport]:
         """
-        Get airport from database by IATA code.
+        Resolve an airport by IATA code.
 
-        Args:
-            db: Database session
-            iata_code: Airport IATA code (e.g., 'MUC')
-
-        Returns:
-            Airport object or None if not found
+        Delegates to the airport registry -- one lookup rule for every source.
         """
-        result = await db.execute(
-            select(Airport).where(Airport.iata_code == iata_code.upper())
-        )
-        return result.scalar_one_or_none()
+        return await find_airport(db, iata_code)
 
 
-# Convenience function for CLI/API usage
 async def scrape_wizzair_flights(
     db: AsyncSession,
     origin: str,

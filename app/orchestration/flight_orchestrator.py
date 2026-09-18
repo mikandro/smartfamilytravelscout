@@ -31,19 +31,27 @@ from sqlalchemy.orm import selectinload
 from app.config import settings
 from app.database import get_async_session_context
 from app.exceptions import ScraperFailureThresholdExceeded
+from app.domain.airport_registry import find_airports, get_or_create_airport
 from app.models.airport import Airport
 from app.models.flight import Flight
 from app.models.scraping_job import ScrapingJob
-from app.scrapers.kiwi_scraper import KiwiClient
-from app.scrapers.ryanair_scraper import RyanairScraper
-from app.scrapers.skyscanner_scraper import SkyscannerScraper
-from app.scrapers.wizzair_scraper import WizzAirScraper
+from app.domain.party_size import FAMILY, PartySize
+from app.scrapers.flight_source import (
+    FlightQuery,
+    FlightSource,
+    build_flight_sources,
+)
+from app.scrapers.source_errors import SourceError
 from app.services.price_history_service import PriceHistoryService
 from app.utils.date_utils import parse_time
 from app.utils.flight_cache import FlightDeduplicationCache
 
 logger = logging.getLogger(__name__)
+
+# Module console kept so existing CLI output is unchanged. New callers should
+# pass console=None; see FlightOrchestrator._report.
 console = Console()
+_DEFAULT_CONSOLE = console
 
 
 class FlightOrchestrator:
@@ -69,29 +77,60 @@ class FlightOrchestrator:
         wizzair: WizzAir API scraper
     """
 
-    def __init__(self, enabled_scrapers: Optional[List[str]] = None, redis_client: Optional[Redis] = None):
+    def __init__(
+        self,
+        enabled_scrapers: Optional[List[str]] = None,
+        redis_client: Optional[Redis] = None,
+        party: Optional[PartySize] = None,
+        sources: Optional[List[FlightSource]] = None,
+        console: Optional[Console] = _DEFAULT_CONSOLE,
+    ):
         """
-        Initialize enabled flight scrapers based on configuration.
+        Initialize enabled flight sources.
 
         Args:
             enabled_scrapers: Optional list of scrapers to enable (overrides config).
                             Valid values: 'kiwi', 'skyscanner', 'ryanair', 'wizzair'
             redis_client: Optional Redis client for caching. If not provided,
                         a new connection will be created.
+            party: Who the trip is for. Defaults to a family of four, and
+                determines both what is requested from each source and how
+                per-person prices are scaled.
+            sources: Pre-built sources, used by tests to inject fakes instead
+                of patching scraper module globals.
+            console: Where to write progress lines. Defaults to the module
+                console so existing CLI behaviour is unchanged; pass ``None``
+                from Celery or the API to keep Rich markup out of logs.
         """
+        self.console = console
+
         # Use provided scrapers or fall back to configuration
         if enabled_scrapers is not None:
             self.enabled_scrapers = enabled_scrapers
         else:
             self.enabled_scrapers = settings.get_available_scrapers()
 
-        # Initialize only enabled scrapers
-        self.kiwi = KiwiClient() if "kiwi" in self.enabled_scrapers else None
-        self.skyscanner = (
-            SkyscannerScraper(headless=True) if "skyscanner" in self.enabled_scrapers else None
-        )
-        self.ryanair = RyanairScraper() if "ryanair" in self.enabled_scrapers else None
-        self.wizzair = WizzAirScraper() if "wizzair" in self.enabled_scrapers else None
+        # Build one adapter per enabled source. The orchestrator no longer
+        # knows any scraper's method names, keyword names or lifecycle -- each
+        # adapter owns those behind the FlightSource interface.
+        if sources is not None:
+            self.sources: List[FlightSource] = list(sources)
+            self.enabled_scrapers = [source.name for source in self.sources]
+        else:
+            self.sources = build_flight_sources(self.enabled_scrapers)
+
+        # The party this orchestrator searches for. Previously hardcoded as
+        # adults=2/children=2 in two branches of the dispatch, with `* 4`
+        # hardcoded in two more.
+        self.party = party or FAMILY
+
+        # Kept as attributes for backward compatibility: existing tests and
+        # callers check `orchestrator.kiwi` and friends to see what is enabled.
+        by_name = {source.name: source for source in self.sources}
+        self.kiwi = by_name.get("kiwi")
+        self.skyscanner = by_name.get("skyscanner")
+        self.ryanair = by_name.get("ryanair")
+        self.wizzair = by_name.get("wizzair")
 
         # Initialize flight cache if Redis is available
         self.cache = None
@@ -112,6 +151,20 @@ class FlightOrchestrator:
             f"FlightOrchestrator initialized with {len(self.enabled_scrapers)} scrapers: "
             f"{', '.join(self.enabled_scrapers)}"
         )
+
+    def _report(self, markup: str) -> None:
+        """
+        Emit a progress line to the caller's console, if there is one.
+
+        Terminal formatting is the CLI adapter's job, not orchestration's. The
+        scrape path used to call ``console.print`` directly, which emits ANSI
+        markup into Celery worker logs -- one of the reasons the scheduled
+        tasks worked around this class instead of calling it. Set
+        ``orchestrator.console = None`` (the default for non-CLI callers) and
+        nothing is printed.
+        """
+        if self.console is not None:
+            self.console.print(markup)
 
     async def scrape_all(
         self,
@@ -153,45 +206,24 @@ class FlightOrchestrator:
         tasks = []
         task_metadata = []  # Track which scraper/route each task represents
 
+        # One uniform loop over sources. This replaced four near-identical
+        # blocks that each named a scraper attribute and passed a different
+        # argument shape.
         for origin in origins:
             for destination in destinations:
                 for departure_date, return_date in date_ranges:
-                    # Create task for each ENABLED scraper
-                    if self.kiwi:
-                        tasks.append(
-                            self.scrape_source(
-                                self.kiwi, "kiwi", origin, destination, (departure_date, return_date)
-                            )
+                    query = FlightQuery(
+                        origin=origin,
+                        destination=destination,
+                        departure_date=departure_date,
+                        return_date=return_date,
+                        party=self.party,
+                    )
+                    for source in self.sources:
+                        tasks.append(self.scrape_source(source, query))
+                        task_metadata.append(
+                            f"{source.name.title()}: {origin}→{destination}"
                         )
-                        task_metadata.append(f"Kiwi: {origin}→{destination}")
-
-                    if self.skyscanner:
-                        tasks.append(
-                            self.scrape_source(
-                                self.skyscanner,
-                                "skyscanner",
-                                origin,
-                                destination,
-                                (departure_date, return_date),
-                            )
-                        )
-                        task_metadata.append(f"Skyscanner: {origin}→{destination}")
-
-                    if self.ryanair:
-                        tasks.append(
-                            self.scrape_source(
-                                self.ryanair, "ryanair", origin, destination, (departure_date, return_date)
-                            )
-                        )
-                        task_metadata.append(f"Ryanair: {origin}→{destination}")
-
-                    if self.wizzair:
-                        tasks.append(
-                            self.scrape_source(
-                                self.wizzair, "wizzair", origin, destination, (departure_date, return_date)
-                            )
-                        )
-                        task_metadata.append(f"WizzAir: {origin}→{destination}")
 
         console.print(
             f"\n[bold cyan]Starting {len(tasks)} scraping tasks in parallel...[/bold cyan]\n"
@@ -381,154 +413,53 @@ class FlightOrchestrator:
 
     async def scrape_source(
         self,
-        scraper,
-        scraper_name: str,
-        origin: str,
-        destination: str,
-        dates: Tuple[date, date],
+        source: FlightSource,
+        query: FlightQuery,
     ) -> List[Dict]:
         """
-        Scrape a single source with error handling and normalization.
+        Run one source for one query.
 
-        This method wraps individual scraper calls with error handling, logging,
-        and data normalization to ensure consistent output format.
+        This used to be a 150-line if/elif over scraper names that knew each
+        scraper's method name, keyword names, context-manager lifecycle and
+        output dict shape, plus ~40 lines of per-scraper normalisation
+        duplicated near-verbatim. All of that now lives in the adapter behind
+        the FlightSource interface, so this method is uniform.
 
         Args:
-            scraper: Scraper instance (KiwiClient, SkyscannerScraper, etc.)
-            scraper_name: Name of the scraper for logging ('kiwi', 'skyscanner', etc.)
-            origin: Origin airport IATA code
-            destination: Destination airport IATA code
-            dates: Tuple of (departure_date, return_date)
+            source: Any FlightSource adapter.
+            query: The search to run.
 
         Returns:
-            List of normalized flight dictionaries, or empty list if scraping fails
-        """
-        departure_date, return_date = dates
+            Normalised flight dictionaries.
 
-        # Log start of scraping with console output for immediate feedback
+        Raises:
+            SourceError: Re-raised so scrape_all can count it against the
+                failure threshold. Adapters translate their scraper's own
+                exceptions into these declared modes.
+        """
         log_msg = (
-            f"[{scraper_name}] Starting scrape: {origin} → {destination}, "
-            f"{departure_date} to {return_date}"
+            f"[{source.name}] Starting scrape: {query.origin} \u2192 {query.destination}, "
+            f"{query.departure_date} to {query.return_date}"
         )
         logger.info(log_msg)
-        console.print(f"[dim cyan]⟳ {log_msg}[/dim cyan]")
+        self._report(f"[dim cyan]\u27f3 {log_msg}[/dim cyan]")
 
         try:
-            # Call appropriate scraper method based on type
-            if scraper_name == "kiwi":
-                flights = await scraper.search_flights(
-                    origin=origin,
-                    destination=destination,
-                    departure_date=departure_date,
-                    return_date=return_date,
-                    adults=2,
-                    children=2,
-                )
-
-            elif scraper_name == "skyscanner":
-                # Skyscanner uses context manager
-                async with scraper:
-                    flights = await scraper.scrape_route(
-                        origin=origin,
-                        destination=destination,
-                        departure_date=departure_date,
-                        return_date=return_date,
-                    )
-                # Normalize Skyscanner data (it doesn't include origin/destination in results)
-                for flight in flights:
-                    flight["origin_airport"] = origin
-                    flight["destination_airport"] = destination
-                    flight["origin_city"] = origin  # Will be enriched from DB
-                    flight["destination_city"] = destination
-                    flight["departure_date"] = departure_date.strftime("%Y-%m-%d")
-                    flight["return_date"] = return_date.strftime("%Y-%m-%d") if return_date else None
-                    flight["source"] = "skyscanner"
-                    flight["scraped_at"] = datetime.now().isoformat()
-
-            elif scraper_name == "ryanair":
-                # Ryanair uses context manager
-                async with scraper:
-                    flights = await scraper.scrape_route(
-                        origin=origin,
-                        destination=destination,
-                        departure_date=departure_date,
-                        return_date=return_date,
-                    )
-                # Normalize Ryanair data
-                for flight in flights:
-                    # Ryanair returns different format, normalize it
-                    flight["origin_airport"] = flight.pop("origin", origin)
-                    flight["destination_airport"] = flight.pop("destination", destination)
-                    flight["origin_city"] = flight.get("origin_airport", origin)
-                    flight["destination_city"] = flight.get("destination_airport", destination)
-                    flight["airline"] = "Ryanair"
-                    # Convert dates if they're date objects
-                    if isinstance(flight.get("departure_date"), date):
-                        flight["departure_date"] = flight["departure_date"].strftime("%Y-%m-%d")
-                    if isinstance(flight.get("return_date"), date):
-                        flight["return_date"] = flight["return_date"].strftime("%Y-%m-%d")
-                    # Convert times if they're time objects or strings
-                    if isinstance(flight.get("departure_time"), time):
-                        flight["departure_time"] = flight["departure_time"].strftime("%H:%M")
-                    if isinstance(flight.get("return_time"), time):
-                        flight["return_time"] = flight["return_time"].strftime("%H:%M")
-                    # Extract price from potentially nested structure
-                    if "price" in flight and "price_per_person" not in flight:
-                        flight["price_per_person"] = flight["price"]
-                        flight["total_price"] = flight["price"] * 4
-
-            elif scraper_name == "wizzair":
-                flights = await scraper.search_flights(
-                    origin=origin,
-                    destination=destination,
-                    departure_date=departure_date,
-                    return_date=return_date,
-                    adult_count=2,
-                    child_count=2,
-                )
-                # Normalize WizzAir data
-                for flight in flights:
-                    flight["origin_airport"] = flight.pop("origin", origin)
-                    flight["destination_airport"] = flight.pop("destination", destination)
-                    flight["origin_city"] = flight.get("origin_airport", origin)
-                    flight["destination_city"] = flight.get("destination_airport", destination)
-                    flight["airline"] = "WizzAir"
-                    # Convert dates if they're date objects
-                    if isinstance(flight.get("departure_date"), date):
-                        flight["departure_date"] = flight["departure_date"].strftime("%Y-%m-%d")
-                    if isinstance(flight.get("return_date"), date):
-                        flight["return_date"] = flight["return_date"].strftime("%Y-%m-%d")
-                    # Convert times if they're time objects
-                    if isinstance(flight.get("departure_time"), time):
-                        flight["departure_time"] = flight["departure_time"].strftime("%H:%M")
-                    if isinstance(flight.get("return_time"), time):
-                        flight["return_time"] = flight["return_time"].strftime("%H:%M")
-                    # Extract price
-                    if "price" in flight and "price_per_person" not in flight:
-                        flight["price_per_person"] = flight["price"]
-                        flight["total_price"] = flight["price"] * 4
-                    flight["source"] = "wizzair"
-                    flight["scraped_at"] = datetime.now().isoformat()
-
-            else:
-                logger.error(f"Unknown scraper: {scraper_name}")
-                return []
-
-            # Log completion with console output for immediate feedback
-            success_msg = f"[{scraper_name}] Completed: {len(flights)} flights found"
-            logger.info(success_msg)
-            console.print(f"[dim green]✓ {success_msg}[/dim green]")
-            return flights
-
-        except Exception as e:
-            # Log error with console output for immediate user feedback
-            error_msg = f"[{scraper_name}] Scraping failed for {origin}→{destination}: {e}"
+            flights = await source.search(query)
+        except SourceError as exc:
+            error_msg = (
+                f"[{source.name}] Scraping failed for "
+                f"{query.origin}\u2192{query.destination}: {exc} "
+                f"(retryable={exc.retryable})"
+            )
             logger.error(error_msg, exc_info=True)
-            console.print(f"[dim red]✗ {error_msg}[/dim red]")
-
-            # Re-raise exception to let scrape_all handle it via return_exceptions=True
-            # This allows proper failure tracking and threshold checking
+            self._report(f"[dim red]\u2717 {error_msg}[/dim red]")
             raise
+
+        success_msg = f"[{source.name}] Completed: {len(flights)} flights found"
+        logger.info(success_msg)
+        self._report(f"[dim green]\u2713 {success_msg}[/dim green]")
+        return flights
 
     async def deduplicate(self, flights: List[Dict]) -> List[Dict]:
         """
@@ -1088,40 +1019,13 @@ class FlightOrchestrator:
         self, db: AsyncSession, iata_code: str, city: str = ""
     ) -> Optional[Airport]:
         """
-        Get airport from database by IATA code, or create if doesn't exist.
+        Resolve an airport by IATA code, creating a placeholder if unknown.
 
-        Args:
-            db: Database session
-            iata_code: Airport IATA code (e.g., 'MUC')
-            city: City name (optional, for creation)
-
-        Returns:
-            Airport model instance or None if code is empty
+        Delegates to the airport registry, which is the single implementation
+        of a lookup that previously existed in eight modules -- half of which
+        created a missing airport and half of which returned None.
         """
-        if not iata_code:
-            return None
-
-        iata_code = iata_code.upper()
-
-        # Try to find existing airport
-        result = await db.execute(select(Airport).where(Airport.iata_code == iata_code))
-        airport = result.scalar_one_or_none()
-
-        if airport:
-            return airport
-
-        # Create new airport with minimal info
-        logger.info(f"Creating new airport: {iata_code} ({city})")
-        airport = Airport(
-            iata_code=iata_code,
-            name=f"{city} Airport" if city else f"{iata_code} Airport",
-            city=city or iata_code,
-            distance_from_home=0,  # Unknown, will be updated later
-            driving_time=0,  # Unknown, will be updated later
-        )
-        db.add(airport)
-        await db.flush()  # Get the ID without committing
-        return airport
+        return await get_or_create_airport(db, iata_code, city)
 
     async def _check_duplicate_flight(
         self,
