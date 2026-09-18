@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.config import Settings
+from app.domain.deal_query import DealCriteria, build_deal_query
 from app.models.email_delivery_log import EmailDeliveryLog
 from app.models.trip_package import TripPackage
 from app.models.user_preference import UserPreference
@@ -193,13 +194,16 @@ class NotificationService:
             # Query for deals from last 24 hours above threshold
             yesterday = datetime.now() - timedelta(days=1)
 
-            query = (
-                select(TripPackage)
-                .where(TripPackage.ai_score >= threshold)
-                .where(TripPackage.created_at >= yesterday)
-                .where(TripPackage.notified == False)
-                .order_by(TripPackage.ai_score.desc())
-                .limit(10)
+            # Built from DealCriteria so the digest predicate is stated once,
+            # rather than here and again in the sync path below.
+            query = build_deal_query(
+                DealCriteria(
+                    min_score=threshold,
+                    unnotified_only=True,
+                    since=yesterday,
+                    limit=10,
+                ),
+                eager=False,
             )
 
             result = await db_session.execute(query)
