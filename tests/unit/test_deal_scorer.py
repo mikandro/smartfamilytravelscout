@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from app.ai.deal_scorer import DealScorer, create_deal_scorer
 from app.models.trip_package import TripPackage
 from app.models.accommodation import Accommodation
+from app.models.flight import Flight
 
 
 class TestDealScorer:
@@ -125,13 +126,113 @@ class TestDealScorer:
         )
         assert scorer.analyze_all is True
 
-    def test_get_flight_price_per_person_dict(self, deal_scorer, sample_trip_package):
-        """Test extracting flight price from dict structure."""
-        price = deal_scorer._get_flight_price_per_person(sample_trip_package)
+    async def test_flight_ids_from_main_pipeline_do_not_crash(
+        self, mock_claude_client, mock_db_session
+    ):
+        """
+        Regression: AccommodationMatcher stores flight ids, and this used to
+        reach flights_json[0].get(...) against an int, raising
+        `AttributeError: 'int' object has no attribute 'get'` for every
+        package the main pipeline produced.
+        """
+        flight = Mock(spec=Flight)
+        flight.id = 4
+        flight.price_per_person = 175.0
+        flight.true_cost = 240.0
+
+        scalars = MagicMock()
+        scalars.all = MagicMock(return_value=[flight])
+        result = MagicMock()
+        result.scalars = MagicMock(return_value=scalars)
+        mock_db_session.execute = AsyncMock(return_value=result)
+
+        scorer = DealScorer(
+            claude_client=mock_claude_client,
+            db_session=mock_db_session,
+        )
+        trip = TripPackage(
+            id=7,
+            package_type="family",
+            destination_city="Barcelona",
+            departure_date=date(2025, 7, 1),
+            return_date=date(2025, 7, 8),
+            num_nights=7,
+            total_price=1400.0,
+            flights_json={"travel_method": "flight", "flight_ids": [4], "details": {}},
+        )
+
+        price = await scorer._get_flight_price_per_person(trip)
+        assert price == 175.0
+
+    async def test_legacy_bare_list_of_ids_still_resolves(
+        self, mock_claude_client, mock_db_session
+    ):
+        """Rows written before the seam existed held a bare list of ids."""
+        flight = Mock(spec=Flight)
+        flight.id = 4
+        flight.price_per_person = 99.0
+        flight.true_cost = None
+
+        scalars = MagicMock()
+        scalars.all = MagicMock(return_value=[flight])
+        result = MagicMock()
+        result.scalars = MagicMock(return_value=scalars)
+        mock_db_session.execute = AsyncMock(return_value=result)
+
+        scorer = DealScorer(
+            claude_client=mock_claude_client, db_session=mock_db_session
+        )
+        trip = TripPackage(
+            id=8,
+            package_type="family",
+            destination_city="Prague",
+            departure_date=date(2025, 8, 1),
+            return_date=date(2025, 8, 8),
+            num_nights=7,
+            total_price=1200.0,
+            flights_json=[4],
+        )
+
+        assert await scorer._get_flight_price_per_person(trip) == 99.0
+
+    async def test_parent_escape_package_has_no_flight_price(
+        self, mock_claude_client, mock_db_session
+    ):
+        """
+        Train travel has no per-person flight price. It must fall back to the
+        package's own figure rather than raising -- and that figure knows an
+        escape package is for two people, not four.
+        """
+        scorer = DealScorer(
+            claude_client=mock_claude_client, db_session=mock_db_session
+        )
+        trip = TripPackage(
+            id=9,
+            package_type="parent_escape",
+            destination_city="Verona",
+            departure_date=date(2025, 9, 1),
+            return_date=date(2025, 9, 3),
+            num_nights=2,
+            total_price=800.0,
+            flights_json={
+                "travel_method": "train",
+                "flight_ids": [],
+                "details": {"country": "Italy"},
+            },
+        )
+
+        # 800 / 2 people, not 800 / 4
+        assert await scorer._get_flight_price_per_person(trip) == 400.0
+
+    async def test_get_flight_price_per_person_dict(
+        self, deal_scorer, sample_trip_package
+    ):
+        """A legacy row with the flight fields embedded directly in the JSON."""
+        price = await deal_scorer._get_flight_price_per_person(sample_trip_package)
         assert price == 180.0
 
-    def test_get_flight_price_per_person_list(self, deal_scorer):
-        """Test extracting flight price from list structure."""
+    async def test_get_flight_price_per_person_list(self, deal_scorer):
+        """A legacy row holding a list of embedded flight snapshots."""
         trip = TripPackage(
             id=2,
             package_type="family",
@@ -145,10 +246,10 @@ class TestDealScorer:
                 {"price_per_person": 160.0, "airline": "Ryanair"},
             ],
         )
-        price = deal_scorer._get_flight_price_per_person(trip)
+        price = await deal_scorer._get_flight_price_per_person(trip)
         assert price == 150.0  # Should return first flight's price
 
-    def test_get_flight_price_per_person_missing(self, deal_scorer):
+    async def test_get_flight_price_per_person_missing(self, deal_scorer):
         """Test error when flight data is missing."""
         trip = TripPackage(
             id=3,
@@ -160,8 +261,8 @@ class TestDealScorer:
             total_price=1400.0,
             flights_json={},
         )
-        with pytest.raises(ValueError, match="missing price_per_person"):
-            deal_scorer._get_flight_price_per_person(trip)
+        with pytest.raises(ValueError, match="no resolvable flight price"):
+            await deal_scorer._get_flight_price_per_person(trip)
 
     async def test_score_trip_below_threshold(
         self,
