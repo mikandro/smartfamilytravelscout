@@ -230,7 +230,9 @@ class DealScorer:
         try:
             # Check price threshold against user preferences
             if not self.analyze_all and not force_analyze:
-                flight_price_per_person = self._get_flight_price_per_person(package)
+                flight_price_per_person = await self._get_flight_price_per_person(
+                    package
+                )
 
                 # Use user's max flight price preference
                 max_price = float(user_prefs.max_flight_price_family)
@@ -608,7 +610,7 @@ class DealScorer:
             min_price = min(prices)
             max_price = max(prices)
 
-            current_price = self._get_flight_price_per_person(trip_package)
+            current_price = await self._get_flight_price_per_person(trip_package)
             percent_diff = ((current_price - avg_price) / avg_price) * 100
             comparison = "above" if percent_diff > 0 else "below"
 
