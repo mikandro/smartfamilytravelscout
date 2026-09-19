@@ -24,6 +24,7 @@ from app.scrapers.flight_source import (
 )
 from app.scrapers.source_errors import (
     SourceBlocked,
+    SourceCredentialsInvalid,
     SourceParseFailed,
     SourceRateLimited,
     SourceUnavailable,
@@ -174,6 +175,9 @@ class TestErrorTranslation:
             ("CaptchaDetectedError", SourceBlocked),
             ("TimeoutError", SourceUnavailable),
             ("KiwiAPIError", SourceUnavailable),
+            ("AuthenticationError", SourceCredentialsInvalid),
+            ("APIKeyMissingError", SourceCredentialsInvalid),
+            ("UnauthorizedError", SourceCredentialsInvalid),
         ],
     )
     def test_maps_by_type_name(self, exc_name, expected):
@@ -186,6 +190,24 @@ class TestErrorTranslation:
         translated = source._translate(KeyError("price"))
         assert isinstance(translated, SourceParseFailed)
         assert translated.retryable is False
+
+    def test_credentials_failures_are_not_retryable(self):
+        """
+        A missing or invalid API key will still be invalid next time, so
+        retrying burns rate limit and never succeeds. This used to fall
+        through to SourceUnavailable, which is retryable.
+        """
+        source = KiwiSource(client=object())
+        exc = type("AuthenticationError", (Exception,), {})("bad key")
+        translated = source._translate(exc)
+        assert isinstance(translated, SourceCredentialsInvalid)
+        assert translated.retryable is False
+
+    def test_credentials_are_checked_before_generic_api_errors(self):
+        """Ordering matters: an auth error must not match the APIError rule."""
+        source = KiwiSource(client=object())
+        exc = type("AuthAPIError", (Exception,), {})("bad key")
+        assert isinstance(source._translate(exc), SourceCredentialsInvalid)
 
     def test_rate_limits_are_retryable(self):
         assert SourceRateLimited("x").retryable is True

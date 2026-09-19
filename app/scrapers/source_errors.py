@@ -82,6 +82,23 @@ class SourceUnavailable(SourceError):
     retryable = True
 
 
+class SourceCredentialsInvalid(SourceError):
+    """
+    The source rejected our credentials, or we have none to send.
+
+    Not retryable: a missing or invalid API key will still be missing or
+    invalid on the next attempt, so retrying burns rate limit and never
+    succeeds.
+
+    This mode was missing from the original hierarchy -- authentication
+    failures fell through to SourceUnavailable, which is marked retryable, so
+    a bad KIWI_API_KEY would be retried indefinitely. PR #102 modelled this
+    correctly as a distinct AuthenticationError; the idea is kept here.
+    """
+
+    retryable = False
+
+
 class SourceParseFailed(SourceError):
     """
     We reached the source but could not understand its response.

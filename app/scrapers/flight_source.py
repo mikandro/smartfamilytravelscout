@@ -31,6 +31,7 @@ from app.domain.party_size import FAMILY, PartySize
 from app.utils.price_utils import normalize_currency
 from app.scrapers.source_errors import (
     SourceBlocked,
+    SourceCredentialsInvalid,
     SourceError,
     SourceParseFailed,
     SourceRateLimited,
@@ -208,6 +209,15 @@ class _BaseAdapter:
 
         type_name = type(exc).__name__
         message = str(exc) or type_name
+
+        # Credentials first: an auth failure is not retryable, and must not
+        # fall through to SourceUnavailable (which is), or a bad API key gets
+        # retried forever.
+        if any(
+            token in type_name
+            for token in ("Auth", "APIKeyMissing", "Credential", "Unauthorized", "Forbidden")
+        ):
+            return SourceCredentialsInvalid(message, source=self.name)
 
         if "RateLimit" in type_name:
             return SourceRateLimited(message, source=self.name)
