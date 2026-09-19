@@ -25,8 +25,13 @@ from app.scrapers.wizzair_scraper import (
 
 @pytest.fixture
 def scraper() -> WizzAirScraper:
-    """Create a WizzAir scraper instance."""
-    return WizzAirScraper(timeout=30)
+    """Create a WizzAir scraper instance with warm-up and delays disabled for unit tests."""
+    return WizzAirScraper(
+        timeout=30,
+        warmup=False,
+        min_delay_seconds=0,
+        max_delay_seconds=0,
+    )
 
 
 @pytest.fixture
@@ -462,6 +467,12 @@ class TestWizzAirScraper:
         with patch("httpx.AsyncClient.post", return_value=mock_response), patch(
             "app.scrapers.wizzair_scraper.WizzAirScraper._get_airport_by_iata",
             return_value=mock_airport,
+        ), patch(
+            "app.scrapers.wizzair_scraper.WizzAirScraper._warmup",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "app.scrapers.wizzair_scraper.WizzAirScraper._respectful_delay",
+            new=AsyncMock(return_value=None),
         ):
             flights = await scrape_wizzair_flights(
                 db=mock_db_session,
