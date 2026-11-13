@@ -255,6 +255,19 @@ class EmailNotifier:
             lines.append(extras)
             if option.url:
                 lines.append(f"  {option.url}")
+        if plan.events:
+            lines += ["", "Only this weekend (from muenchen.de, check the link first):"]
+            for event in plan.events:
+                venue = f" at {event.venue}" if event.venue else ""
+                lines.append(f"  - {event.title}{venue}: {event.when_text}")
+                if event.why:
+                    lines.append(f"    {event.why}")
+                if event.age_note:
+                    lines.append(f"    Ages: {event.age_note}")
+                if not event.vetted:
+                    lines.append("    Not checked for age fit.")
+                if event.url:
+                    lines.append(f"    {event.url}")
         if plan.alternates:
             lines += ["", "Also good this weekend:"]
             lines += [f"  - {option.name} ({option.drive_minutes} min drive)" for option in plan.alternates]

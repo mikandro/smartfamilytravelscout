@@ -730,15 +730,20 @@ Local outings near home for the coming weekend, separate from the trip pipeline
 - `app/weekend/planner.py`: filters places (kids' ages, season, drive limit, recent visits), then Claude picks one outdoor and one indoor outing; falls back to a deterministic ranking if Claude or the forecast is unavailable
 - `app/weekend/service.py`: `run_weekend_planner()`, the single entry point used by both CLI and Celery
 - `app/weekend/seed_places.py`: hand-written starter list for Munich. Travel times and costs are rough estimates, not verified data
+- `app/weekend/events.py`: dated local events ("only this weekend"): stores scraped events in the shared `events` table under the home city and loads them for the weekend's days
+- `app/scrapers/muenchen_scraper.py`: muenchen.de event calendar (family events and Christmas markets). Plain HTTP, no browser. It pages through the date-sorted category list and only fetches muenchen.de detail pages, never external ticket shops. robots.txt disallows the calendar's date filter (`&date-start=`), so do not add it
 - Prompt: `app/ai/prompts/weekend_plan.txt`; email template: `app/notifications/templates/weekend_plan.html`
 - Celery Beat: `send_weekend_plan` Thursdays 18:00, `check_weekend_forecast` Fridays 18:00 (emails only if the forecast changed)
-- Settings: `WEEKEND_KID_AGES`, `WEEKEND_MAX_DRIVE_MINUTES`, `WEEKEND_REPEAT_AFTER_DAYS`, `WEEKEND_HOME_LATITUDE/LONGITUDE`, `WEEKEND_PLAN_EMAIL`, `ENABLE_WEEKEND_PLANNER`
+- Events are scraped automatically the first time a weekend is planned and before each scheduled email; a failed scrape only adds a warning to the plan. Without Claude, events are shown flagged as not checked for age fit
+- Settings: `WEEKEND_SCRAPE_EVENTS`, `WEEKEND_KID_AGES`, `WEEKEND_MAX_DRIVE_MINUTES`, `WEEKEND_REPEAT_AFTER_DAYS`, `WEEKEND_HOME_LATITUDE/LONGITUDE`, `WEEKEND_PLAN_EMAIL`, `ENABLE_WEEKEND_PLANNER`
 
 ```bash
 poetry run scout weekend seed                 # load the starter places (once)
 poetry run scout weekend                      # preview this weekend's plan
 poetry run scout weekend plan --no-ai         # preview without calling Claude
 poetry run scout weekend plan --send          # email it now
+poetry run scout weekend plan --refresh-events   # re-scrape muenchen.de first
+poetry run scout weekend events --refresh     # scrape and list this weekend's dated events
 poetry run scout weekend places --all         # list places and why any are filtered out
 poetry run scout weekend done "Wildpark Poing" --rating 4   # log a visit
 ```

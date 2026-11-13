@@ -57,6 +57,24 @@
         </div>
         {% endfor %}
 
+        {% if plan.events %}
+        <div style="font-size:15px;font-weight:bold;margin:8px 0;">🎟️ Only this weekend</div>
+        {% for event in plan.events %}
+        <div style="border-left:4px solid #f9a825;padding:6px 0 6px 12px;margin:0 0 12px 0;">
+            <div style="font-size:16px;font-weight:bold;">
+                {% if event.url %}<a href="{{ event.url }}" style="color:#1b5e20;text-decoration:none;">{{ event.title }}</a>{% else %}{{ event.title }}{% endif %}
+            </div>
+            <div style="font-size:14px;color:#444444;">
+                🕒 {{ event.when_text }}{% if event.venue %} · 📍 {{ event.venue }}{% endif %}{% if event.price_text %} · 💶 {{ event.price_text }}{% endif %}
+            </div>
+            {% if event.why %}<div style="font-size:14px;margin-top:4px;">{{ event.why }}</div>{% endif %}
+            {% if event.age_note %}<div style="font-size:13px;color:#666666;margin-top:2px;">Ages: {{ event.age_note }}</div>{% endif %}
+            {% if not event.vetted %}<div style="font-size:13px;color:#8d6e63;margin-top:2px;">Not checked for age fit: look at the details before booking.</div>{% endif %}
+        </div>
+        {% endfor %}
+        <p style="margin:0 0 16px 0;font-size:12px;color:#777777;">Events from muenchen.de. Times can change and shows sell out, so check the link first.</p>
+        {% endif %}
+
         {% if plan.alternates %}
         <div style="font-size:15px;font-weight:bold;margin:8px 0;">Also good this weekend</div>
         <ul style="margin:0 0 16px 0;padding-left:20px;font-size:14px;">

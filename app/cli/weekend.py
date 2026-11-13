@@ -42,7 +42,14 @@ def _fail(message: str) -> None:
 def weekend_main(ctx: typer.Context):
     """Show the plan for the coming weekend when no subcommand is given."""
     if ctx.invoked_subcommand is None:
-        _run_plan(send=False, use_ai=True, on_date=None, html=None, only_if_changed=False)
+        _run_plan(
+            send=False,
+            use_ai=True,
+            on_date=None,
+            html=None,
+            only_if_changed=False,
+            refresh_events=None,
+        )
 
 
 @weekend_app.command("plan")
@@ -60,6 +67,12 @@ def weekend_plan(
         "--only-if-changed",
         help="With --send: only email if the forecast changed since the last sent plan",
     ),
+    refresh_events: bool = typer.Option(
+        False, "--refresh-events", help="Re-scrape this weekend's events from muenchen.de first"
+    ),
+    offline_events: bool = typer.Option(
+        False, "--no-event-scrape", help="Never scrape; use only events already stored"
+    ),
 ):
     """
     Build the weekend plan: one outdoor idea, one indoor idea, picked by forecast.
@@ -69,13 +82,20 @@ def weekend_plan(
         scout weekend plan --no-ai         # preview without calling Claude
         scout weekend plan --html plan.html
         scout weekend plan --send          # email it now
+        scout weekend plan --refresh-events
+
+    Events for the weekend are scraped automatically the first time; later
+    runs reuse what is stored unless --refresh-events is given.
     """
+    if refresh_events and offline_events:
+        raise typer.BadParameter("--refresh-events and --no-event-scrape cannot be combined")
     _run_plan(
         send=send,
         use_ai=not no_ai,
         on_date=_parse_date(on_date),
         html=html,
         only_if_changed=only_if_changed,
+        refresh_events=True if refresh_events else (False if offline_events else None),
     )
 
 
@@ -86,6 +106,7 @@ def _run_plan(
     on_date: Optional[date],
     html: Optional[Path],
     only_if_changed: bool,
+    refresh_events: Optional[bool],
 ) -> None:
     from app.notifications.email_sender import create_email_notifier
     from app.weekend import service
@@ -97,6 +118,7 @@ def _run_plan(
                 use_ai=use_ai,
                 only_if_forecast_changed=only_if_changed,
                 today=on_date,
+                refresh_events=refresh_events,
             )
         )
     except Exception as exc:  # noqa: BLE001 - CLI boundary
@@ -128,6 +150,69 @@ def _run_plan(
         _fail("Email could not be sent; check the SMTP settings (see the log for details)")
     elif run.status == service.STATUS_EMPTY:
         _fail("No places matched, so nothing was sent. Try 'scout weekend seed'")
+
+
+@weekend_app.command("events")
+def weekend_events(
+    refresh: bool = typer.Option(False, "--refresh", help="Scrape muenchen.de now before listing"),
+    on_date: Optional[str] = typer.Option(
+        None, "--date", help="List as if today were this date (YYYY-MM-DD)"
+    ),
+):
+    """
+    List the dated events stored for the coming weekend (source: muenchen.de).
+
+    Examples:
+        scout weekend events
+        scout weekend events --refresh
+    """
+    asyncio.run(_show_events(refresh, _parse_date(on_date) or date.today()))
+
+
+async def _show_events(refresh: bool, today: date) -> None:
+    from app.weekend.events import load_weekend_events, refresh_local_events
+    from app.weekend.planner import group_weekend_events, upcoming_weekend
+
+    weekend_start, days = upcoming_weekend(today)
+    city = settings.weekend_home_name
+
+    try:
+        async with get_async_session_context() as db:
+            if refresh:
+                with console.status("Scraping muenchen.de (a few polite requests)..."):
+                    result = await refresh_local_events(
+                        db, city=city, start_date=days[0], end_date=days[-1]
+                    )
+                console.print(
+                    f"[bold green]✓[/bold green] {result.scraped} events scraped: "
+                    f"{result.created} new, {result.updated} refreshed"
+                )
+            events = await load_weekend_events(db, city=city, days=days)
+            options = group_weekend_events(events, weekend_start)
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        _fail(f"Could not load events: {exc}")
+        return
+
+    if not options:
+        console.print(
+            "[yellow]⚠[/yellow] No events stored for this weekend. "
+            "Run 'scout weekend events --refresh'."
+        )
+        return
+
+    table = Table(show_header=True, header_style="bold green")
+    for column in ("Event", "Venue", "When", "Type", "Run"):
+        table.add_column(column)
+    for option in options:
+        table.add_row(
+            option.title,
+            option.venue or "-",
+            option.when_text,
+            option.category,
+            "ongoing" if option.ongoing else "limited",
+        )
+    console.print(table)
+    console.print(f"{len(options)} events on {', '.join(d.strftime('%a %d %b') for d in days)}")
 
 
 @weekend_app.command("places")

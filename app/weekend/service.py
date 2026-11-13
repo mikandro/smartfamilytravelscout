@@ -18,12 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_async_session_context
 from app.models.user_preference import UserPreference
+from app.weekend.events import load_weekend_events, refresh_local_events
 from app.weekend.planner import (
     WeekendPlanResult,
     build_weekend_plan,
     forecast_changed,
     get_stored_plan,
     save_plan,
+    upcoming_weekend,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,12 +66,45 @@ async def get_recipients(db: AsyncSession) -> List[str]:
     return sorted({email for email in result.scalars().all() if email})
 
 
+async def ensure_local_events(
+    db: AsyncSession, *, today: date, refresh: Optional[bool]
+) -> Optional[str]:
+    """
+    Make sure dated events for the weekend are in the database.
+
+    Args:
+        db: Database session (caller owns lifecycle).
+        today: The date the plan is made on.
+        refresh: True scrapes now, False never scrapes, None scrapes only when
+            nothing is stored yet for the weekend.
+
+    Returns:
+        A warning for the plan if the scrape failed, otherwise None. A failed
+        scrape never stops the plan: places are still suggested.
+    """
+    if refresh is False or not settings.weekend_scrape_events:
+        return None
+
+    _, days = upcoming_weekend(today)
+    city = settings.weekend_home_name
+    if refresh is None and await load_weekend_events(db, city=city, days=days):
+        return None
+
+    try:
+        await refresh_local_events(db, city=city, start_date=days[0], end_date=days[-1])
+    except Exception as exc:  # noqa: BLE001 - events are optional
+        logger.warning("Could not refresh local events: %s", exc)
+        return "Local events could not be refreshed, so this weekend's events may be missing."
+    return None
+
+
 async def run_weekend_planner(
     *,
     send: bool,
     use_ai: bool = True,
     only_if_forecast_changed: bool = False,
     today: Optional[date] = None,
+    refresh_events: Optional[bool] = None,
 ) -> WeekendRun:
     """
     Build the weekend plan and, if asked, email and store it.
@@ -84,6 +119,8 @@ async def run_weekend_planner(
             weather has shifted since the stored plan; if no plan was sent for
             this weekend yet, sends the full plan instead.
         today: Override the current date (for tests and ``--date``).
+        refresh_events: True scrapes local events first, False never does,
+            None (default) scrapes only when none are stored for the weekend.
 
     Returns:
         A ``WeekendRun`` describing what happened.
@@ -111,6 +148,8 @@ async def run_weekend_planner(
                     db_session=db,
                 )
 
+            events_warning = await ensure_local_events(db, today=today, refresh=refresh_events)
+
             plan = await build_weekend_plan(
                 db,
                 today=today,
@@ -122,6 +161,8 @@ async def run_weekend_planner(
                 repeat_after_days=settings.weekend_repeat_after_days,
                 claude=claude,
             )
+            if events_warning:
+                plan.warnings.append(events_warning)
 
             if not send:
                 return WeekendRun(status=STATUS_PREVIEW, plan=plan)

@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.judgement import JudgementSchema, judge
+from app.models.event import Event
 from app.models.place import (
     SETTING_INDOOR,
     SETTING_MIXED,
@@ -28,6 +29,7 @@ from app.models.place import (
     PlaceVisit,
     WeekendPlan,
 )
+from app.weekend.events import is_ongoing, load_weekend_events
 from app.weekend.weather import (
     VERDICT_INDOOR,
     VERDICT_OUTDOOR,
@@ -44,13 +46,17 @@ LEAD_INDOOR = "indoor"
 #: How many candidates per slot are shown to Claude.
 SHORTLIST_SIZE = 15
 
+#: How many dated events are shown to Claude, and how many end up in the plan.
+EVENT_SHORTLIST_SIZE = 40
+MAX_PLAN_EVENTS = 3
+
 #: A place last rated this low (1-5) or lower is never suggested again.
 DISLIKED_RATING = 2
 
 WEEKEND_SCHEMA = JudgementSchema(
     required=("summary",),
-    optional=("outdoor", "indoor", "alternates"),
-    defaults={"outdoor": None, "indoor": None, "alternates": []},
+    optional=("outdoor", "indoor", "alternates", "events"),
+    defaults={"outdoor": None, "indoor": None, "alternates": [], "events": []},
 )
 
 
@@ -128,6 +134,40 @@ class PlaceOption:
 
 
 @dataclass
+class EventOption:
+    """A dated event happening this weekend (one title at one venue)."""
+
+    title: str
+    venue: Optional[str]
+    category: str
+    #: ISO day -> showtimes on that day, e.g. {"2026-11-14": ["15:00-17:00"]}
+    schedule: Dict[str, List[str]]
+    url: Optional[str]
+    price_range: Optional[str]
+    ongoing: bool
+    description: Optional[str] = None
+    why: str = ""
+    age_note: str = ""
+    #: False when nobody (Claude) checked that it suits the children.
+    vetted: bool = False
+
+    @property
+    def when_text(self) -> str:
+        """e.g. ``Sat 15:00-17:00 · Sun 11:00, 15:00`` (or ``Sat · Sun``)."""
+        parts = []
+        for iso_day in sorted(self.schedule):
+            label = date.fromisoformat(iso_day).strftime("%a")
+            times = ", ".join(self.schedule[iso_day])
+            parts.append(f"{label} {times}".strip())
+        return " · ".join(parts)
+
+    @property
+    def price_text(self) -> str:
+        """``free`` when known to be free, otherwise an empty string."""
+        return "free" if self.price_range == "free" else ""
+
+
+@dataclass
 class WeekendPlanResult:
     """The plan for one weekend."""
 
@@ -138,6 +178,7 @@ class WeekendPlanResult:
     outdoor: Optional[PlaceOption]
     indoor: Optional[PlaceOption]
     alternates: List[PlaceOption] = field(default_factory=list)
+    events: List[EventOption] = field(default_factory=list)
     summary: str = ""
     ai_used: bool = False
     warnings: List[str] = field(default_factory=list)
@@ -164,6 +205,7 @@ class WeekendPlanResult:
             "outdoor": asdict(self.outdoor) if self.outdoor else None,
             "indoor": asdict(self.indoor) if self.indoor else None,
             "alternates": [asdict(option) for option in self.alternates],
+            "events": [asdict(event) for event in self.events],
             "summary": self.summary,
             "ai_used": self.ai_used,
             "warnings": list(self.warnings),
@@ -359,6 +401,92 @@ def forecast_changed(stored_forecast: Mapping[str, Any], plan: WeekendPlanResult
     return best_day_iso(stored_days) != best_day_iso(new_days)
 
 
+def group_weekend_events(events: Sequence[Event], weekend_start: date) -> List[EventOption]:
+    """
+    Merge per-day event rows into one option per (title, venue).
+
+    One-off events come before long-running ones (exhibitions, markets open for
+    weeks), family events before other categories, then by first showtime.
+    """
+    grouped: Dict[Tuple[str, str], EventOption] = {}
+    for event in events:
+        key = (event.title.lower(), (event.venue or "").lower())
+        option = grouped.get(key)
+        if option is None:
+            option = EventOption(
+                title=event.title,
+                venue=event.venue,
+                category=event.category,
+                schedule={},
+                url=event.url,
+                price_range=event.price_range,
+                ongoing=is_ongoing(event, weekend_start),
+                description=event.description,
+            )
+            grouped[key] = option
+        option.schedule[event.event_date.isoformat()] = list(event.showtimes or [])
+        if not option.description and event.description:
+            option.description = event.description
+
+    def sort_key(option: EventOption) -> Tuple[int, int, str, str]:
+        first_day = min(option.schedule)
+        first_time = (option.schedule[first_day] or ["99:99"])[0]
+        return (option.ongoing, option.category != "family", first_day + first_time, option.title)
+
+    return sorted(grouped.values(), key=sort_key)
+
+
+def fallback_events(options: Sequence[EventOption]) -> List[EventOption]:
+    """
+    Events to show when Claude has not vetted them.
+
+    Only one-off family-category events qualify, since nothing has checked
+    their age fit; they stay flagged as ``vetted=False``.
+    """
+    return [o for o in options if o.category == "family" and not o.ongoing][:MAX_PLAN_EVENTS]
+
+
+def _event_line(index: int, option: EventOption) -> str:
+    parts = [
+        f"e{index}",
+        option.title,
+        option.venue or "venue not stated",
+        option.category,
+        option.when_text,
+        "runs for several more weeks" if option.ongoing else "limited run",
+    ]
+    if option.price_text:
+        parts.append(option.price_text)
+    line = "- " + " | ".join(parts)
+    if option.description:
+        line += f" | {option.description}"
+    return line
+
+
+def _format_events(options: Sequence[EventOption]) -> str:
+    return (
+        "\n".join(_event_line(i, option) for i, option in enumerate(options, 1))
+        or "(no dated events found)"
+    )
+
+
+def _pick_events(raw: Any, options: Sequence[EventOption]) -> List[EventOption]:
+    """Turn Claude's ``[{id, why, age_note}]`` into vetted event options."""
+    by_id = {f"e{i}": option for i, option in enumerate(options, 1)}
+    picked: List[EventOption] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, Mapping):
+            continue
+        option = by_id.get(str(item.get("id", "")))
+        if option is None or option in picked:
+            continue
+        option.why = str(item.get("why") or "")
+        option.age_note = str(item.get("age_note") or "")
+        option.vetted = True
+        picked.append(option)
+    return picked[:MAX_PLAN_EVENTS]
+
+
 # --------------------------------------------------------------------------- #
 # Claude
 # --------------------------------------------------------------------------- #
@@ -447,6 +575,7 @@ async def _ask_claude(
     kid_ages: Sequence[int],
     home_name: str,
     lead: str,
+    events: Sequence[EventOption] = (),
 ) -> Dict[str, Any]:
     outdoor = candidates.outdoor[:SHORTLIST_SIZE]
     indoor = candidates.indoor[:SHORTLIST_SIZE]
@@ -465,10 +594,12 @@ async def _ask_claude(
             "outdoor_places": _format_places(outdoor),
             "indoor_places": _format_places(indoor),
             "recent_visits": _format_recent(candidates.recent),
+            "events": _format_events(events),
+            "max_events": MAX_PLAN_EVENTS,
         },
         schema=WEEKEND_SCHEMA,
         operation="weekend_plan",
-        max_tokens=1500,
+        max_tokens=2000,
     )
 
 
@@ -510,6 +641,7 @@ async def build_weekend_plan(
     repeat_after_days: int,
     claude: Any = None,
     forecast: Optional[Sequence[DayForecast]] = None,
+    events: Optional[Sequence[Event]] = None,
 ) -> WeekendPlanResult:
     """
     Build the plan for the weekend that ``today`` belongs to.
@@ -525,6 +657,8 @@ async def build_weekend_plan(
         repeat_after_days: Minimum gap before a place is suggested again.
         claude: Optional ``ClaudeClient``. Without it the ranking alone decides.
         forecast: Optional pre-fetched forecast (skips the Open-Meteo call).
+        events: Optional dated events for the weekend. Loaded from the
+            database (home city, local sources) when not given.
 
     Returns:
         The plan. ``is_empty`` is True when no place passed the filters.
@@ -548,6 +682,10 @@ async def build_weekend_plan(
         max_drive_minutes=max_drive_minutes,
         repeat_after_days=repeat_after_days,
     )
+
+    if events is None:
+        events = await load_weekend_events(db, city=home_name, days=days)
+    event_options = group_weekend_events(events, weekend_start)[:EVENT_SHORTLIST_SIZE]
 
     lead = choose_lead(forecast, weekend_start.month)
     outdoor_day = best_outdoor_day(forecast)
@@ -577,6 +715,7 @@ async def build_weekend_plan(
         lead=lead,
         outdoor=fallback_outdoor,
         indoor=fallback_indoor,
+        events=fallback_events(event_options),
         warnings=warnings,
     )
 
@@ -596,6 +735,7 @@ async def build_weekend_plan(
                 kid_ages=kid_ages,
                 home_name=home_name,
                 lead=lead,
+                events=event_options,
             )
             outdoor_by_slug = {p.slug: p for p in candidates.outdoor[:SHORTLIST_SIZE]}
             indoor_by_slug = {p.slug: p for p in candidates.indoor[:SHORTLIST_SIZE]}
@@ -623,6 +763,9 @@ async def build_weekend_plan(
                 )
             plan.summary = str(response.get("summary") or "")
             plan.ai_used = True
+            # Claude's list replaces the unvetted fallback, even when empty:
+            # "nothing suits these children" is a valid answer.
+            plan.events = _pick_events(response.get("events"), event_options)
 
             chosen = {o.slug for _, o in plan.ordered_options}
             all_by_slug = {**outdoor_by_slug, **indoor_by_slug}

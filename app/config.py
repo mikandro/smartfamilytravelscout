@@ -265,6 +265,9 @@ class Settings(BaseSettings):
     weekend_repeat_after_days: int = Field(
         default=49, description="Do not suggest a place again within this many days", ge=0
     )
+    weekend_scrape_events: bool = Field(
+        default=True, description="Scrape dated local events (muenchen.de) for the weekend plan"
+    )
     weekend_plan_email: Optional[str] = Field(
         default=None,
         description="Recipient of the weekend plan (defaults to users with notifications on)",

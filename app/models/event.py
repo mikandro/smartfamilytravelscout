@@ -3,9 +3,9 @@ Event model for storing family activities and parent escape opportunities.
 """
 
 from datetime import date, datetime
-from typing import Optional
+from typing import List, Optional
 
-from sqlalchemy import Date, DateTime, Integer, Numeric, String, Text
+from sqlalchemy import ARRAY, Date, DateTime, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -56,12 +56,19 @@ class Event(Base, TimestampMixin):
     )
     url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Start times on event_date, e.g. ["14:00-15:00", "16:00-17:00"]
+    showtimes: Mapped[Optional[List[str]]] = mapped_column(
+        ARRAY(String),
+        nullable=True,
+        comment="Start (and end) times on event_date, 'HH:MM' or 'HH:MM-HH:MM'",
+    )
+
     # Deduplication
     deduplication_hash: Mapped[Optional[str]] = mapped_column(
         String(64),
         nullable=True,
         index=True,
-        comment="Hash for deduplication based on title, venue, and date"
+        comment="Hash for deduplication based on title, venue, and date",
     )
 
     # AI scoring

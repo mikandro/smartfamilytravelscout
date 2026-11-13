@@ -87,8 +87,8 @@ def filter_kwargs(**overrides):
     return values
 
 
-def mock_db(places, visits=()):
-    """A session whose first execute returns places and second returns visits."""
+def mock_db(places, visits=(), events=()):
+    """A session whose executes return places, then visits, then events."""
 
     def result_for(rows):
         result = MagicMock()
@@ -96,7 +96,7 @@ def mock_db(places, visits=()):
         return result
 
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[result_for(places), result_for(visits)])
+    db.execute = AsyncMock(side_effect=[result_for(places), result_for(visits), result_for(events)])
     return db
 
 

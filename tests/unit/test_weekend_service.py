@@ -74,12 +74,14 @@ def harness(monkeypatch):
     mocks.stored = AsyncMock(return_value=None)
     mocks.save = AsyncMock()
     mocks.recipients = AsyncMock(return_value=["family@example.com"])
+    mocks.ensure_events = AsyncMock(return_value=None)
 
     monkeypatch.setattr(service, "get_async_session_context", fake_session)
     monkeypatch.setattr(service, "build_weekend_plan", mocks.build)
     monkeypatch.setattr(service, "get_stored_plan", mocks.stored)
     monkeypatch.setattr(service, "save_plan", mocks.save)
     monkeypatch.setattr(service, "get_recipients", mocks.recipients)
+    monkeypatch.setattr(service, "ensure_local_events", mocks.ensure_events)
     monkeypatch.setattr(
         "app.notifications.email_sender.create_email_notifier", lambda *a, **k: notifier
     )
@@ -217,6 +219,7 @@ class TestWeekendTasks:
         assert planner.call_args.kwargs == {
             "send": True,
             "only_if_forecast_changed": expected_flag,
+            "refresh_events": True,
         }
 
     def test_task_skips_when_disabled(self, monkeypatch):

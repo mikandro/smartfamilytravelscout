@@ -16,6 +16,9 @@ INDOOR CANDIDATES (same columns):
 RECENTLY VISITED (avoid suggesting something very similar to the most recent ones):
 {recent_visits}
 
+DATED EVENTS THIS WEEKEND (id | title | venue | category | when | run | price | description from the organiser, in German):
+{events}
+
 HOW TO CHOOSE:
 - Pick exactly one outdoor place and one indoor place, using only slugs from the lists above. If a list says "(none available)", return null for that slot.
 - Prefer places both children enjoy at the same time over places where one of them just tags along.
@@ -25,10 +28,12 @@ HOW TO CHOOSE:
 - A shorter journey wins when two places are otherwise equal.
 - For the outdoor pick choose the day with the better weather; for the indoor pick the worse day.
 - Add up to 3 alternates from either list that are also good this weekend.
+- From the dated events pick up to {max_events} that are worth going to with both children, using only ids from the list. Prefer events with a limited run over ones that run for several more weeks. Leave out anything clearly aimed at adults or at an age range that excludes one of the children. If nothing fits, return an empty list: do not pad it.
 
 WRITING:
 - "why": 1-2 concrete sentences on why this works for a {youngest_age}- and a {oldest_age}-year-old this particular weekend. Mention the weather where it matters.
 - "tips": 1 sentence of practical advice (when to arrive, what to bring, whether to book). Only state facts given in the notes; do not invent opening hours, prices or events.
+- For each event, "why": 1 sentence in English on what it is and why it suits these children. "age_note": the age range if the description states one (for example "ages 6-12, so only for the 7-year-old"), otherwise "age range not stated". Never guess an age range, a price or whether tickets are left.
 - "summary": 1-2 friendly sentences on the weekend overall, starting with the weather.
 
 Return JSON in exactly this format:
@@ -36,5 +41,6 @@ Return JSON in exactly this format:
   "summary": "<1-2 sentences>",
   "outdoor": {{"slug": "<slug>", "why": "<text>", "tips": "<text>", "best_day": "<one of: {valid_days}>"}},
   "indoor": {{"slug": "<slug>", "why": "<text>", "tips": "<text>", "best_day": "<one of: {valid_days}>"}},
-  "alternates": [{{"slug": "<slug>", "why": "<one sentence>"}}]
+  "alternates": [{{"slug": "<slug>", "why": "<one sentence>"}}],
+  "events": [{{"id": "<e-number>", "why": "<one sentence>", "age_note": "<text>"}}]
 }}

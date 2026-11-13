@@ -539,7 +539,11 @@ def _run_weekend_planner_task(self, *, only_if_forecast_changed: bool) -> dict:
         self.check_shutdown()
 
     run = asyncio.run(
-        run_weekend_planner(send=True, only_if_forecast_changed=only_if_forecast_changed)
+        run_weekend_planner(
+            send=True,
+            only_if_forecast_changed=only_if_forecast_changed,
+            refresh_events=True,
+        )
     )
     logger.info(
         "Weekend planner finished: status=%s, weekend=%s, sent_to=%d",
@@ -553,6 +557,7 @@ def _run_weekend_planner_task(self, *, only_if_forecast_changed: bool) -> dict:
         "is_update": run.is_update,
         "sent": len(run.sent_to),
         "ai_used": run.plan.ai_used,
+        "events": len(run.plan.events),
         "task_id": self.request.id,
     }
 
