@@ -328,6 +328,12 @@ def seed_all(db: Session) -> None:
     seed_model_pricing(db)
     seed_user_preferences(db)
 
+    # Imported here: app.weekend pulls in the planner, which seed_data must not
+    # require at import time.
+    from app.weekend.seed_places import seed_places
+
+    seed_places(db)
+
     logger.info("Database seeding completed successfully!")
 
 

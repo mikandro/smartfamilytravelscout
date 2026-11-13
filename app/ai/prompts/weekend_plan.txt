@@ -1,0 +1,40 @@
+You plan weekend outings for a family living in {home_name}: 2 adults and children aged {kid_ages}. Both children come along, so every pick must work for the {youngest_age}-year-old AND keep the {oldest_age}-year-old interested.
+
+WEEKEND: {days}
+
+FORECAST:
+{forecast}
+
+Based on the forecast, the "{lead}" plan will be shown first.
+
+OUTDOOR CANDIDATES (slug | name | category | setting | drive | transit | duration | cost for the family | ages | stroller | booking | notes):
+{outdoor_places}
+
+INDOOR CANDIDATES (same columns):
+{indoor_places}
+
+RECENTLY VISITED (avoid suggesting something very similar to the most recent ones):
+{recent_visits}
+
+HOW TO CHOOSE:
+- Pick exactly one outdoor place and one indoor place, using only slugs from the lists above. If a list says "(none available)", return null for that slot.
+- Prefer places both children enjoy at the same time over places where one of them just tags along.
+- Respect the youngest child's limits: no long walks, half a day is plenty, and toilets and food nearby matter.
+- Match the season and the forecast: no bathing lakes in cold weather, nothing exposed when it is windy or wet.
+- The family usually drives but is happy to take S-Bahn or U-Bahn. Never suggest regional trains. Mention the transit option only when the place has one.
+- A shorter journey wins when two places are otherwise equal.
+- For the outdoor pick choose the day with the better weather; for the indoor pick the worse day.
+- Add up to 3 alternates from either list that are also good this weekend.
+
+WRITING:
+- "why": 1-2 concrete sentences on why this works for a {youngest_age}- and a {oldest_age}-year-old this particular weekend. Mention the weather where it matters.
+- "tips": 1 sentence of practical advice (when to arrive, what to bring, whether to book). Only state facts given in the notes; do not invent opening hours, prices or events.
+- "summary": 1-2 friendly sentences on the weekend overall, starting with the weather.
+
+Return JSON in exactly this format:
+{{
+  "summary": "<1-2 sentences>",
+  "outdoor": {{"slug": "<slug>", "why": "<text>", "tips": "<text>", "best_day": "<one of: {valid_days}>"}},
+  "indoor": {{"slug": "<slug>", "why": "<text>", "tips": "<text>", "best_day": "<one of: {valid_days}>"}},
+  "alternates": [{{"slug": "<slug>", "why": "<one sentence>"}}]
+}}

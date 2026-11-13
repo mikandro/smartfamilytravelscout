@@ -60,6 +60,10 @@ app.add_typer(config_app, name="config")
 app.add_typer(db_app, name="db")
 app.add_typer(prefs_app, name="prefs")
 
+from app.cli.weekend import weekend_app  # noqa: E402
+
+app.add_typer(weekend_app, name="weekend")
+
 console = Console()
 logger = logging.getLogger(__name__)
 

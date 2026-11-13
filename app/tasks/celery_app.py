@@ -188,6 +188,18 @@ celery_app.conf.update(
             "schedule": crontab(hour=7, minute=0),
             "options": {"queue": "scheduled"},
         },
+        # Weekend plan email on Thursdays at 18:00 (settings.timezone)
+        "weekly-weekend-plan": {
+            "task": "app.tasks.scheduled_tasks.send_weekend_plan",
+            "schedule": crontab(hour=18, minute=0, day_of_week=4),
+            "options": {"queue": "scheduled"},
+        },
+        # Friday 18:00 follow-up, sent only if the weekend forecast changed
+        "weekly-weekend-forecast-check": {
+            "task": "app.tasks.scheduled_tasks.check_weekend_forecast",
+            "schedule": crontab(hour=18, minute=0, day_of_week=5),
+            "options": {"queue": "scheduled"},
+        },
         # Clean old data at 2 AM UTC daily
         "daily-cleanup": {
             "task": "app.tasks.scheduled_tasks.cleanup_old_data",
