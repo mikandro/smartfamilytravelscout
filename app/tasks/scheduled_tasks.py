@@ -523,3 +523,75 @@ def send_deal_notifications(self):
     except Exception as e:
         logger.error(f"Error in notification task: {e}", exc_info=True)
         raise
+
+
+def _run_weekend_planner_task(self, *, only_if_forecast_changed: bool) -> dict:
+    """Shared body of the two weekend planner tasks."""
+    import asyncio
+
+    from app.weekend.service import run_weekend_planner
+
+    if not settings.enable_weekend_planner or not settings.enable_notifications:
+        logger.info("Weekend planner disabled; skipping")
+        return {"status": "disabled", "task_id": self.request.id}
+
+    if hasattr(self, "check_shutdown"):
+        self.check_shutdown()
+
+    run = asyncio.run(
+        run_weekend_planner(send=True, only_if_forecast_changed=only_if_forecast_changed)
+    )
+    logger.info(
+        "Weekend planner finished: status=%s, weekend=%s, sent_to=%d",
+        run.status,
+        run.plan.weekend_start,
+        len(run.sent_to),
+    )
+    return {
+        "status": run.status,
+        "weekend_start": run.plan.weekend_start.isoformat(),
+        "is_update": run.is_update,
+        "sent": len(run.sent_to),
+        "ai_used": run.plan.ai_used,
+        "task_id": self.request.id,
+    }
+
+
+@celery_app.task(name="app.tasks.scheduled_tasks.send_weekend_plan", base=GracefulTask, bind=True)
+def send_weekend_plan(self):
+    """
+    Email the plan for the coming weekend.
+
+    Runs on Thursdays at 18:00. Picks one outdoor and one indoor outing near
+    home based on the forecast, the children's ages and recent visits.
+    """
+    logger.info("Starting weekend plan task")
+    try:
+        return _run_weekend_planner_task(self, only_if_forecast_changed=False)
+    except SystemExit:
+        logger.warning(f"Weekend plan task {self.request.id} interrupted by shutdown")
+        raise
+    except Exception as e:
+        logger.error(f"Error in weekend plan task: {e}", exc_info=True)
+        raise
+
+
+@celery_app.task(
+    name="app.tasks.scheduled_tasks.check_weekend_forecast", base=GracefulTask, bind=True
+)
+def check_weekend_forecast(self):
+    """
+    Re-check the weekend forecast and email an update only if it changed.
+
+    Runs on Fridays at 18:00. If Thursday's plan never went out, this sends
+    the full plan instead.
+    """
+    logger.info("Starting weekend forecast check task")
+    try:
+        return _run_weekend_planner_task(self, only_if_forecast_changed=True)
+    except SystemExit:
+        logger.warning(f"Weekend forecast check {self.request.id} interrupted by shutdown")
+        raise
+    except Exception as e:
+        logger.error(f"Error in weekend forecast check: {e}", exc_info=True)
+        raise

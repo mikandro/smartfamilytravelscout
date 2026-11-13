@@ -245,6 +245,31 @@ class Settings(BaseSettings):
     enable_notifications: bool = Field(default=True, description="Enable notifications")
     enable_metrics: bool = Field(default=True, description="Enable metrics collection")
 
+    # Weekend Planner (local activities near home)
+    enable_weekend_planner: bool = Field(
+        default=True, description="Send the weekly weekend activity plan"
+    )
+    weekend_home_name: str = Field(default="Munich", description="Home city for weekend plans")
+    weekend_home_latitude: float = Field(
+        default=48.1372, description="Home latitude (default: Munich Marienplatz)"
+    )
+    weekend_home_longitude: float = Field(
+        default=11.5756, description="Home longitude (default: Munich Marienplatz)"
+    )
+    weekend_kid_ages: str = Field(
+        default="3,7", description="Children's ages for weekend plans (comma-separated)"
+    )
+    weekend_max_drive_minutes: int = Field(
+        default=75, description="Longest one-way drive to suggest", ge=0
+    )
+    weekend_repeat_after_days: int = Field(
+        default=49, description="Do not suggest a place again within this many days", ge=0
+    )
+    weekend_plan_email: Optional[str] = Field(
+        default=None,
+        description="Recipient of the weekend plan (defaults to users with notifications on)",
+    )
+
     # Notification Settings
     notification_threshold: float = Field(
         default=70.0,
@@ -297,6 +322,10 @@ class Settings(BaseSettings):
     def get_departure_airports_list(self) -> List[str]:
         """Get list of departure airports from comma-separated string."""
         return [airport.strip() for airport in self.default_departure_airports.split(",")]
+
+    def get_weekend_kid_ages(self) -> List[int]:
+        """Get the children's ages as a list of ints."""
+        return [int(age) for age in self.weekend_kid_ages.split(",") if age.strip()]
 
     def get_allowed_origins_list(self) -> List[str]:
         """Get list of allowed origins from comma-separated string."""

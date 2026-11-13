@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weekend plan</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f5f7fa;color:#333333;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;line-height:1.5;">
+<div style="max-width:600px;margin:0 auto;background-color:#ffffff;">
+
+    <div style="background-color:#2e7d32;color:#ffffff;padding:24px 20px;">
+        <div style="font-size:13px;opacity:0.85;">{% if is_update %}Forecast changed · updated plan{% else %}Your weekend plan{% endif %}</div>
+        <div style="font-size:22px;font-weight:bold;margin-top:4px;">{{ weekend_label }}</div>
+    </div>
+
+    <div style="padding:20px;">
+        {% if is_update %}
+        <p style="margin:0 0 16px 0;padding:10px 12px;background-color:#fff8e1;border-left:4px solid #f9a825;">
+            The forecast has shifted since Thursday, so the order of the plans changed.
+        </p>
+        {% endif %}
+
+        {% if plan.summary %}
+        <p style="margin:0 0 16px 0;font-size:16px;">{{ plan.summary }}</p>
+        {% endif %}
+
+        {% if plan.forecast %}
+        <table role="presentation" width="100%" style="border-collapse:collapse;margin:0 0 20px 0;">
+            {% for day in plan.forecast %}
+            <tr>
+                <td style="padding:6px 0;border-bottom:1px solid #eeeeee;font-size:14px;">
+                    {{ verdict_icons[day.verdict] }} {{ day.summary() }}
+                </td>
+            </tr>
+            {% endfor %}
+        </table>
+        {% endif %}
+
+        {% if plan.is_empty %}
+        <p>No places matched this weekend. Run <code>scout weekend seed</code> or raise the drive limit.</p>
+        {% endif %}
+
+        {% for kind, option in plan.ordered_options %}
+        <div style="border:1px solid #e0e0e0;border-radius:8px;padding:16px;margin:0 0 16px 0;{% if loop.first %}border-color:#2e7d32;border-width:2px;{% endif %}">
+            <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:#666666;">
+                {% if kind == 'outdoor' %}☀️ If it's dry{% else %}🌧️ If it's wet{% endif %}{% if loop.first %} · our pick{% endif %}{% if option.best_day_text %} · best on {{ option.best_day_text }}{% endif %}
+            </div>
+            <div style="font-size:19px;font-weight:bold;margin:4px 0 8px 0;">
+                {% if option.url %}<a href="{{ option.url }}" style="color:#1b5e20;text-decoration:none;">{{ option.name }}</a>{% else %}{{ option.name }}{% endif %}
+            </div>
+            {% if option.why %}<p style="margin:0 0 8px 0;">{{ option.why }}</p>{% endif %}
+            {% if option.tips %}<p style="margin:0 0 8px 0;color:#555555;"><strong>Tip:</strong> {{ option.tips }}</p>{% endif %}
+            <div style="font-size:14px;color:#444444;">
+                {{ option.travel_text }}<br>
+                ⏱ about {{ '%g' % option.duration_hours }} h · 💶 {{ option.cost_text }}{% if option.booking_required %} · 🎟 book ahead{% endif %}{% if not option.stroller_friendly %} · no stroller{% endif %}
+            </div>
+        </div>
+        {% endfor %}
+
+        {% if plan.alternates %}
+        <div style="font-size:15px;font-weight:bold;margin:8px 0;">Also good this weekend</div>
+        <ul style="margin:0 0 16px 0;padding-left:20px;font-size:14px;">
+            {% for option in plan.alternates %}
+            <li style="margin-bottom:6px;"><strong>{{ option.name }}</strong> ({{ option.setting }}, 🚗 {{ option.drive_minutes }} min){% if option.why %}: {{ option.why }}{% endif %}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+        {% for warning in plan.warnings %}
+        <p style="margin:0 0 8px 0;font-size:13px;color:#8d6e63;">Note: {{ warning }}</p>
+        {% endfor %}
+    </div>
+
+    <div style="padding:16px 20px;background-color:#fafafa;border-top:1px solid #eeeeee;font-size:12px;color:#777777;">
+        Travel times and costs are rough estimates; check the venue before you go.<br>
+        Went somewhere? Log it so it is not suggested again too soon:
+        <code>scout weekend done "Place name" --rating 4</code>
+    </div>
+</div>
+</body>
+</html>

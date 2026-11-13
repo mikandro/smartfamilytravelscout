@@ -720,6 +720,33 @@ poetry run scout db cleanup --no-events --no-packages
 - Celery task: `app/tasks/scheduled_tasks.py:cleanup_old_data()`
 - CLI command: `app/cli/main.py:db_cleanup()`
 
+### Weekend Planner
+
+Local outings near home for the coming weekend, separate from the trip pipeline
+(no flights or accommodation involved).
+
+- `app/models/place.py`: `Place` (evergreen destination), `PlaceVisit` (visit log), `WeekendPlan` (what was sent, used by the Friday check)
+- `app/weekend/weather.py`: Open-Meteo forecast (no API key) reduced to an `outdoor` / `mixed` / `indoor` verdict per day
+- `app/weekend/planner.py`: filters places (kids' ages, season, drive limit, recent visits), then Claude picks one outdoor and one indoor outing; falls back to a deterministic ranking if Claude or the forecast is unavailable
+- `app/weekend/service.py`: `run_weekend_planner()`, the single entry point used by both CLI and Celery
+- `app/weekend/seed_places.py`: hand-written starter list for Munich. Travel times and costs are rough estimates, not verified data
+- Prompt: `app/ai/prompts/weekend_plan.txt`; email template: `app/notifications/templates/weekend_plan.html`
+- Celery Beat: `send_weekend_plan` Thursdays 18:00, `check_weekend_forecast` Fridays 18:00 (emails only if the forecast changed)
+- Settings: `WEEKEND_KID_AGES`, `WEEKEND_MAX_DRIVE_MINUTES`, `WEEKEND_REPEAT_AFTER_DAYS`, `WEEKEND_HOME_LATITUDE/LONGITUDE`, `WEEKEND_PLAN_EMAIL`, `ENABLE_WEEKEND_PLANNER`
+
+```bash
+poetry run scout weekend seed                 # load the starter places (once)
+poetry run scout weekend                      # preview this weekend's plan
+poetry run scout weekend plan --no-ai         # preview without calling Claude
+poetry run scout weekend plan --send          # email it now
+poetry run scout weekend places --all         # list places and why any are filtered out
+poetry run scout weekend done "Wildpark Poing" --rating 4   # log a visit
+```
+
+A place is only suggested if every child's age is inside its `age_min`/`age_max`
+range. Places reachable only by regional train have `transit_minutes = NULL`
+(car only) on purpose.
+
 ## Common Development Tasks
 
 ### Adding a New Scraper

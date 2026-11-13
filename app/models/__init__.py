@@ -11,6 +11,7 @@ from app.models.email_delivery_log import EmailDeliveryLog
 from app.models.event import Event
 from app.models.flight import Flight
 from app.models.model_pricing import ModelPricing
+from app.models.place import Place, PlaceVisit, WeekendPlan
 from app.models.price_history import PriceHistory
 from app.models.school_holiday import SchoolHoliday
 from app.models.scraping_job import ScrapingJob
@@ -32,4 +33,7 @@ __all__ = [
     "ApiCost",
     "EmailDeliveryLog",
     "ModelPricing",
+    "Place",
+    "PlaceVisit",
+    "WeekendPlan",
 ]

@@ -9,7 +9,7 @@ from datetime import date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -205,6 +205,93 @@ class EmailNotifier:
             )
         except Exception as e:
             logger.error(f"Failed to send parent escape digest: {e}", exc_info=True)
+            return False
+
+    def _weekend_label(self, plan: Any) -> str:
+        """e.g. ``Sat 14 – Sun 15 November`` (or a single day on a Sunday)."""
+        days = plan.days
+        if len(days) == 1:
+            return days[0].strftime("%A %d %B")
+        return f"{days[0].strftime('%a %d')} – {days[-1].strftime('%a %d %B')}"
+
+    def render_weekend_plan(self, plan: Any, is_update: bool = False) -> str:
+        """
+        Render the weekend plan email as HTML.
+
+        Args:
+            plan: ``app.weekend.planner.WeekendPlanResult``
+            is_update: True for the "forecast changed" follow-up
+        """
+        template = self.template_env.get_template("weekend_plan.html")
+        return template.render(
+            plan=plan,
+            is_update=is_update,
+            weekend_label=self._weekend_label(plan),
+            verdict_icons={"outdoor": "☀️", "mixed": "⛅", "indoor": "🌧️"},
+        )
+
+    def render_weekend_plan_text(self, plan: Any, is_update: bool = False) -> str:
+        """Plain-text version of the weekend plan (email fallback and CLI)."""
+        lines = [f"Weekend plan: {self._weekend_label(plan)}"]
+        if is_update:
+            lines.append("The forecast changed, so this is an updated plan.")
+        if plan.summary:
+            lines += ["", plan.summary]
+        if plan.forecast:
+            lines.append("")
+            lines += [f"  {day.summary()}" for day in plan.forecast]
+        for kind, option in plan.ordered_options:
+            label = "If it's dry" if kind == "outdoor" else "If it's wet"
+            day = f" (best on {option.best_day_text})" if option.best_day_text else ""
+            lines += ["", f"{label}{day}: {option.name}"]
+            if option.why:
+                lines.append(f"  {option.why}")
+            if option.tips:
+                lines.append(f"  Tip: {option.tips}")
+            lines.append(f"  {option.travel_text}")
+            extras = f"  about {option.duration_hours:g} h, {option.cost_text}"
+            if option.booking_required:
+                extras += ", book ahead"
+            lines.append(extras)
+            if option.url:
+                lines.append(f"  {option.url}")
+        if plan.alternates:
+            lines += ["", "Also good this weekend:"]
+            lines += [f"  - {option.name} ({option.drive_minutes} min drive)" for option in plan.alternates]
+        for warning in plan.warnings:
+            lines += ["", f"Note: {warning}"]
+        return "\n".join(lines)
+
+    async def send_weekend_plan(
+        self, plan: Any, to_email: Optional[str] = None, is_update: bool = False
+    ) -> bool:
+        """
+        Send the weekend plan email.
+
+        Args:
+            plan: ``app.weekend.planner.WeekendPlanResult``
+            to_email: Recipient email (defaults to user_email)
+            is_update: True for the "forecast changed" follow-up
+
+        Returns:
+            True if email sent successfully, False otherwise
+        """
+        recipient = to_email or self.user_email
+        if not recipient:
+            logger.error("No recipient email provided for weekend plan")
+            return False
+
+        try:
+            prefix = "🔄 Forecast changed" if is_update else "🗓️ Weekend plan"
+            subject = f"{prefix}: {self._weekend_label(plan)}"
+            return self.send_email(
+                to_email=recipient,
+                subject=subject,
+                html_body=self.render_weekend_plan(plan, is_update=is_update),
+                text_body=self.render_weekend_plan_text(plan, is_update=is_update),
+            )
+        except Exception as e:
+            logger.error(f"Failed to send weekend plan: {e}", exc_info=True)
             return False
 
     def send_email(
